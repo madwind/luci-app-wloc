@@ -83,9 +83,9 @@ listen_port_in_use 28443 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.3$' Makefile
+grep -q '^PKG_VERSION:=0.1.4$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.3"$' Cargo.toml
+grep -q '^version = "0.1.4"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
@@ -271,7 +271,8 @@ grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wlo
 ! grep -q 'wloc-hero\|wloc-scope' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last updated')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "_('Failure reason')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "_('Country')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q 'var countryOption' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "_('Country: %s')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc

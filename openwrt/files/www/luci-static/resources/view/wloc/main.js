@@ -94,8 +94,6 @@ return view.extend({
 		var initialStatus = data[2] || {};
 		var initialLogs = initialStatus.runtime_log || '';
 		var lookupResultNodes = {};
-		var lookupCountries = {};
-		var countryNodes = {};
 		var lastUpdatedNodes = {};
 		var lastResultNodes = {};
 
@@ -245,17 +243,6 @@ return view.extend({
 		longitudeOption.rmempty = false;
 		longitudeOption.validate = coordinateValidator(-180, 180);
 
-		var countryOption = clients.option(form.DummyValue, '_country', _('Country'));
-		countryOption.rmempty = true;
-		countryOption.textvalue = function(sectionId) {
-			return lookupCountries[sectionId] || '-';
-		};
-		countryOption.renderWidget = function(sectionId) {
-			var node = E('span', {}, countryOption.textvalue(sectionId));
-			rememberNode(countryNodes, sectionId, node);
-			return node;
-		};
-
 		var proxyTypeOption = clients.option(form.ListValue, 'proxy_type', _('Outbound'));
 		proxyTypeOption.value('direct', _('Direct'));
 		proxyTypeOption.value('http', _('HTTP proxy'));
@@ -337,10 +324,6 @@ return view.extend({
 			}
 			if (resultNode)
 				resultNode.replaceChildren(E('em', {}, _('Looking up with ipinfo.io…')));
-			lookupCountries[sectionId] = '-';
-			updateNodes(countryNodes, sectionId, function(node) {
-				node.textContent = lookupCountries[sectionId];
-			});
 			return lookupIpInfo(ip).then(function(result) {
 				var latitudeWidget = latitudeOption.getUIElement(sectionId);
 				var longitudeWidget = longitudeOption.getUIElement(sectionId);
@@ -362,10 +345,6 @@ return view.extend({
 				}
 				if (!latitudeWidget && !latitudeInput || !longitudeWidget && !longitudeInput)
 					throw new Error(_('The coordinate fields are unavailable'));
-				lookupCountries[sectionId] = result.country || '-';
-				updateNodes(countryNodes, sectionId, function(node) {
-					node.textContent = lookupCountries[sectionId];
-				});
 				if (resultNode) {
 					resultNode.replaceChildren(
 						E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
