@@ -83,9 +83,9 @@ listen_port_in_use 28443 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.1$' Makefile
+grep -q '^PKG_VERSION:=0.1.2$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.1"$' Cargo.toml
+grep -q '^version = "0.1.2"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
@@ -253,22 +253,25 @@ grep -q "flush set inet \$TABLE \$CLIENT_SET" openwrt/files/usr/libexec/wloc/rul
 grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
 grep -q "form.GridSection, 'client'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "form.Value, 'accuracy'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'config_get accuracy' openwrt/files/etc/init.d/wloc
 grep -q 'preserved=accuracy,all_other_fields' src/proxy.rs
 grep -q 'patch_response_following' src/proxy.rs
-grep -q "form.Value, '_lookup_ip'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.Value, 'ip'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.ListValue, 'proxy_type'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "proxyTypeOption.value('http'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "proxyTypeOption.value('socks5'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'relativeTime(activity.last_location_at)' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q -- '--client-proxy' openwrt/files/etc/init.d/wloc
 grep -q 'connect_outbound(outbound' src/proxy.rs
-grep -q 'Look up and fill coordinates' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'wloc-tabs' openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'wloc-hero\|wloc-scope' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last updated')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "_('Failure reason')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "_('Failure reason')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "_('Country')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
@@ -284,7 +287,7 @@ grep -q "'runtime_log', _('Enable runtime log')" openwrt/files/www/luci-static/r
 ! grep -q 'JSON.stringify' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'getUIElement(sectionId)' openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'callLogs' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'poll.add(refresh, 10)' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'poll.add(refresh, 5)' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'write_atomic' src/status.rs
 grep -q 'update_detail_lines' src/proxy.rs
 grep -q 'upstream_reused' src/proxy.rs

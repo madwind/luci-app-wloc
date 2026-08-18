@@ -74,7 +74,8 @@ function lookupIpInfo(ip) {
 		return {
 			latitude: coordinates[0],
 			longitude: coordinates[1],
-			location: [ result.city, result.region, result.country, result.timezone ].filter(Boolean).join(' · ')
+			country: result.country || '',
+			location: [ result.city, result.region, result.timezone ].filter(Boolean).join(' · ')
 		};
 	});
 }
@@ -93,9 +94,20 @@ return view.extend({
 		var initialStatus = data[2] || {};
 		var initialLogs = initialStatus.runtime_log || '';
 		var lookupResultNodes = {};
+		var lookupCountries = {};
+		var countryNodes = {};
 		var lastUpdatedNodes = {};
-		var lastErrorNodes = {};
 		var lastResultNodes = {};
+
+		function rememberNode(nodes, sectionId, node) {
+			if (!nodes[sectionId])
+				nodes[sectionId] = [];
+			nodes[sectionId].push(node);
+		}
+
+		function updateNodes(nodes, sectionId, update) {
+			(nodes[sectionId] || []).forEach(update);
+		}
 
 		var map = new form.Map('wloc', _('WLOC'),
 			_('Version %s · Assign an independent Apple WLOC location to each authorized device.').format(initialStatus.version || _('unknown')));
@@ -176,6 +188,42 @@ return view.extend({
 			if (mac)
 				macOption.value(mac, '%s — %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' — ' + ip : ''));
 		});
+		macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			var widget = form.Value.prototype.renderWidget.apply(this, arguments);
+			var select = widget && widget.nodeName === 'SELECT' ? widget
+				: (widget && widget.querySelector ? widget.querySelector('select') : null);
+			if (!select)
+				return widget;
+
+			var macPattern = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
+			var expandOptions = function() {
+				Array.prototype.forEach.call(select.options, function(option) {
+					var fullLabel = option.getAttribute('data-wloc-full-label');
+					if (!fullLabel) {
+						fullLabel = option.textContent;
+						option.setAttribute('data-wloc-full-label', fullLabel);
+					}
+					if (macPattern.test(option.value))
+						option.textContent = fullLabel;
+				});
+			};
+			var compactSelected = function() {
+				var selected = select.options[select.selectedIndex];
+				if (selected && macPattern.test(selected.value))
+					selected.textContent = selected.value;
+			};
+
+			select.addEventListener('mousedown', expandOptions);
+			select.addEventListener('keydown', function(event) {
+				if ([ 'ArrowDown', 'ArrowUp', 'Home', 'End', ' ', 'Enter' ].indexOf(event.key) >= 0)
+					expandOptions();
+			});
+			select.addEventListener('change', compactSelected);
+			select.addEventListener('blur', compactSelected);
+			expandOptions();
+			compactSelected();
+			return widget;
+		};
 		macOption.validate = function(sectionId, value) {
 			value = String(value || '').toLowerCase();
 			if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(value))
@@ -190,13 +238,11 @@ return view.extend({
 
 		var latitudeOption = clients.option(form.Value, 'latitude', _('Latitude'));
 		latitudeOption.rmempty = false;
-		latitudeOption.placeholder = '51.5074';
 		latitudeOption.description = _('Fixed virtual baseline. Each later response adds only the movement since the previous real location; the baseline itself never changes.');
 		latitudeOption.validate = coordinateValidator(-90, 90);
 
 		var longitudeOption = clients.option(form.Value, 'longitude', _('Longitude'));
 		longitudeOption.rmempty = false;
-		longitudeOption.placeholder = '-0.1277';
 		longitudeOption.validate = coordinateValidator(-180, 180);
 
 		var proxyTypeOption = clients.option(form.ListValue, 'proxy_type', _('Outbound'));
@@ -236,23 +282,20 @@ return view.extend({
 		};
 		lastUpdatedOption.renderWidget = function(sectionId) {
 			var node = E('span', {}, lastUpdatedOption.textvalue(sectionId));
-			lastUpdatedNodes[sectionId] = node;
+			rememberNode(lastUpdatedNodes, sectionId, node);
 			var activity = clientActivity(sectionId, initialStatus);
 			updateRelativeTime(node, activity && activity.last_location_at);
 			return node;
 		};
 
-		var lastErrorOption = clients.option(form.DummyValue, '_last_error', _('Failure reason'));
-		lastErrorOption.rmempty = true;
-		lastErrorOption.textvalue = function(sectionId) {
-			var activity = clientActivity(sectionId, initialStatus);
-			return activity && !truthy(activity.success)
-				? (activity.last_error || _('Unknown failure')) : '-';
+		var countryOption = clients.option(form.DummyValue, '_country', _('Country'));
+		countryOption.rmempty = true;
+		countryOption.textvalue = function(sectionId) {
+			return lookupCountries[sectionId] || '-';
 		};
-		lastErrorOption.renderWidget = function(sectionId) {
-			var activity = clientActivity(sectionId, initialStatus);
-			var node = E('span', { 'class': activity && !truthy(activity.success) ? 'is-idle' : '' }, lastErrorOption.textvalue(sectionId));
-			lastErrorNodes[sectionId] = node;
+		countryOption.renderWidget = function(sectionId) {
+			var node = E('span', {}, countryOption.textvalue(sectionId));
+			rememberNode(countryNodes, sectionId, node);
 			return node;
 		};
 
@@ -265,30 +308,27 @@ return view.extend({
 		lastResultOption.renderWidget = function(sectionId) {
 			var activity = clientActivity(sectionId, initialStatus);
 			var node = E('span', { 'class': activity ? (truthy(activity.success) ? 'is-ok' : 'is-idle') : '' }, lastResultOption.textvalue(sectionId));
-			lastResultNodes[sectionId] = node;
+			rememberNode(lastResultNodes, sectionId, node);
 			return node;
 		};
 
-		var lookupIpOption = clients.option(form.Value, '_lookup_ip', _('IP location lookup'));
-		lookupIpOption.modalonly = true;
-		lookupIpOption.rmempty = true;
-		lookupIpOption.placeholder = '8.8.8.8';
-		lookupIpOption.description = _('The browser sends this IP address directly to ipinfo.io. The result is not written to the router log or storage.');
-		lookupIpOption.cfgvalue = function() { return ''; };
-		lookupIpOption.write = function() {};
-		lookupIpOption.remove = function() {};
+		var ipOption = clients.option(form.Value, 'ip', _('IP address'));
+		ipOption.modalonly = true;
+		ipOption.rmempty = true;
+		ipOption.placeholder = '8.8.8.8';
+		ipOption.description = _('The browser sends this address directly to ipinfo.io. It is saved with this device rule; lookup results stay on this page.');
 
-		var lookupButton = clients.option(form.Button, '_lookup_action', _('IP geolocation'));
+		var lookupButton = clients.option(form.Button, '_lookup_action', _('IP location'));
 		lookupButton.modalonly = true;
 		lookupButton.rmempty = true;
-		lookupButton.inputtitle = _('Look up and fill coordinates');
+		lookupButton.inputtitle = _('Fill from IP location');
 		lookupButton.inputstyle = 'action';
 		lookupButton.onclick = function(first, second) {
 			var event = first && first.currentTarget ? first : (second && second.currentTarget ? second : null);
 			var sectionId = typeof first === 'string' ? first : (typeof second === 'string' ? second : null);
 			var modal = event && event.currentTarget ? event.currentTarget.closest('.modal') : null;
-			var inputNode = modal ? modal.querySelector('input[id$="._lookup_ip"], [id$="._lookup_ip"] input, input[placeholder="8.8.8.8"]') : null;
-			var ip = String(inputNode ? inputNode.value : (sectionId ? lookupIpOption.formvalue(sectionId) : '') || '').trim();
+			var inputNode = modal ? modal.querySelector('input[id$=".ip"], [id$=".ip"] input, input[placeholder="8.8.8.8"]') : null;
+			var ip = String(inputNode ? inputNode.value : (sectionId ? ipOption.formvalue(sectionId) : '') || '').trim();
 			var resultNode = lookupResultNodes[sectionId] || (modal ? modal.querySelector('.wloc-inline-result') : null);
 			if (!ip) {
 				if (resultNode)
@@ -297,11 +337,15 @@ return view.extend({
 			}
 			if (resultNode)
 				resultNode.replaceChildren(E('em', {}, _('Looking up with ipinfo.io…')));
+			lookupCountries[sectionId] = '-';
+			updateNodes(countryNodes, sectionId, function(node) {
+				node.textContent = lookupCountries[sectionId];
+			});
 			return lookupIpInfo(ip).then(function(result) {
 				var latitudeWidget = latitudeOption.getUIElement(sectionId);
 				var longitudeWidget = longitudeOption.getUIElement(sectionId);
-				var latitudeInput = modal ? modal.querySelector('input[id$=".latitude"], [id$=".latitude"] input, input[placeholder="51.5074"]') : null;
-				var longitudeInput = modal ? modal.querySelector('input[id$=".longitude"], [id$=".longitude"] input, input[placeholder="-0.1277"]') : null;
+				var latitudeInput = modal ? modal.querySelector('input[id$=".latitude"], [id$=".latitude"] input') : null;
+				var longitudeInput = modal ? modal.querySelector('input[id$=".longitude"], [id$=".longitude"] input') : null;
 				if (latitudeWidget)
 					latitudeWidget.setValue(result.latitude);
 				else if (latitudeInput) {
@@ -318,9 +362,14 @@ return view.extend({
 				}
 				if (!latitudeWidget && !latitudeInput || !longitudeWidget && !longitudeInput)
 					throw new Error(_('The coordinate fields are unavailable'));
+				lookupCountries[sectionId] = result.country || '-';
+				updateNodes(countryNodes, sectionId, function(node) {
+					node.textContent = lookupCountries[sectionId];
+				});
 				if (resultNode) {
 					resultNode.replaceChildren(
 						E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
+						E('span', {}, _('Country: %s').format(result.country || _('Unknown'))),
 						E('span', {}, result.location || _('Location details unavailable'))
 					);
 				}
@@ -398,16 +447,13 @@ return view.extend({
 			uci.sections('wloc', 'client').forEach(function(rule) {
 				var sectionId = rule['.name'];
 				var activity = clientActivity(sectionId, status);
-				updateRelativeTime(lastUpdatedNodes[sectionId], activity && activity.last_location_at);
-				if (lastErrorNodes[sectionId]) {
-					lastErrorNodes[sectionId].textContent = activity && !truthy(activity.success)
-						? (activity.last_error || _('Unknown failure')) : '-';
-					lastErrorNodes[sectionId].className = activity && !truthy(activity.success) ? 'is-idle' : '';
-				}
-				if (lastResultNodes[sectionId]) {
-					lastResultNodes[sectionId].textContent = activity ? (truthy(activity.success) ? _('Success') : _('Failed')) : _('Never');
-					lastResultNodes[sectionId].className = activity ? (truthy(activity.success) ? 'is-ok' : 'is-idle') : '';
-				}
+				updateNodes(lastUpdatedNodes, sectionId, function(node) {
+					updateRelativeTime(node, activity && activity.last_location_at);
+				});
+				updateNodes(lastResultNodes, sectionId, function(node) {
+					node.textContent = activity ? (truthy(activity.success) ? _('Success') : _('Failed')) : _('Never');
+					node.className = activity ? (truthy(activity.success) ? 'is-ok' : 'is-idle') : '';
+				});
 			});
 		}
 
@@ -442,7 +488,6 @@ return view.extend({
 
 		renderStatus(initialStatus);
 		renderRuntimeLog(initialStatus, initialLogs);
-		poll.add(refresh, 10);
 		document.addEventListener('visibilitychange', function() {
 			if (document.visibilityState !== 'hidden')
 				refresh();
@@ -452,6 +497,8 @@ return view.extend({
 		return map.render().then(function(formNode) {
 			renderClientActivity(initialStatus);
 			scrollRuntimeLogToBottom();
+			poll.add(refresh, 5);
+			refresh();
 			return E('div', { 'class': 'wloc-console' }, [
 				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}'),
 				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
