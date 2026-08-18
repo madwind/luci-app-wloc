@@ -83,9 +83,9 @@ listen_port_in_use 28443 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.4$' Makefile
+grep -q '^PKG_VERSION:=0.1.5$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.4"$' Cargo.toml
+grep -q '^version = "0.1.5"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
