@@ -245,6 +245,17 @@ return view.extend({
 		longitudeOption.rmempty = false;
 		longitudeOption.validate = coordinateValidator(-180, 180);
 
+		var countryOption = clients.option(form.DummyValue, '_country', _('Country'));
+		countryOption.rmempty = true;
+		countryOption.textvalue = function(sectionId) {
+			return lookupCountries[sectionId] || '-';
+		};
+		countryOption.renderWidget = function(sectionId) {
+			var node = E('span', {}, countryOption.textvalue(sectionId));
+			rememberNode(countryNodes, sectionId, node);
+			return node;
+		};
+
 		var proxyTypeOption = clients.option(form.ListValue, 'proxy_type', _('Outbound'));
 		proxyTypeOption.value('direct', _('Direct'));
 		proxyTypeOption.value('http', _('HTTP proxy'));
@@ -285,17 +296,6 @@ return view.extend({
 			rememberNode(lastUpdatedNodes, sectionId, node);
 			var activity = clientActivity(sectionId, initialStatus);
 			updateRelativeTime(node, activity && activity.last_location_at);
-			return node;
-		};
-
-		var countryOption = clients.option(form.DummyValue, '_country', _('Country'));
-		countryOption.rmempty = true;
-		countryOption.textvalue = function(sectionId) {
-			return lookupCountries[sectionId] || '-';
-		};
-		countryOption.renderWidget = function(sectionId) {
-			var node = E('span', {}, countryOption.textvalue(sectionId));
-			rememberNode(countryNodes, sectionId, node);
 			return node;
 		};
 
