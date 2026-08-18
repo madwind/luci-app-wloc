@@ -85,9 +85,9 @@ listen_port_in_use 28443 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.6$' Makefile
+grep -q '^PKG_VERSION:=0.1.7$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.6"$' Cargo.toml
+grep -q '^version = "0.1.7"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
@@ -272,13 +272,23 @@ grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wlo
 ! grep -q 'wloc-tabs' openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'wloc-hero\|wloc-scope' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last updated')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-! grep -q "_('Failure reason')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'wloc-result-error' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'macOption.cfgvalue' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'toUpperCase' openwrt/files/www/luci-static/resources/view/wloc/main.js src/config.rs src/proxy.rs
 ! grep -q 'var countryOption' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Country: %s')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'last_error' openwrt/files/usr/libexec/rpcd/luci.wloc src/status.rs
+grep -q -- '--client-name' openwrt/files/etc/init.d/wloc src/config.rs
+grep -q 'device=\\"{name}\\" mac={mac} ip={ip}' src/config.rs
+grep -q 'device_configured' src/main.rs
+grep -q 'configured_macs=' src/proxy.rs
+grep -q ' ip=' src/proxy.rs
+grep -q 'lookup=dhcp_lease' src/proxy.rs
+grep -q 'lookup=ip_neigh' src/proxy.rs
+grep -q 'PEER_CACHE_TTL' src/proxy.rs
 grep -q '"admin/services/wloc"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"title": "WLOC"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"path": "wloc/main"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json

@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use crate::wloc::PatchTarget;
@@ -69,9 +69,54 @@ impl ClientSelector {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClientTarget {
     pub id: String,
+    pub name: String,
     pub selector: ClientSelector,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
+}
+
+impl ClientTarget {
+    fn safe_log_name(&self) -> String {
+        self.name
+            .chars()
+            .map(|character| {
+                if character == '"' || character == '\\' || character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .take(80)
+            .collect::<String>()
+    }
+
+    pub fn log_context(&self) -> String {
+        let name = self.safe_log_name();
+        match &self.selector {
+            ClientSelector::Mac(_) => {
+                let mac = self.selector.label().to_uppercase();
+                format!("device=\"{name}\" mac={mac}")
+            }
+            ClientSelector::Ipv4(_) => {
+                let selector = self.selector.label();
+                format!("device=\"{name}\" selector={selector}")
+            }
+        }
+    }
+
+    pub fn log_context_with_ip(&self, ip: IpAddr) -> String {
+        let name = self.safe_log_name();
+        match &self.selector {
+            ClientSelector::Mac(_) => {
+                let mac = self.selector.label().to_uppercase();
+                format!("device=\"{name}\" mac={mac} ip={ip}")
+            }
+            ClientSelector::Ipv4(_) => {
+                let selector = self.selector.label();
+                format!("device=\"{name}\" selector={selector} ip={ip}")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +177,7 @@ impl Config {
                     let selector = ClientSelector::parse_mac(&args.next().ok_or_else(value)?)?;
                     let target = parse_target(&mut args, &flag)?;
                     clients.push(ClientTarget {
+                        name: id.clone(),
                         id,
                         selector,
                         target,
@@ -148,11 +194,21 @@ impl Config {
                     );
                     let target = parse_target(&mut args, &flag)?;
                     clients.push(ClientTarget {
+                        name: id.clone(),
                         id,
                         selector,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
+                }
+                "--client-name" => {
+                    let id = parse_client_id(&args.next().ok_or_else(value)?)?;
+                    let name = args.next().ok_or_else(value)?;
+                    let client = clients
+                        .iter_mut()
+                        .find(|client| client.id == id)
+                        .ok_or_else(|| format!("name refers to unknown client rule ID: {id}"))?;
+                    client.name = name;
                 }
                 "--client-proxy" => {
                     let id = parse_client_id(&args.next().ok_or_else(value)?)?;
@@ -216,7 +272,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --client ID MAC LATITUDE LONGITUDE [--client ...] [--client-proxy ID TYPE HOST PORT] [--client-ip ID IPv4 LATITUDE LONGITUDE] [--listen-port PORT] [--runtime-log]"
+        "wlocd --client ID MAC LATITUDE LONGITUDE [--client-name ID NAME] [--client ...] [--client-proxy ID TYPE HOST PORT] [--client-ip ID IPv4 LATITUDE LONGITUDE] [--listen-port PORT] [--runtime-log]"
     }
 }
 
@@ -273,6 +329,9 @@ mod tests {
                 "02:11:22:33:44:55",
                 "22.3193",
                 "114.1694",
+                "--client-name",
+                "client_b",
+                "iPhone SE 3",
             ]
             .into_iter()
             .map(str::to_owned),
@@ -281,6 +340,28 @@ mod tests {
         assert_eq!(config.clients.len(), 2);
         assert_eq!(config.clients[1].selector.label(), "aa:bb:cc:dd:ee:02");
         assert_eq!(config.clients[1].target.latitude, 51.5074);
+        let named = config
+            .clients
+            .iter()
+            .find(|client| client.id == "client_b")
+            .unwrap();
+        assert_eq!(named.name, "iPhone SE 3");
+        assert_eq!(
+            named.log_context(),
+            "device=\"iPhone SE 3\" mac=02:11:22:33:44:55"
+        );
+        assert_eq!(
+            named.log_context_with_ip("192.0.2.10".parse().unwrap()),
+            "device=\"iPhone SE 3\" mac=02:11:22:33:44:55 ip=192.0.2.10"
+        );
+        let default_named = config
+            .clients
+            .iter()
+            .find(|client| client.id == "client_a")
+            .unwrap();
+        assert!(default_named
+            .log_context()
+            .contains("mac=AA:BB:CC:DD:EE:02"));
     }
 
     #[test]

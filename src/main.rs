@@ -153,6 +153,14 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.runtime_log,
             fingerprint,
         )?);
+        for configured in &config.clients {
+            status.update_detail(
+                "device_configured",
+                &format!("{} rule={}", configured.log_context(), configured.id),
+                None,
+                |_| {},
+            );
+        }
         status.update_detail(
             "listener_ready",
             &format!("listen=0.0.0.0:{} transparent=true", config.listen_port),

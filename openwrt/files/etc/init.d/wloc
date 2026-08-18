@@ -49,10 +49,11 @@ validate_client() {
 }
 
 append_client() {
-	local section client_enabled mac latitude longitude proxy_type proxy_host proxy_port
+	local section client_enabled name mac latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool client_enabled "$section" enabled 1
 	[ "$client_enabled" -eq 1 ] || return 0
+	config_get name "$section" name "$section"
 	config_get mac "$section" mac
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
@@ -61,6 +62,7 @@ append_client() {
 	config_get proxy_port "$section" proxy_port
 	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
 	procd_append_param command --client "$section" "$mac" "$latitude" "$longitude"
+	procd_append_param command --client-name "$section" "$name"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --client-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
 }

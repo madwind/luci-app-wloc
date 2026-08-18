@@ -181,12 +181,12 @@ return view.extend({
 		macOption.placeholder = 'aa:bb:cc:dd:ee:ff';
 		macOption.description = _('Select a current DHCP device or enter a MAC address manually. Update this value if the iPhone private Wi-Fi address changes.');
 		leases.forEach(function(lease) {
-			var mac = (lease.macaddr || lease.mac || '').toLowerCase();
+			var mac = (lease.macaddr || lease.mac || '').toUpperCase();
 			var ip = lease.ipaddr || lease.ip || '';
 			if (mac)
 				macOption.value(mac, '%s — %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' — ' + ip : ''));
 		});
-		macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+	macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
 			var widget = form.Value.prototype.renderWidget.apply(this, arguments);
 			var select = widget && widget.nodeName === 'SELECT' ? widget
 				: (widget && widget.querySelector ? widget.querySelector('select') : null);
@@ -208,7 +208,7 @@ return view.extend({
 			var compactSelected = function() {
 				var selected = select.options[select.selectedIndex];
 				if (selected && macPattern.test(selected.value))
-					selected.textContent = selected.value;
+					selected.textContent = selected.value.toUpperCase();
 			};
 
 			select.addEventListener('mousedown', expandOptions);
@@ -221,6 +221,9 @@ return view.extend({
 			expandOptions();
 			compactSelected();
 			return widget;
+		};
+		macOption.cfgvalue = function(sectionId) {
+			return String(uci.get('wloc', sectionId, 'mac') || '').toUpperCase();
 		};
 		macOption.validate = function(sectionId, value) {
 			value = String(value || '').toLowerCase();
@@ -288,13 +291,27 @@ return view.extend({
 
 		var lastResultOption = clients.option(form.DummyValue, '_last_result', _('Last result'));
 		lastResultOption.rmempty = true;
+		function renderClientResult(node, activity) {
+			var hasActivity = !!activity;
+			var success = hasActivity && truthy(activity.success);
+			var error = hasActivity && !success ? String(activity.last_error || '') : '';
+			node.className = hasActivity ? (success ? 'is-ok' : 'is-idle') : '';
+			node.replaceChildren(E('span', {}, hasActivity ? (success ? _('Success') : _('Failed')) : _('Never')));
+			if (error)
+				node.appendChild(E('span', { 'class': 'wloc-result-error' }, error));
+			if (error)
+				node.title = error;
+			else
+				node.removeAttribute('title');
+		}
 		lastResultOption.textvalue = function(sectionId) {
 			var activity = clientActivity(sectionId, initialStatus);
 			return activity ? (truthy(activity.success) ? _('Success') : _('Failed')) : _('Never');
 		};
 		lastResultOption.renderWidget = function(sectionId) {
 			var activity = clientActivity(sectionId, initialStatus);
-			var node = E('span', { 'class': activity ? (truthy(activity.success) ? 'is-ok' : 'is-idle') : '' }, lastResultOption.textvalue(sectionId));
+			var node = E('span', {});
+			renderClientResult(node, activity);
 			rememberNode(lastResultNodes, sectionId, node);
 			return node;
 		};
@@ -430,8 +447,7 @@ return view.extend({
 					updateRelativeTime(node, activity && activity.last_location_at);
 				});
 				updateNodes(lastResultNodes, sectionId, function(node) {
-					node.textContent = activity ? (truthy(activity.success) ? _('Success') : _('Failed')) : _('Never');
-					node.className = activity ? (truthy(activity.success) ? 'is-ok' : 'is-idle') : '';
+					renderClientResult(node, activity);
 				});
 			});
 		}
@@ -479,7 +495,7 @@ return view.extend({
 			poll.add(refresh, 5);
 			refresh();
 			return E('div', { 'class': 'wloc-console' }, [
-				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}'),
+				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}.wloc-result-error{display:block;margin-top:.2rem;max-width:16rem;overflow-wrap:anywhere;font-size:.85em;font-weight:400}'),
 				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
 				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
 				formNode,
