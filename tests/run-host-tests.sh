@@ -71,23 +71,23 @@ grep -q 'detected_priorities' openwrt/files/usr/libexec/rpcd/luci.wloc openwrt/f
 defaults_script=openwrt/files/etc/uci-defaults/luci-app-wloc
 grep -q 'get wloc.main.enabled >/dev/null' "$defaults_script"
 grep -q 'listen_port=.*get wloc.main.listen_port' "$defaults_script"
-grep -q "''|8443|58443).*listen_port='28443'" "$defaults_script"
-grep -q "option listen_port '28443'" openwrt/files/etc/config/wloc
-grep -q "config_get listen_port main listen_port 28443" openwrt/files/etc/init.d/wloc
+grep -q "''|8443|58443|28443).*listen_port='61520'" "$defaults_script"
+grep -q "option listen_port '61520'" openwrt/files/etc/config/wloc
+grep -q "config_get listen_port main listen_port 61520" openwrt/files/etc/init.d/wloc
 grep -q '^listen_port_in_use()' openwrt/files/etc/init.d/wloc
 grep -q 'local listen port .* is already in use' openwrt/files/etc/init.d/wloc
-grep -q "option.default = '28443'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "option.default = '61520'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 eval "$(sed -n '/^listen_port_in_use()/,/^}/p' openwrt/files/etc/init.d/wloc)"
-ss() { printf '%s\n' 'LISTEN 0 128 0.0.0.0:28443 0.0.0.0:*'; }
-listen_port_in_use 28443 \
+ss() { printf '%s\n' 'LISTEN 0 128 0.0.0.0:61520 0.0.0.0:*'; }
+listen_port_in_use 61520 \
 	|| { echo 'listen port collision checker missed an occupied IPv4 port' >&2; exit 1; }
-! listen_port_in_use 28444 \
+! listen_port_in_use 61521 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.7$' Makefile
+grep -q '^PKG_VERSION:=0.1.8$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.7"$' Cargo.toml
+grep -q '^version = "0.1.8"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
@@ -105,7 +105,7 @@ parsed_addresses="$(printf '%s\n' "$dns_fixture" \
 	| sed -n '/^Name:[[:space:]]/,$ s/^Address[^:]*:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p')"
 [ "$parsed_addresses" = 140.205.31.96 ] \
 	|| { echo 'BusyBox nslookup parser included a DNS server address' >&2; exit 1; }
-nft_fixture='ip saddr @target_clients_v4 meta l4proto tcp counter packets 7 bytes 420 redirect to :28443 comment "wloc owned redirect"'
+nft_fixture='ip saddr @target_clients_v4 meta l4proto tcp counter packets 7 bytes 420 redirect to :61520 comment "wloc owned redirect"'
 parsed_counter="$(printf '%s\n' "$nft_fixture" \
 	| sed -n '/wloc owned redirect/ s/.*counter packets \([0-9][0-9]*\).*/\1/p')"
 [ "$parsed_counter" = 7 ] \
@@ -217,7 +217,7 @@ order_fixture='table inet too_early_proxy {
 order_fixture='table inet wloc {
  chain redirect_prerouting {
   type nat hook prerouting priority -152; policy accept;
-  tcp dport 443 redirect to :28443
+  tcp dport 443 redirect to :61520
  }
 }
 table inet routed_proxy {
@@ -257,6 +257,7 @@ grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc
 grep -q "form.GridSection, 'client'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "form.Value, 'accuracy'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'config_get accuracy' openwrt/files/etc/init.d/wloc
 grep -q 'preserved=accuracy,all_other_fields' src/proxy.rs
@@ -287,8 +288,10 @@ grep -q 'device_configured' src/main.rs
 grep -q 'configured_macs=' src/proxy.rs
 grep -q ' ip=' src/proxy.rs
 grep -q 'lookup=dhcp_lease' src/proxy.rs
-grep -q 'lookup=ip_neigh' src/proxy.rs
+grep -q '"ip_neigh"' src/proxy.rs
 grep -q 'PEER_CACHE_TTL' src/proxy.rs
+grep -q 'matched=false' src/proxy.rs
+grep -q 'dhcp_lease_identity_from' src/proxy.rs
 grep -q '"admin/services/wloc"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"title": "WLOC"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"path": "wloc/main"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
@@ -310,15 +313,15 @@ grep -Fq 'run: bash ./tests/run-host-tests.sh' .github/workflows/ci.yml
 grep -q 'x86_64-unknown-linux-musl' Makefile scripts/build-openwrt-25.12.5.sh
 grep -q 'SDK_SHA256=0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c' scripts/build-openwrt-25.12.5.sh
 grep -q 'matrix:' .github/workflows/openwrt-build.yml
-grep -q '^name: WLOC / Host checks$' .github/workflows/ci.yml
-grep -q '^name: WLOC / OpenWrt package build$' .github/workflows/openwrt-build.yml
-grep -q '^name: WLOC / OpenWrt upstream maintenance$' .github/workflows/openwrt-upstream.yml
+grep -q '^name: WLOC / Host checks' .github/workflows/ci.yml
+grep -q '^name: WLOC / OpenWrt package build' .github/workflows/openwrt-build.yml
+grep -q '^name: WLOC / OpenWrt upstream maintenance' .github/workflows/openwrt-upstream.yml
 grep -q '^run-name: Host checks /' .github/workflows/ci.yml
 grep -q '^run-name: OpenWrt packages /' .github/workflows/openwrt-build.yml
 grep -q '^run-name: Upstream check /' .github/workflows/openwrt-upstream.yml
 grep -q 'name: Build APK /' .github/workflows/openwrt-build.yml
 grep -q 'name: Rust quality and host tests' .github/workflows/ci.yml
-grep -q 'uses: actions/cache@v4' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
+grep -q 'uses: actions/cache@v6' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
 grep -Fq '.build/openwrt-25.12.5-${{ matrix.target }}/downloads' .github/workflows/openwrt-build.yml
 grep -Fq '${{ matrix.sdk_sha256 }}' .github/workflows/openwrt-build.yml
 grep -q '~/.cargo/registry' .github/workflows/openwrt-build.yml .github/workflows/ci.yml

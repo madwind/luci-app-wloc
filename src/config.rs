@@ -155,7 +155,7 @@ impl Config {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut listen_port = 28443_u16;
+        let mut listen_port = 61520_u16;
         let mut runtime_log = false;
         let mut clients = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
@@ -312,7 +312,7 @@ mod tests {
                 .map(str::to_owned),
         )
         .unwrap();
-        assert_eq!(config.listen_port, 28443);
+        assert_eq!(config.listen_port, 61520);
     }
 
     #[test]

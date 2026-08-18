@@ -88,7 +88,7 @@ start_service() {
 	rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
 	config_load wloc
 	config_get_bool enabled main enabled 0
-	config_get listen_port main listen_port 28443
+	config_get listen_port main listen_port 61520
 	config_get_bool runtime_log main runtime_log 0
 
 	"$RULES" cleanup

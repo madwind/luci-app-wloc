@@ -73,8 +73,8 @@ Certificate Trust Settings. Each device rule can use the router's direct
 connection, an HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its
 Apple WLOC traffic.
 
-The default local listener is TCP port `28443`. Upgrades migrate the previous
-`8443` and `58443` defaults while retaining any other custom port. WLOC checks
+The default local listener is TCP port `61520`. Upgrades migrate the previous
+`8443`, `58443`, and `28443` defaults while retaining any other custom port. WLOC checks
 that the selected port is free before installing interception rules and stops
 safely if another router service already owns it.
 

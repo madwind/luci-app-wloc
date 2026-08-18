@@ -28,9 +28,15 @@ const GLOBAL_STREAM_LIMIT: usize = 2;
 // IP-to-MAC mappings when an address is reassigned quickly.
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 
-#[derive(Clone, Copy)]
-struct PeerCacheEntry {
+#[derive(Clone)]
+struct PeerIdentity {
     mac: [u8; 6],
+    hostname: Option<String>,
+}
+
+#[derive(Clone)]
+struct PeerCacheEntry {
+    identity: PeerIdentity,
     expires_at: Instant,
 }
 
@@ -165,7 +171,10 @@ impl Proxy {
         };
         match rule {
             Some(rule) => format!("{} {detail}", rule.log_context_with_ip(ip)),
-            None => format!("device=unmatched mac=unknown ip={ip} {detail}"),
+            None => format!(
+                "{} {detail}",
+                unmatched_context(None, None, ip, "configured_rule_missing")
+            ),
         }
     }
 
@@ -194,49 +203,53 @@ impl Proxy {
         ) {
             return Ok(client.clone());
         }
-        let cached = self.peer_cache.lock().await.get(&peer).copied();
+        let cached = self.peer_cache.lock().await.get(&peer).cloned();
         if let Some(entry) = cached.filter(|entry| entry.expires_at > Instant::now()) {
             return self
                 .clients
                 .iter()
                 .find(|client| {
-                    matches!(client.selector, ClientSelector::Mac(value) if value == entry.mac)
+                    matches!(client.selector, ClientSelector::Mac(value) if value == entry.identity.mac)
                 })
                 .cloned()
                 .ok_or_else(|| {
-                    format!(
-                        "device=unmatched mac={} ip={peer} lookup=cache",
-                        mac_label(entry.mac),
+                    unmatched_context(
+                        entry.identity.hostname.as_deref(),
+                        Some(entry.identity.mac),
+                        peer,
+                        "cache",
                     )
                 });
         }
         let arp_path = self.arp_path.clone();
         let dhcp_leases_path = self.dhcp_leases_path.clone();
-        let mac = tokio::task::spawn_blocking(move || {
+        let identity = tokio::task::spawn_blocking(move || {
             neighbor_mac_for(&arp_path, &dhcp_leases_path, peer)
         })
         .await
-        .map_err(|error| format!("device=unmatched mac=unknown ip={peer} lookup=task_{error}"))?;
-        let Some((mac, lookup)) = mac else {
-            return Err(format!(
-                "device=unmatched mac=unknown ip={peer} lookup=none"
-            ));
+        .map_err(|error| unmatched_context(None, None, peer, &format!("task_{error}")))?;
+        let Some((identity, lookup)) = identity else {
+            return Err(unmatched_context(None, None, peer, "none"));
         };
         self.peer_cache.lock().await.insert(
             peer,
             PeerCacheEntry {
-                mac,
+                identity: identity.clone(),
                 expires_at: Instant::now() + PEER_CACHE_TTL,
             },
         );
         self.clients
             .iter()
-            .find(|client| matches!(client.selector, ClientSelector::Mac(value) if value == mac))
+            .find(|client| {
+                matches!(client.selector, ClientSelector::Mac(value) if value == identity.mac)
+            })
             .cloned()
             .ok_or_else(|| {
-                format!(
-                    "device=unmatched mac={} ip={peer} lookup={lookup}",
-                    mac_label(mac),
+                unmatched_context(
+                    identity.hostname.as_deref(),
+                    Some(identity.mac),
+                    peer,
+                    lookup,
                 )
             })
     }
@@ -377,6 +390,7 @@ impl Proxy {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_h2_stream(
         &self,
         request: Request<h2::RecvStream>,
@@ -668,6 +682,7 @@ impl Proxy {
         Ok(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn exchange_upstream(
         &self,
         method: &Method,
@@ -965,8 +980,7 @@ fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<[u8; 6]> {
         })
 }
 
-fn dhcp_lease_mac_for(path: &Path, address: Ipv4Addr) -> Option<[u8; 6]> {
-    let table = std::fs::read_to_string(path).ok()?;
+fn dhcp_lease_identity_from(table: &str, address: Ipv4Addr) -> Option<PeerIdentity> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -980,28 +994,86 @@ fn dhcp_lease_mac_for(path: &Path, address: Ipv4Addr) -> Option<[u8; 6]> {
         if expires != 0 && expires <= now {
             return None;
         }
-        ClientSelector::parse_mac(columns[1])
-            .ok()
-            .and_then(|selector| match selector {
-                ClientSelector::Mac(mac) => Some(mac),
-                ClientSelector::Ipv4(_) => None,
-            })
+        let mac =
+            ClientSelector::parse_mac(columns[1])
+                .ok()
+                .and_then(|selector| match selector {
+                    ClientSelector::Mac(mac) => Some(mac),
+                    ClientSelector::Ipv4(_) => None,
+                })?;
+        let hostname = columns
+            .get(3)
+            .filter(|value| !value.is_empty() && **value != "*")
+            .map(|value| (*value).to_owned());
+        Some(PeerIdentity { mac, hostname })
     })
+}
+
+fn dhcp_lease_identity_for(path: &Path, address: Ipv4Addr) -> Option<PeerIdentity> {
+    let table = std::fs::read_to_string(path).ok()?;
+    dhcp_lease_identity_from(&table, address)
 }
 
 fn mac_label(mac: [u8; 6]) -> String {
     ClientSelector::Mac(mac).label().to_uppercase()
 }
 
+fn safe_device_name(hostname: Option<&str>) -> String {
+    hostname
+        .filter(|value| !value.is_empty() && *value != "*")
+        .unwrap_or("unknown")
+        .chars()
+        .map(|character| {
+            if character == '"' || character == '\\' || character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(80)
+        .collect()
+}
+
+fn unmatched_context(
+    hostname: Option<&str>,
+    mac: Option<[u8; 6]>,
+    ip: impl std::fmt::Display,
+    lookup: &str,
+) -> String {
+    let device = safe_device_name(hostname);
+    let mac = mac.map(mac_label).unwrap_or_else(|| "unknown".into());
+    format!("device=\"{device}\" matched=false mac={mac} ip={ip} lookup={lookup}")
+}
+
 fn neighbor_mac_for(
     arp_path: &Path,
     dhcp_leases_path: &Path,
     address: Ipv4Addr,
-) -> Option<([u8; 6], &'static str)> {
-    dhcp_lease_mac_for(dhcp_leases_path, address)
-        .map(|mac| (mac, "dhcp_lease"))
-        .or_else(|| arp_mac_for(arp_path, address).map(|mac| (mac, "arp")))
-        .or_else(|| ip_neigh_mac_for(address).map(|mac| (mac, "ip_neigh")))
+) -> Option<(PeerIdentity, &'static str)> {
+    dhcp_lease_identity_for(dhcp_leases_path, address)
+        .map(|identity| (identity, "dhcp_lease"))
+        .or_else(|| {
+            arp_mac_for(arp_path, address).map(|mac| {
+                (
+                    PeerIdentity {
+                        mac,
+                        hostname: None,
+                    },
+                    "arp",
+                )
+            })
+        })
+        .or_else(|| {
+            ip_neigh_mac_for(address).map(|mac| {
+                (
+                    PeerIdentity {
+                        mac,
+                        hostname: None,
+                    },
+                    "ip_neigh",
+                )
+            })
+        })
 }
 
 async fn exchange_h2(
@@ -1154,6 +1226,46 @@ impl std::fmt::Display for ProxyError {
 impl std::error::Error for ProxyError {}
 
 #[cfg(test)]
+mod peer_identity_tests {
+    use super::{dhcp_lease_identity_from, unmatched_context};
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn includes_dhcp_hostname_for_an_unmatched_device() {
+        let address = Ipv4Addr::new(192, 168, 1, 139);
+        let identity = dhcp_lease_identity_from(
+            "0 24:27:30:d9:27:10 192.168.1.139 midea_ac_0049 *\n",
+            address,
+        )
+        .unwrap();
+
+        assert_eq!(identity.hostname.as_deref(), Some("midea_ac_0049"));
+        assert_eq!(
+            unmatched_context(
+                identity.hostname.as_deref(),
+                Some(identity.mac),
+                address,
+                "dhcp_lease",
+            ),
+            "device=\"midea_ac_0049\" matched=false mac=24:27:30:D9:27:10 ip=192.168.1.139 lookup=dhcp_lease"
+        );
+    }
+
+    #[test]
+    fn uses_unknown_when_the_dhcp_hostname_is_absent() {
+        let address = Ipv4Addr::new(192, 168, 1, 140);
+        let identity =
+            dhcp_lease_identity_from("0 02:11:22:33:44:55 192.168.1.140 * *\n", address).unwrap();
+
+        assert_eq!(identity.hostname, None);
+        assert_eq!(
+            unmatched_context(None, Some(identity.mac), address, "cache"),
+            "device=\"unknown\" matched=false mac=02:11:22:33:44:55 ip=192.168.1.140 lookup=cache"
+        );
+    }
+}
+
+#[cfg(test)]
 mod error_tests {
     use super::{connect_outbound, exchange_h2};
     use bytes::Bytes;
@@ -1167,27 +1279,27 @@ mod error_tests {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(async move {
             let mut connection = h2::server::handshake(server_io).await.unwrap();
-            let (mut request, mut respond) = connection.accept().await.unwrap().unwrap();
-            assert_eq!(request.method(), Method::POST);
-            assert_eq!(request.uri().path(), "/clls/wloc");
-            let mut received = Vec::new();
-            while let Some(chunk) = request.body_mut().data().await {
-                let chunk = chunk.unwrap();
-                received.extend_from_slice(&chunk);
-                request
-                    .body_mut()
-                    .flow_control()
-                    .release_capacity(chunk.len())
-                    .unwrap();
+            while let Some(stream) = connection.accept().await {
+                let (mut request, mut respond) = stream.unwrap();
+                tokio::spawn(async move {
+                    assert_eq!(request.method(), Method::POST);
+                    assert_eq!(request.uri().path(), "/clls/wloc");
+                    let mut received = Vec::new();
+                    while let Some(chunk) = request.body_mut().data().await {
+                        let chunk = chunk.unwrap();
+                        received.extend_from_slice(&chunk);
+                        request
+                            .body_mut()
+                            .flow_control()
+                            .release_capacity(chunk.len())
+                            .unwrap();
+                    }
+                    assert_eq!(received, b"request");
+                    let response = Response::builder().status(200).body(()).unwrap();
+                    let mut send = respond.send_response(response, false).unwrap();
+                    send.send_data(Bytes::from_static(b"reply"), true).unwrap();
+                });
             }
-            assert_eq!(received, b"request");
-            let response = Response::builder().status(200).body(()).unwrap();
-            let mut send = respond.send_response(response, false).unwrap();
-            send.send_data(Bytes::from_static(b"reply"), true).unwrap();
-            drop(send);
-            drop(request);
-            connection.graceful_shutdown();
-            while connection.accept().await.is_some() {}
         });
         let (sender, connection) = h2::client::handshake(client_io).await.unwrap();
         let driver = tokio::spawn(connection);

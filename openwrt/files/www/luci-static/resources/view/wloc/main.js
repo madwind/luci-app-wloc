@@ -137,7 +137,7 @@ return view.extend({
 		};
 		option = settings.option(form.Value, 'listen_port', _('Local listen port'));
 		option.datatype = 'port';
-		option.default = '28443';
+		option.default = '61520';
 		option.description = _('Startup stops safely if the selected port is already occupied.');
 		option.rmempty = false;
 		option.description = _('Normally this should not be changed. Only enabled devices connecting to Apple WLOC over TCP 443 are intercepted.');
@@ -184,7 +184,7 @@ return view.extend({
 			var mac = (lease.macaddr || lease.mac || '').toUpperCase();
 			var ip = lease.ipaddr || lease.ip || '';
 			if (mac)
-				macOption.value(mac, '%s — %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' — ' + ip : ''));
+				macOption.value(mac, '%s - %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' - ' + ip : ''));
 		});
 	macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
 			var widget = form.Value.prototype.renderWidget.apply(this, arguments);
