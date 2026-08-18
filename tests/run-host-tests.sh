@@ -60,6 +60,8 @@ grep -q 'max_concurrent_streams(2)' src/proxy.rs
 grep -q 'json_add_boolean path_conflict' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'service_reason' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'status.path_conflict' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'serviceStatusOption.rmempty = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'caOption.rmempty = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'runtime_log_enabled:0' openwrt/files/usr/libexec/rpcd/luci.wloc
 ! grep -q 'logread -e wlocd' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'Current-session in-memory log' openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -83,9 +85,9 @@ listen_port_in_use 28443 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.5$' Makefile
+grep -q '^PKG_VERSION:=0.1.6$' Makefile
 grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.5"$' Cargo.toml
+grep -q '^version = "0.1.6"$' Cargo.toml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile

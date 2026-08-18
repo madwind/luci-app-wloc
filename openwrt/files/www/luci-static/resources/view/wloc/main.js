@@ -117,7 +117,7 @@ return view.extend({
 		option.default = '0';
 		option.rmempty = false;
 		var serviceStatusOption = settings.option(form.DummyValue, '_service_status', _('Status'));
-		serviceStatusOption.rmempty = false;
+		serviceStatusOption.rmempty = true;
 		serviceStatusOption.cfgvalue = function() { return 'status'; };
 		serviceStatusOption.renderWidget = function() {
 			return E('div', { 'class': 'wloc-status-control' }, [
@@ -146,7 +146,7 @@ return view.extend({
 		option.rmempty = false;
 		option.description = _('Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates.');
 		var caOption = settings.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
-		caOption.rmempty = false;
+		caOption.rmempty = true;
 		caOption.cfgvalue = function() { return 'certificate'; };
 		caOption.renderWidget = function() {
 			return E('div', { 'class': 'wloc-ca-control' }, [
