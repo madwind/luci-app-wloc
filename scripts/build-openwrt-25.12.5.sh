@@ -246,6 +246,8 @@ else
 	exit 1
 fi
 
-bash "$PROJECT/tests/run-host-tests.sh"
+# Host tests run in the dedicated WLOC / Host checks workflow. Keep the
+# package build independent so a host-only test failure does not discard a
+# successfully built APK.
 (cd "$DIST_DIR" && sha256sum "$(basename "$APK")") | tee "$APK.sha256"
 echo "READY: $APK"

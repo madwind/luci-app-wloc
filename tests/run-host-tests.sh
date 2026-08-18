@@ -293,7 +293,8 @@ grep -q 'write_atomic' src/status.rs
 grep -q 'update_detail_lines' src/proxy.rs
 grep -q 'upstream_reused' src/proxy.rs
 grep -q 'EXPECTED_APK=' scripts/build-openwrt-25.12.5.sh
-grep -Fq 'bash "$PROJECT/tests/run-host-tests.sh"' scripts/build-openwrt-25.12.5.sh
+! grep -Fq 'bash "$PROJECT/tests/run-host-tests.sh"' scripts/build-openwrt-25.12.5.sh
+grep -Fq 'run: bash ./tests/run-host-tests.sh' .github/workflows/ci.yml
 grep -q 'x86_64-unknown-linux-musl' Makefile scripts/build-openwrt-25.12.5.sh
 grep -q 'SDK_SHA256=0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c' scripts/build-openwrt-25.12.5.sh
 grep -q 'matrix:' .github/workflows/openwrt-build.yml
