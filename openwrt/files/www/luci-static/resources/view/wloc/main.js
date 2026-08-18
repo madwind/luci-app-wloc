@@ -100,11 +100,31 @@ return view.extend({
 		var map = new form.Map('wloc', _('WLOC'),
 			_('Version %s · Assign an independent Apple WLOC location to each authorized device.').format(initialStatus.version || _('unknown')));
 
+		var profileUrl = '/wloc-ca.mobileconfig';
 		var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
 		settings.anonymous = true;
 		var option = settings.option(form.Flag, 'enabled', _('Enable location interception'));
 		option.default = '0';
 		option.rmempty = false;
+		var serviceStatusOption = settings.option(form.DummyValue, '_service_status', _('Status'));
+		serviceStatusOption.rmempty = false;
+		serviceStatusOption.cfgvalue = function() { return 'status'; };
+		serviceStatusOption.renderWidget = function() {
+			return E('div', { 'class': 'wloc-status-control' }, [
+				statusNode,
+				actionButton.call(this, _('Restart'), 'cbi-button-action', function() {
+					return notifyAction(callRestart(), function(status) {
+						var priority = status.prerouting_priority;
+						var found = status.detected_priorities || _('none');
+						if (priority && truthy(status.running) && !status.service_reason)
+							return _('Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s.').format(priority, found);
+						if (priority)
+							return _('Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s').format(priority, found, status.service_reason || _('interception is not ready'));
+						return _('Restart failed: %s').format(status.service_reason || _('no safe prerouting priority was found'));
+					});
+				})
+			]);
+		};
 		option = settings.option(form.Value, 'listen_port', _('Local listen port'));
 		option.datatype = 'port';
 		option.default = '28443';
@@ -115,6 +135,21 @@ return view.extend({
 		option.default = '0';
 		option.rmempty = false;
 		option.description = _('Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates.');
+		var caOption = settings.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
+		caOption.rmempty = false;
+		caOption.cfgvalue = function() { return 'certificate'; };
+		caOption.renderWidget = function() {
+			return E('div', { 'class': 'wloc-ca-control' }, [
+				E('p', {}, _('After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings.')),
+				E('div', { 'class': 'wloc-actions' }, [
+					E('a', { 'class': 'cbi-button cbi-button-action', 'href': profileUrl }, _('Download CA profile')),
+					actionButton.call(this, _('Regenerate CA'), 'cbi-button-negative', function() {
+						return notifyAction(callRegenerate(), _('The Root CA was regenerated. Reinstall and trust it on the iPhone.'));
+					})
+				]),
+				fingerprintNode
+			]);
+		};
 
 		var clients = map.section(form.GridSection, 'client', _('Device location rules'));
 		clients.anonymous = true;
@@ -343,13 +378,9 @@ return view.extend({
 			var state = running ? (healthy ? _('Running') : _('Running, interception unavailable'))
 				: (truthy(status.enabled) ? _('Stopped') : _('Disabled'));
 			var reason = serviceReason(status, running, healthy);
-			statusNode.replaceChildren(
-				E('dl', { 'class': 'wloc-service-list' }, [
-					E('div', {}, [ E('dt', {}, _('Service')), E('dd', { 'class': healthy ? 'is-ok' : 'is-idle' }, state) ])
-				])
-			);
+			statusNode.replaceChildren(E('span', { 'class': healthy ? 'is-ok' : 'is-idle' }, state));
 			if (reason)
-				statusNode.appendChild(E('p', { 'class': 'wloc-status-reason' }, reason));
+				statusNode.appendChild(E('span', { 'class': 'wloc-status-reason' }, reason));
 			fingerprintNode.replaceChildren(
 				E('span', {}, _('Root CA SHA-256')),
 				E('code', {}, status.fingerprint || _('Generated on first start'))
@@ -394,6 +425,8 @@ return view.extend({
 				renderStatus(status);
 				renderClientActivity(status);
 				renderRuntimeLog(status, status.runtime_log || '');
+			}).catch(function() {
+				// Keep the last known state visible when a single poll request fails.
 			});
 		}
 
@@ -410,41 +443,20 @@ return view.extend({
 		renderStatus(initialStatus);
 		renderRuntimeLog(initialStatus, initialLogs);
 		poll.add(refresh, 10);
+		document.addEventListener('visibilitychange', function() {
+			if (document.visibilityState !== 'hidden')
+				refresh();
+		});
+		window.addEventListener('focus', refresh);
 
 		return map.render().then(function(formNode) {
 			renderClientActivity(initialStatus);
 			scrollRuntimeLogToBottom();
-			var profileUrl = '/wloc-ca.mobileconfig';
 			return E('div', { 'class': 'wloc-console' }, [
-				E('style', {}, '.wloc-status-reason{margin:.75rem 0 0;padding:.65rem .8rem;border-left:3px solid var(--wloc-warn);background:var(--wloc-surface);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}'),
+				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}'),
+				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
 				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
 				formNode,
-				E('div', { 'class': 'wloc-grid' }, [
-					E('section', { 'class': 'wloc-card' }, [
-						E('h3', {}, _('Service status')),
-						statusNode,
-						E('div', { 'class': 'wloc-actions' }, [
-							actionButton.call(this, _('Restart'), 'cbi-button-action', function() {
-							return notifyAction(callRestart(), function(status) {
-									var priority = status.prerouting_priority;
-									var found = status.detected_priorities || _('none');
-									if (priority && truthy(status.running) && !status.service_reason)
-										return _('Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s.').format(priority, found);
-									if (priority)
-										return _('Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s').format(priority, found, status.service_reason || _('interception is not ready'));
-									return _('Restart failed: %s').format(status.service_reason || _('no safe prerouting priority was found'));
-								});
-							})
-						])
-					]),
-					E('section', { 'class': 'wloc-card wloc-danger' }, [ E('h3', {}, _('iPhone root certificate')), E('p', {}, _('After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings.')),
-						fingerprintNode,
-						E('div', { 'class': 'wloc-actions' }, [
-							E('a', { 'class': 'cbi-button cbi-button-action', 'href': profileUrl }, _('Download CA profile')),
-							actionButton.call(this, _('Regenerate CA'), 'cbi-button-negative', function() { return notifyAction(callRegenerate(), _('The Root CA was regenerated. Reinstall and trust it on the iPhone.')); })
-						])
-					])
-				]),
 				E('section', { 'class': 'wloc-card' }, [
 					E('h3', {}, _('Current-session in-memory log')),
 					E('p', {}, _('Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start.')),
