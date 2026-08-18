@@ -12,7 +12,7 @@ name = "wlocd"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 bytes = "=1.12.1"
 h2 = "=0.4.15"
 http = "=1.5.0"
