@@ -1,0 +1,39 @@
+#!/bin/sh
+
+# Seed only missing values so upgrades never overwrite a configured instance.
+uci -q get wloc.main >/dev/null \
+	|| uci -q set wloc.main=wloc
+uci -q get wloc.main.enabled >/dev/null \
+	|| uci -q set wloc.main.enabled='0'
+listen_port="$(uci -q get wloc.main.listen_port || true)"
+case "$listen_port" in
+	''|8443|58443) uci -q set wloc.main.listen_port='28443';;
+esac
+uci -q get wloc.main.runtime_log >/dev/null \
+	|| uci -q set wloc.main.runtime_log='0'
+
+# Upgrade a configured 0.1.x single-IP rule when its MAC can be resolved.
+if ! uci -q show wloc | grep -q "=client$"; then
+	old_ip="$(uci -q get wloc.main.target_ipv4 || true)"
+	old_lat="$(uci -q get wloc.main.latitude || true)"
+	old_lon="$(uci -q get wloc.main.longitude || true)"
+	old_mac=''
+	if [ -n "$old_ip" ]; then
+		old_mac="$(awk -v ip="$old_ip" 'tolower($3) == tolower(ip) { print tolower($2); exit }' /tmp/dhcp.leases 2>/dev/null || true)"
+		[ -n "$old_mac" ] || old_mac="$(ip neigh show to "$old_ip" 2>/dev/null | sed -n 's/.* lladdr \([0-9A-Fa-f:]*\).*/\1/p' | head -n 1 | tr 'A-F' 'a-f')"
+	fi
+	case "$old_mac" in
+		[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f])
+			if [ -n "$old_lat" ] && [ -n "$old_lon" ]; then
+				section="$(uci -q add wloc client)"
+				uci -q set "wloc.$section.enabled=1"
+				uci -q set "wloc.$section.name=Migrated device"
+				uci -q set "wloc.$section.mac=$old_mac"
+				uci -q set "wloc.$section.latitude=$old_lat"
+				uci -q set "wloc.$section.longitude=$old_lon"
+			fi
+			;;
+	esac
+fi
+uci -q commit wloc
+exit 0

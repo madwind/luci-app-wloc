@@ -1,0 +1,36 @@
+name: WLOC / Host checks
+
+run-name: Host checks / ${{ github.event_name }} / ${{ github.ref_name }}
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Rust quality and host tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          components: clippy,rustfmt
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-ci-${{ runner.os }}-
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Host tests
+        run: bash ./tests/run-host-tests.sh

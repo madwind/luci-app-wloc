@@ -1,0 +1,18 @@
+{
+  "luci-app-wloc": {
+    "description": "Manage wloc",
+    "read": {
+      "ubus": {
+        "luci.wloc": [ "status", "test", "logs" ],
+        "luci-rpc": [ "getDHCPLeases" ]
+      },
+      "uci": [ "wloc" ]
+    },
+    "write": {
+      "ubus": {
+        "luci.wloc": [ "restart", "disable", "regenerate_ca", "cleanup" ]
+      },
+      "uci": [ "wloc" ]
+    }
+  }
+}

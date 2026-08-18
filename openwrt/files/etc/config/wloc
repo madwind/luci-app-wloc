@@ -1,0 +1,4 @@
+config wloc 'main'
+	option enabled '0'
+	option listen_port '28443'
+	option runtime_log '0'
