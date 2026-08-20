@@ -270,8 +270,14 @@ rm -f "$order_state" "$order_log"
 grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc/rules.sh
 grep -q "flush set inet \$TABLE \$AP_INTERFACE_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
-grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'rules.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.TypedSection, 'wifi'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
+grep -q 'config_foreach append_rule_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -299,6 +305,7 @@ grep -q "_('Country: %s')" openwrt/files/www/luci-static/resources/view/wloc/mai
 grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q "grep -q '=device\$'" openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'last_error' openwrt/files/usr/libexec/rpcd/luci.wloc src/status.rs
 grep -q -- '--rule-name' openwrt/files/etc/init.d/wloc src/config.rs
 grep -q 'rule_name=\\"{}\\" device={} network={}' src/config.rs

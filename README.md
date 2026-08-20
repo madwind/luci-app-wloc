@@ -7,12 +7,13 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-Enabled rules are evaluated in their UCI/LuCI order and the first matching rule
-wins. A rule can select one MAC or all wireless devices, and can accept any
-wireless source, match a configured Wi-Fi name (SSID), or select one AP by
-BSSID. SSID matching includes every AP broadcasting that name; BSSID remains
-available when one radio must stay separate. Requests
-without a matching rule pass through unchanged. Use this package only on
+WiFi/AP groups are configured first. Each group can accept any wireless source,
+match a configured Wi-Fi name (SSID), or select one AP by BSSID; SSID matching
+includes every AP broadcasting that name, while BSSID keeps one radio separate.
+Device conditions are added underneath their WiFi/AP group and can select one
+MAC or all wireless devices. Enabled conditions are evaluated by parent group
+order and then child device order; the first match wins. Requests without a
+matching condition pass through unchanged. Use this package only on
 devices you own or are authorized to test.
 
 The nftables rules put explicitly selected devices in a MAC set and AP-wide
@@ -73,13 +74,15 @@ Copy the APK for your architecture to the router and install it:
 apk add --allow-untrusted ./luci-app-wloc-*.apk
 ```
 
-Open **Services > WLOC** in LuCI, add rules, drag them into priority order, enter
-each fixed WGS84 latitude and longitude baseline, then save and apply. On every service start,
+Open **Services > WLOC** in LuCI, add a WiFi/AP group first, then add device
+conditions underneath it. The child device grid can be dragged into priority
+order; parent groups are evaluated in their displayed UCI order. Enter each
+fixed WGS84 latitude and longitude baseline, then save and apply. On every service start,
 the first real location establishes the reference. Every later response uses
 the fixed virtual baseline plus the difference between the current and previous
 real location. The upstream accuracy is preserved unchanged. Install the
 generated CA profile on that device and explicitly enable full trust in iOS
-Certificate Trust Settings. Each rule can use the router's direct
+Certificate Trust Settings. Each device condition can use the router's direct
 connection, an HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its
 Apple WLOC traffic.
 

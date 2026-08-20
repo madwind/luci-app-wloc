@@ -68,7 +68,7 @@ emit_status() {
 	local configured enabled version table_dump rules_present attempts intercepted counters conflict order_conflict prerouting_priority detected_priorities daemon_running service_reason
 	load_runtime_state
 	configured=0
-	uci -q show wloc | grep -q '=rule$' && configured=1
+	uci -q show wloc | grep -q '=device$' && configured=1
 	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
