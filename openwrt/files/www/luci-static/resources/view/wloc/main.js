@@ -203,12 +203,11 @@ return view.extend({
 		wifiNetworkOption.rmempty = false;
 		wifiNetworkOption.description = _('This parent selects the wireless source. Add device conditions below it.');
 
-		var wifiSsidOption = wifiSections.option(form.Value, 'ssid', _('WiFi name (SSID)'));
+		var wifiSsidOption = wifiSections.option(form.ListValue, 'ssid', _('WiFi name (SSID)'));
 		wifiSsidOption.depends('network', 'ssid');
 		wifiSsidOption.rmempty = false;
 		wifiSsidOption.retain = true;
 		wifiSsidOption.description = _('All APs broadcasting this name belong to the same WiFi / AP group.');
-		wifiSsidOption.placeholder = _('Select or enter an SSID');
 		var knownSsids = [];
 		accessPoints.forEach(function(ap) {
 			var ssid = String(ap.ssid || '');
@@ -236,7 +235,7 @@ return view.extend({
 				? true : _('Enter a valid WiFi name (1-32 characters).');
 		};
 
-		var wifiBssidOption = wifiSections.option(form.Value, 'bssid', _('Access point (BSSID)'));
+		var wifiBssidOption = wifiSections.option(form.ListValue, 'bssid', _('Access point (BSSID)'));
 		wifiBssidOption.depends('network', 'bssid');
 		wifiBssidOption.rmempty = false;
 		wifiBssidOption.description = _('Select one AP by BSSID. A BSSID identifies one radio, even when several radios use the same WiFi name.');

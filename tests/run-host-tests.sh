@@ -274,6 +274,8 @@ grep -q "form.TypedSection, 'wifi'" openwrt/files/www/luci-static/resources/view
 ! grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.ListValue, 'ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
