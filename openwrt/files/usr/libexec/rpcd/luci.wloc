@@ -68,14 +68,13 @@ emit_status() {
 	local configured enabled version table_dump rules_present attempts intercepted counters conflict order_conflict prerouting_priority detected_priorities daemon_running service_reason
 	load_runtime_state
 	configured=0
-	uci -q show wloc | grep -q '=client$' && configured=1
-	[ "$configured" -eq 1 ] || { uci -q get wloc.main.target_ipv4 >/dev/null && configured=1; }
+	uci -q show wloc | grep -q '=rule$' && configured=1
 	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
 	table_dump="$(nft list table inet wloc 2>/dev/null)" && rules_present=1 || rules_present=0
 	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned redirect|wloc owned MAC redirect/ {
+		/wloc owned MAC redirect|wloc owned AP redirect/ {
 			if (match($0, /counter packets [0-9]+/)) {
 				value = substr($0, RSTART + 16, RLENGTH - 16)
 				attempts += value
@@ -171,7 +170,7 @@ emit_test() {
 	local table_dump attempts intercepted counters
 	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
 	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned redirect|wloc owned MAC redirect/ {
+		/wloc owned MAC redirect|wloc owned AP redirect/ {
 			if (match($0, /counter packets [0-9]+/)) {
 				value = substr($0, RSTART + 16, RLENGTH - 16)
 				attempts += value
@@ -191,15 +190,43 @@ emit_test() {
 	json_dump
 }
 
+emit_access_points() {
+	local object status ssid bssid interface
+	json_init
+	json_add_array access_points
+	for object in $(ubus -S -t 3 list 'hostapd.*' 2>/dev/null || true); do
+		case "$object" in hostapd.*) :;; *) continue;; esac
+		status="$(ubus -S -t 3 call "$object" get_status '{}' 2>/dev/null || true)"
+		[ -n "$status" ] || continue
+		ssid="$(printf '%s\n' "$status" | jsonfilter -e '@.ssid' 2>/dev/null || true)"
+		bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
+		interface="$(printf '%s\n' "$status" | jsonfilter -e '@.interface' 2>/dev/null || true)"
+		[ -n "$interface" ] || interface="$(printf '%s\n' "$status" | jsonfilter -e '@.ifname' 2>/dev/null || true)"
+		[ -n "$interface" ] || interface="${object#hostapd.}"
+		case "$bssid" in
+			[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+			*) continue;;
+		esac
+		json_add_object
+		json_add_string ssid "$ssid"
+		json_add_string bssid "$bssid"
+		json_add_string interface "$interface"
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+
 case "$1" in
 list)
 	json_init
-	for method in status restart disable regenerate_ca cleanup test logs; do json_add_object "$method"; json_close_object; done
+	for method in status access_points restart disable regenerate_ca cleanup test logs; do json_add_object "$method"; json_close_object; done
 	json_dump
 	;;
 call)
 	case "$2" in
 	status) emit_status;;
+	access_points) emit_access_points;;
 	restart)
 		"$INIT" restart >/dev/null 2>&1
 		sleep 1

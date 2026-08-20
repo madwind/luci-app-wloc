@@ -50,12 +50,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
-          release="$(awk -F':=' '/^PKG_RELEASE:=/ { print $2; exit }' Makefile)"
+          . ./version.env
           source_apk="$(find "dist/${{ matrix.target }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
-          asset="luci-app-wloc-${version}-r${release}-${{ matrix.target }}.apk"
+          asset="luci-app-wloc-${WLOC_VERSION}-r${WLOC_RELEASE}-${{ matrix.target }}.apk"
           cp "$source_apk" "release-assets/$asset"
           (cd release-assets && sha256sum "$asset" >"$asset.sha256")
 
@@ -97,11 +96,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             release_tag="$GITHUB_REF_NAME"
           else
-            version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
-            package_release="$(awk -F':=' '/^PKG_RELEASE:=/ { print $2; exit }' Makefile)"
-            test -n "$version"
-            test -n "$package_release"
-            release_tag="v${version}-r${package_release}"
+            . ./version.env
+            release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
           fi
           if gh release view "$release_tag" >/dev/null 2>&1; then
             gh release upload "$release_tag" release-assets/* --clobber

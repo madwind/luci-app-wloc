@@ -12,7 +12,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::client_hello::peek_sni;
-use crate::config::{ClientSelector, ClientTarget, OutboundProxy};
+use crate::config::{LocationRule, MacAddress, NetworkSelector, OutboundProxy};
+use crate::network_source::HostapdNetworkSource;
 use crate::status::Status;
 use crate::wloc::{
     patch_response_following, request_wifi_devices, valid_request, LocationFollower, PatchTarget,
@@ -30,7 +31,7 @@ const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct PeerIdentity {
-    mac: [u8; 6],
+    mac: MacAddress,
     hostname: Option<String>,
 }
 
@@ -106,14 +107,32 @@ struct H2Entry {
     sender: h2::client::SendRequest<Bytes>,
 }
 
+fn first_matching_rule(
+    rules: &[LocationRule],
+    mac: MacAddress,
+    bssid: Option<MacAddress>,
+) -> Option<&LocationRule> {
+    rules
+        .iter()
+        .find(|rule| rule.device.matches(mac) && rule.network.matches(bssid))
+}
+
+fn network_lookup_required(rules: &[LocationRule], mac: MacAddress) -> bool {
+    rules
+        .iter()
+        .find(|rule| rule.device.matches(mac))
+        .is_some_and(|rule| matches!(rule.network, NetworkSelector::Bssid(_)))
+}
+
 #[derive(Clone)]
 pub struct Proxy {
     acceptor: TlsAcceptor,
     connector: TlsConnector,
-    clients: Vec<ClientTarget>,
+    rules: Vec<LocationRule>,
     arp_path: PathBuf,
     dhcp_leases_path: PathBuf,
     peer_cache: Arc<tokio::sync::Mutex<HashMap<Ipv4Addr, PeerCacheEntry>>>,
+    network_source: HostapdNetworkSource,
     listen_port: u16,
     status: Arc<Status>,
     h2_pool: Arc<tokio::sync::Mutex<HashMap<String, H2Entry>>>,
@@ -126,11 +145,11 @@ impl Proxy {
     pub fn new(
         server: rustls::ServerConfig,
         client: rustls::ClientConfig,
-        clients: Vec<ClientTarget>,
+        rules: Vec<LocationRule>,
         listen_port: u16,
         status: Arc<Status>,
     ) -> Self {
-        let followers = clients
+        let followers = rules
             .iter()
             .map(|client| {
                 (
@@ -144,7 +163,7 @@ impl Proxy {
         Self {
             acceptor: TlsAcceptor::from(Arc::new(server)),
             connector: TlsConnector::from(Arc::new(client)),
-            clients,
+            rules,
             arp_path: std::env::var_os("WLOC_ARP_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/proc/net/arp")),
@@ -152,6 +171,7 @@ impl Proxy {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/tmp/dhcp.leases")),
             peer_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            network_source: HostapdNetworkSource::new(),
             listen_port,
             status,
             h2_pool: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -162,7 +182,7 @@ impl Proxy {
     }
 
     fn client_detail(&self, client: &str, ip: IpAddr, detail: String) -> String {
-        let rule = self.clients.iter().find(|target| target.id == client);
+        let rule = self.rules.iter().find(|target| target.id == client);
         let rule_token = format!("rule={client}");
         let detail = if detail.split_whitespace().any(|token| token == rule_token) {
             detail
@@ -178,58 +198,20 @@ impl Proxy {
         }
     }
 
-    fn configured_mac_labels(&self) -> String {
-        let labels = self
-            .clients
-            .iter()
-            .filter_map(|client| match client.selector {
-                ClientSelector::Mac(mac) => Some(mac_label(mac)),
-                ClientSelector::Ipv4(_) => None,
-            })
-            .collect::<Vec<_>>();
-        if labels.is_empty() {
-            "none".into()
-        } else {
-            labels.join(",")
-        }
-    }
-
-    async fn target_for(&self, peer: IpAddr) -> Result<ClientTarget, String> {
-        let IpAddr::V4(peer) = peer else {
-            return Err("ip=unsupported lookup=unsupported_ip".into());
-        };
-        if let Some(client) = self.clients.iter().find(
-            |client| matches!(client.selector, ClientSelector::Ipv4(address) if address == peer),
-        ) {
-            return Ok(client.clone());
-        }
+    async fn identity_for(&self, peer: Ipv4Addr) -> Result<Option<PeerIdentity>, String> {
         let cached = self.peer_cache.lock().await.get(&peer).cloned();
         if let Some(entry) = cached.filter(|entry| entry.expires_at > Instant::now()) {
-            return self
-                .clients
-                .iter()
-                .find(|client| {
-                    matches!(client.selector, ClientSelector::Mac(value) if value == entry.identity.mac)
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    unmatched_context(
-                        entry.identity.hostname.as_deref(),
-                        Some(entry.identity.mac),
-                        peer,
-                        "cache",
-                    )
-                });
+            return Ok(Some(entry.identity));
         }
         let arp_path = self.arp_path.clone();
         let dhcp_leases_path = self.dhcp_leases_path.clone();
-        let identity = tokio::task::spawn_blocking(move || {
+        let resolved = tokio::task::spawn_blocking(move || {
             neighbor_mac_for(&arp_path, &dhcp_leases_path, peer)
         })
         .await
         .map_err(|error| unmatched_context(None, None, peer, &format!("task_{error}")))?;
-        let Some((identity, lookup)) = identity else {
-            return Err(unmatched_context(None, None, peer, "none"));
+        let Some((identity, _lookup)) = resolved else {
+            return Ok(None);
         };
         self.peer_cache.lock().await.insert(
             peer,
@@ -238,30 +220,61 @@ impl Proxy {
                 expires_at: Instant::now() + PEER_CACHE_TTL,
             },
         );
-        self.clients
-            .iter()
-            .find(|client| {
-                matches!(client.selector, ClientSelector::Mac(value) if value == identity.mac)
-            })
-            .cloned()
-            .ok_or_else(|| {
-                unmatched_context(
-                    identity.hostname.as_deref(),
-                    Some(identity.mac),
-                    peer,
-                    lookup,
-                )
-            })
+        Ok(Some(identity))
+    }
+
+    async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
+        let IpAddr::V4(peer) = peer else {
+            return Ok(None);
+        };
+        let Some(identity) = self.identity_for(peer).await? else {
+            return Ok(None);
+        };
+        let needs_ap = network_lookup_required(&self.rules, identity.mac);
+        let access_point = if needs_ap {
+            match self.network_source.current_for(identity.mac).await {
+                Ok(access_point) => access_point,
+                Err(error) => {
+                    self.status.update_detail(
+                        "network_source_failed",
+                        &unmatched_context(
+                            identity.hostname.as_deref(),
+                            Some(identity.mac),
+                            peer,
+                            "hostapd",
+                        ),
+                        Some(&error),
+                        |_| {},
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok(first_matching_rule(
+            &self.rules,
+            identity.mac,
+            access_point.as_ref().map(|access_point| access_point.bssid),
+        )
+        .cloned())
     }
 
     pub async fn handle(&self, stream: TcpStream) -> Result<(), ProxyError> {
         let peer_address = stream.peer_addr().map_err(ProxyError::io)?;
-        let rule = self.target_for(peer_address.ip()).await.map_err(|detail| {
-            ProxyError::ClientTls(format!(
-                "configured_client_not_found {detail} configured_macs={}",
-                self.configured_mac_labels()
-            ))
-        })?;
+        let rule = self
+            .target_for(peer_address.ip())
+            .await
+            .map_err(|detail| ProxyError::ClientTls(format!("rule_lookup_failed {detail}")))?;
+        let Some(rule) = rule else {
+            self.status.update_detail(
+                "rule_passthrough",
+                &format!("matched=false ip={} action=passthrough", peer_address.ip()),
+                None,
+                |c| c.passthrough(),
+            );
+            return self.tunnel(stream, &OutboundProxy::Direct).await;
+        };
         let client = rule.id.clone();
         let result = self.handle_target(stream, rule, peer_address.ip()).await;
         if let Err(error) = &result {
@@ -283,7 +296,7 @@ impl Proxy {
     async fn handle_target(
         &self,
         stream: TcpStream,
-        rule: ClientTarget,
+        rule: LocationRule,
         ip: IpAddr,
     ) -> Result<(), ProxyError> {
         let client = rule.id;
@@ -946,21 +959,21 @@ async fn remove_h2_generation(
     }
 }
 
-fn arp_mac_for(path: &Path, address: Ipv4Addr) -> Option<[u8; 6]> {
+fn arp_mac_for(path: &Path, address: Ipv4Addr) -> Option<MacAddress> {
     let table = std::fs::read_to_string(path).ok()?;
     for line in table.lines().skip(1) {
         let columns = line.split_whitespace().collect::<Vec<_>>();
         if columns.len() < 4 || columns[0].parse::<Ipv4Addr>().ok() != Some(address) {
             continue;
         }
-        if let Ok(ClientSelector::Mac(mac)) = ClientSelector::parse_mac(columns[3]) {
+        if let Ok(mac) = MacAddress::parse(columns[3]) {
             return Some(mac);
         }
     }
     None
 }
 
-fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<[u8; 6]> {
+fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<MacAddress> {
     let output = std::process::Command::new("ip")
         .args(["neigh", "show", &address.to_string()])
         .output()
@@ -973,11 +986,7 @@ fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<[u8; 6]> {
     columns
         .windows(2)
         .find(|pair| pair[0] == "lladdr")
-        .and_then(|pair| ClientSelector::parse_mac(pair[1]).ok())
-        .and_then(|selector| match selector {
-            ClientSelector::Mac(mac) => Some(mac),
-            ClientSelector::Ipv4(_) => None,
-        })
+        .and_then(|pair| MacAddress::parse(pair[1]).ok())
 }
 
 fn dhcp_lease_identity_from(table: &str, address: Ipv4Addr) -> Option<PeerIdentity> {
@@ -994,13 +1003,7 @@ fn dhcp_lease_identity_from(table: &str, address: Ipv4Addr) -> Option<PeerIdenti
         if expires != 0 && expires <= now {
             return None;
         }
-        let mac =
-            ClientSelector::parse_mac(columns[1])
-                .ok()
-                .and_then(|selector| match selector {
-                    ClientSelector::Mac(mac) => Some(mac),
-                    ClientSelector::Ipv4(_) => None,
-                })?;
+        let mac = MacAddress::parse(columns[1]).ok()?;
         let hostname = columns
             .get(3)
             .filter(|value| !value.is_empty() && **value != "*")
@@ -1014,8 +1017,8 @@ fn dhcp_lease_identity_for(path: &Path, address: Ipv4Addr) -> Option<PeerIdentit
     dhcp_lease_identity_from(&table, address)
 }
 
-fn mac_label(mac: [u8; 6]) -> String {
-    ClientSelector::Mac(mac).label().to_uppercase()
+fn mac_label(mac: MacAddress) -> String {
+    mac.label().to_uppercase()
 }
 
 fn safe_device_name(hostname: Option<&str>) -> String {
@@ -1036,7 +1039,7 @@ fn safe_device_name(hostname: Option<&str>) -> String {
 
 fn unmatched_context(
     hostname: Option<&str>,
-    mac: Option<[u8; 6]>,
+    mac: Option<MacAddress>,
     ip: impl std::fmt::Display,
     lookup: &str,
 ) -> String {
@@ -1227,8 +1230,73 @@ impl std::error::Error for ProxyError {}
 
 #[cfg(test)]
 mod peer_identity_tests {
-    use super::{dhcp_lease_identity_from, unmatched_context};
+    use super::{
+        dhcp_lease_identity_from, first_matching_rule, network_lookup_required, unmatched_context,
+    };
     use std::net::Ipv4Addr;
+
+    use crate::config::{DeviceSelector, LocationRule, MacAddress, NetworkSelector, OutboundProxy};
+    use crate::wloc::PatchTarget;
+
+    fn rule(id: &str, device: DeviceSelector, network: NetworkSelector) -> LocationRule {
+        LocationRule {
+            id: id.into(),
+            name: id.into(),
+            device,
+            network,
+            ssid: None,
+            target: PatchTarget::new(1.0, 2.0).unwrap(),
+            outbound: OutboundProxy::Direct,
+        }
+    }
+
+    #[test]
+    fn first_match_wins_even_when_a_later_rule_is_more_specific() {
+        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
+        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+        let mut rules = vec![
+            rule("all_first", DeviceSelector::All, NetworkSelector::Any),
+            rule(
+                "specific_later",
+                DeviceSelector::Mac(phone),
+                NetworkSelector::Bssid(ap),
+            ),
+        ];
+        assert_eq!(
+            first_matching_rule(&rules, phone, Some(ap)).unwrap().id,
+            "all_first"
+        );
+        rules.reverse();
+        assert_eq!(
+            first_matching_rule(&rules, phone, Some(ap)).unwrap().id,
+            "specific_later"
+        );
+    }
+
+    #[test]
+    fn hostapd_is_only_needed_before_an_any_source_match() {
+        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
+        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+        let any_first = vec![
+            rule("fallback", DeviceSelector::All, NetworkSelector::Any),
+            rule(
+                "ap_later",
+                DeviceSelector::Mac(phone),
+                NetworkSelector::Bssid(ap),
+            ),
+        ];
+        assert!(!network_lookup_required(&any_first, phone));
+
+        let ap_first = vec![
+            rule(
+                "ap_first",
+                DeviceSelector::Mac(phone),
+                NetworkSelector::Bssid(ap),
+            ),
+            rule("fallback", DeviceSelector::All, NetworkSelector::Any),
+        ];
+        assert!(network_lookup_required(&ap_first, phone));
+    }
 
     #[test]
     fn includes_dhcp_hostname_for_an_unmatched_device() {

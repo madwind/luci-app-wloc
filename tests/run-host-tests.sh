@@ -24,13 +24,13 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 grep -q '^TABLE=wloc$' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q '^CLIENT_SET=target_clients_v4$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^CLIENT_MAC_SET=target_clients_mac$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^AP_INTERFACE_SET=target_ap_interfaces$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_SET=apple_wloc_v4$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DEFAULT_PRIORITY=-105$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^MIN_SAFE_PRIORITY=-199$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_TIMEOUT=15m$' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'redirect to :\$port comment "wloc owned redirect"' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'iifname @\$AP_INTERFACE_SET.*redirect to :\$port comment "wloc owned AP redirect"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'priority \$priority' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^analyze_prerouting_proxies()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^choose_wloc_priority()' openwrt/files/usr/libexec/wloc/rules.sh
@@ -84,17 +84,33 @@ listen_port_in_use 61520 \
 ! listen_port_in_use 61521 \
 	|| { echo 'listen port collision checker rejected an available port' >&2; exit 1; }
 grep -q 'get wloc.main.runtime_log >/dev/null' "$defaults_script"
+. ./version.env
+case "$WLOC_VERSION" in
+	''|*[!0-9A-Za-z.+~-]*) echo 'invalid WLOC_VERSION in version.env' >&2; exit 1;;
+esac
+case "$WLOC_RELEASE" in
+	''|*[!0-9]*) echo 'invalid WLOC_RELEASE in version.env' >&2; exit 1;;
+esac
 grep -q '^PKG_NAME:=luci-app-wloc$' Makefile
-grep -q '^PKG_VERSION:=0.1.8$' Makefile
-grep -q '^PKG_RELEASE:=1$' Makefile
-grep -q '^version = "0.1.8"$' Cargo.toml
+grep -Fq 'include $(CURDIR)/version.env' Makefile
+grep -Fq 'PKG_VERSION:=$(WLOC_VERSION)' Makefile
+grep -Fq 'PKG_RELEASE:=$(WLOC_RELEASE)' Makefile
+grep -q '^version = "0.0.0"$' Cargo.toml
+grep -Fq '. "$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
+grep -Fq 'PACKAGE_VERSION="$WLOC_VERSION"' scripts/build-openwrt-25.12.5.sh
+grep -Fq 'PACKAGE_RELEASE="$WLOC_RELEASE"' scripts/build-openwrt-25.12.5.sh
+grep -Fq '"$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
+[ "$(grep -Fc '. ./version.env' .github/workflows/openwrt-build.yml)" -eq 2 ] \
+	|| { echo 'OpenWrt workflow does not consistently load version.env' >&2; exit 1; }
+! grep -Eq 'awk .*Cargo\.toml|awk .*PKG_(VERSION|RELEASE)' \
+	scripts/build-openwrt-25.12.5.sh .github/workflows/openwrt-build.yml
 ! grep -q 'ca-bundle\|luci-mod-status' Makefile
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
 grep -q '^/etc/config/wloc$' openwrt/files/lib/upgrade/keep.d/luci-app-wloc
 grep -q '"config": "wloc"' openwrt/files/usr/share/ucitrack/luci-app-wloc.json
 grep -q '"init": "wloc"' openwrt/files/usr/share/ucitrack/luci-app-wloc.json
-grep -q 'old_mac=' "$defaults_script"
+! grep -q 'old_mac=\|target_ipv4\|=client' "$defaults_script"
 dns_fixture='Server:         127.0.0.1
 Address:        127.0.0.1:53
 
@@ -105,9 +121,9 @@ parsed_addresses="$(printf '%s\n' "$dns_fixture" \
 	| sed -n '/^Name:[[:space:]]/,$ s/^Address[^:]*:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p')"
 [ "$parsed_addresses" = 140.205.31.96 ] \
 	|| { echo 'BusyBox nslookup parser included a DNS server address' >&2; exit 1; }
-nft_fixture='ip saddr @target_clients_v4 meta l4proto tcp counter packets 7 bytes 420 redirect to :61520 comment "wloc owned redirect"'
+nft_fixture='iifname @target_ap_interfaces meta l4proto tcp counter packets 7 bytes 420 redirect to :61520 comment "wloc owned AP redirect"'
 parsed_counter="$(printf '%s\n' "$nft_fixture" \
-	| sed -n '/wloc owned redirect/ s/.*counter packets \([0-9][0-9]*\).*/\1/p')"
+	| sed -n '/wloc owned AP redirect/ s/.*counter packets \([0-9][0-9]*\).*/\1/p')"
 [ "$parsed_counter" = 7 ] \
 	|| { echo 'nftables diagnostic counter parser failed' >&2; exit 1; }
 rules_script=openwrt/files/usr/libexec/wloc/rules.sh
@@ -121,11 +137,11 @@ valid_mac '02:11:22:33:44:55' \
 ! valid_mac '00:00:00:00:00:00' \
 	|| { echo 'shell MAC validator accepted the zero address' >&2; exit 1; }
 healthy_table_fixture='table inet wloc {
-	set target_clients_v4 {
-		type ipv4_addr
-	}
 	set target_clients_mac {
 		type ether_addr
+	}
+	set target_ap_interfaces {
+		type ifname
 	}
 	set apple_wloc_v4 {
 		type ipv4_addr
@@ -251,10 +267,12 @@ order_fixture="$(printf '%s\n' "$order_fixture" | sed 's/priority mangle - 1/pri
 [ "$(cat "$order_state")" = 1 ] \
 	|| { echo 'nftables order checker did not persist its ordering conflict' >&2; exit 1; }
 rm -f "$order_state" "$order_log"
-grep -q "flush set inet \$TABLE \$CLIENT_SET" openwrt/files/usr/libexec/wloc/rules.sh
 grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc/rules.sh
+grep -q "flush set inet \$TABLE \$AP_INTERFACE_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
-grep -q "form.GridSection, 'client'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'rules.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -267,7 +285,7 @@ grep -q "form.ListValue, 'proxy_type'" openwrt/files/www/luci-static/resources/v
 grep -q "proxyTypeOption.value('http'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "proxyTypeOption.value('socks5'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'relativeTime(activity.last_location_at)' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q -- '--client-proxy' openwrt/files/etc/init.d/wloc
+grep -q -- '--rule-proxy' openwrt/files/etc/init.d/wloc
 grep -q 'connect_outbound(outbound' src/proxy.rs
 grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'wloc-tabs' openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -282,10 +300,10 @@ grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/mai
 grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'last_error' openwrt/files/usr/libexec/rpcd/luci.wloc src/status.rs
-grep -q -- '--client-name' openwrt/files/etc/init.d/wloc src/config.rs
-grep -q 'device=\\"{name}\\" mac={mac} ip={ip}' src/config.rs
-grep -q 'device_configured' src/main.rs
-grep -q 'configured_macs=' src/proxy.rs
+grep -q -- '--rule-name' openwrt/files/etc/init.d/wloc src/config.rs
+grep -q 'rule_name=\\"{}\\" device={} network={}' src/config.rs
+grep -q 'rule_configured' src/main.rs
+grep -q 'first_matching_rule' src/proxy.rs
 grep -q ' ip=' src/proxy.rs
 grep -q 'lookup=dhcp_lease' src/proxy.rs
 grep -q '"ip_neigh"' src/proxy.rs
@@ -326,7 +344,7 @@ grep -Fq '.build/openwrt-25.12.5-${{ matrix.target }}/downloads' .github/workflo
 grep -Fq '${{ matrix.sdk_sha256 }}' .github/workflows/openwrt-build.yml
 grep -q '~/.cargo/registry' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
 grep -q "github.ref == 'refs/heads/master'" .github/workflows/openwrt-build.yml
-grep -Fq 'release_tag="v${version}-r${package_release}"' .github/workflows/openwrt-build.yml
+grep -Fq 'release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"' .github/workflows/openwrt-build.yml
 grep -Fq -- '--target "$GITHUB_SHA"' .github/workflows/openwrt-build.yml
 grep -q 'docs/images/wloc-dashboard.png' README.md
 ! grep -Eiq 'udp.*(500|4500)|(500|4500).*udp|ePDG|PassWall|OpenClash|sing-box|Xray' \

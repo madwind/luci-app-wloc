@@ -1,8 +1,9 @@
 include $(TOPDIR)/rules.mk
+include $(CURDIR)/version.env
 
 PKG_NAME:=luci-app-wloc
-PKG_VERSION:=0.1.8
-PKG_RELEASE:=1
+PKG_VERSION:=$(WLOC_VERSION)
+PKG_RELEASE:=$(WLOC_RELEASE)
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE NOTICE
 PKG_MAINTAINER:=luci-app-wloc maintainers
@@ -25,11 +26,11 @@ define Package/luci-app-wloc
   SUBMENU:=Web Servers/Proxies
   TITLE:=Apple WLOC movement-following location proxy for OpenWrt
   URL:=https://github.com/madwind/luci-app-wloc
-  DEPENDS:=+libc +libgcc +nftables +ip-full +rpcd +uhttpd +luci-base
+  DEPENDS:=+libc +libgcc +nftables +ip-full +jsonfilter +rpcd +uhttpd +luci-base
 endef
 
 define Package/luci-app-wloc/description
-  Selective Apple WLOC TLS proxy with per-device MAC address rules.
+  Selective Apple WLOC TLS proxy with ordered device and access-point rules.
   Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 endef
 

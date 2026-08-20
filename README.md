@@ -7,12 +7,16 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-Only explicitly enabled devices and Apple WLOC traffic are intercepted. Other
-traffic is left unchanged. Use this package only on devices you own or are
-authorized to test.
+Enabled rules are evaluated in their UCI/LuCI order and the first matching rule
+wins. A rule can select one MAC or all wireless devices, and can select one AP
+by BSSID or accept any wireless source. SSID is display metadata only. Requests
+without a matching rule pass through unchanged. Use this package only on
+devices you own or are authorized to test.
 
-The nftables rules match the enabled client selector, the resolved IPv4
-addresses of both Apple WLOC hostnames, and TCP/443. Before installing its
+The nftables rules put explicitly selected devices in a MAC set and AP-wide
+rules in a hostapd interface set, then match the resolved IPv4 addresses of
+both Apple WLOC hostnames and TCP/443. They do not capture the whole LAN bridge.
+Before installing its
 REDIRECT, WLOC scans all IPv4-capable prerouting base chains and follows their
 `jump`/`goto` paths to find every reachable REDIRECT or TPROXY verdict. It then
 chooses a numeric priority earlier than all detected transparent-proxy ingress
@@ -39,6 +43,10 @@ a transparent proxy—with a matching OUTPUT policy can process it normally.
 
 Run the build on Linux x86_64. WSL2 is also supported.
 
+Package versions are configured only in `version.env`. Update
+`WLOC_VERSION` for an application release, and `WLOC_RELEASE` when rebuilding
+the same application version with packaging-only changes.
+
 ```sh
 # MediaTek Filogic
 bash ./scripts/build-openwrt-25.12.5.sh filogic
@@ -63,13 +71,13 @@ Copy the APK for your architecture to the router and install it:
 apk add --allow-untrusted ./luci-app-wloc-*.apk
 ```
 
-Open **Services > WLOC** in LuCI, add an authorized device, enter its fixed WGS84
-latitude and longitude baseline, then save and apply. On every service start,
+Open **Services > WLOC** in LuCI, add rules, drag them into priority order, enter
+each fixed WGS84 latitude and longitude baseline, then save and apply. On every service start,
 the first real location establishes the reference. Every later response uses
 the fixed virtual baseline plus the difference between the current and previous
 real location. The upstream accuracy is preserved unchanged. Install the
 generated CA profile on that device and explicitly enable full trust in iOS
-Certificate Trust Settings. Each device rule can use the router's direct
+Certificate Trust Settings. Each rule can use the router's direct
 connection, an HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its
 Apple WLOC traffic.
 

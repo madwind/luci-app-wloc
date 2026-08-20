@@ -4,8 +4,8 @@
 set -eu
 
 TABLE=wloc
-CLIENT_SET=target_clients_v4
 CLIENT_MAC_SET=target_clients_mac
+AP_INTERFACE_SET=target_ap_interfaces
 HOST_SET=apple_wloc_v4
 DEFAULT_PRIORITY=-105
 # REDIRECT needs conntrack/NAT state. Stay strictly after conntrack (-200),
@@ -47,14 +47,6 @@ valid_mac() {
 		[0-9A-Fa-f][13579BbDdFf]) return 1;;
 	esac
 	[ "$1" != '00:00:00:00:00:00' ]
-}
-
-is_lan_target() {
-	local target_ip lan_device
-	target_ip="$1"
-	lan_device="$(uci -q get network.lan.device || true)"
-	[ -n "$lan_device" ] || lan_device=br-lan
-	ip -4 route get "$target_ip" 2>/dev/null | grep -q " dev $lan_device"
 }
 
 resolve_hosts() {
@@ -106,19 +98,19 @@ EOF
 
 table_healthy() {
 	awk \
-		-v client_set="$CLIENT_SET" \
 		-v client_mac_set="$CLIENT_MAC_SET" \
+		-v ap_interface_set="$AP_INTERFACE_SET" \
 		-v host_set="$HOST_SET" '
 		$1 == "set" {
 			in_host = ($2 == host_set)
-			if ($2 == client_set) client = 1
 			if ($2 == client_mac_set) client_mac = 1
+			if ($2 == ap_interface_set) ap_interface = 1
 			if ($2 == host_set) host = 1
 		}
 		in_host && $1 == "elements" && $2 == "=" && $3 == "{" { host_elements = 1 }
 		in_host && $1 == "}" { in_host = 0 }
 		$1 == "chain" && $2 == "redirect_prerouting" { redirect_chain = 1 }
-		END { exit !(client && client_mac && host && host_elements && redirect_chain) }
+		END { exit !(client_mac && ap_interface && host && host_elements && redirect_chain) }
 	'
 }
 
@@ -410,13 +402,13 @@ apply_rules() {
 	trap cleanup EXIT INT TERM HUP
 	nft -f - <<EOF
 table inet $TABLE {
-	set $CLIENT_SET {
-		type ipv4_addr
+	set $CLIENT_MAC_SET {
+		type ether_addr
 		flags timeout
 		timeout 30s
 	}
-	set $CLIENT_MAC_SET {
-		type ether_addr
+	set $AP_INTERFACE_SET {
+		type ifname
 		flags timeout
 		timeout 30s
 	}
@@ -429,8 +421,8 @@ table inet $TABLE {
 		# The priority is selected from the live ruleset so this narrowly scoped
 		# REDIRECT runs before every detected IPv4 REDIRECT/TPROXY ingress path.
 		type nat hook prerouting priority $priority; policy accept;
-		ip saddr @$CLIENT_SET ip daddr @$HOST_SET meta l4proto tcp tcp dport 443 counter redirect to :$port comment "wloc owned redirect"
 		ether saddr @$CLIENT_MAC_SET ip daddr @$HOST_SET meta l4proto tcp tcp dport 443 counter redirect to :$port comment "wloc owned MAC redirect"
+		iifname @$AP_INTERFACE_SET ip daddr @$HOST_SET meta l4proto tcp tcp dport 443 counter redirect to :$port comment "wloc owned AP redirect"
 	}
 }
 EOF
@@ -441,30 +433,76 @@ EOF
 	trap - EXIT INT TERM HUP
 }
 
+valid_interface() {
+	case "$1" in ''|*[!A-Za-z0-9_.-]*) return 1;; esac
+	[ "${#1}" -le 15 ]
+}
+
+normalize_mac() {
+	awk -v value="$1" 'BEGIN { print tolower(value) }'
+}
+
+hostapd_interfaces() {
+	local wanted object status bssid interface
+	wanted="$1"
+	for object in $(ubus -S -t 3 list 'hostapd.*' 2>/dev/null || true); do
+		case "$object" in hostapd.*) :;; *) continue;; esac
+		status="$(ubus -S -t 3 call "$object" get_status '{}' 2>/dev/null || true)"
+		[ -n "$status" ] || continue
+		bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
+		bssid="$(normalize_mac "$bssid")"
+		[ "$wanted" = any ] || [ "$bssid" = "$wanted" ] || continue
+		interface="$(printf '%s\n' "$status" | jsonfilter -e '@.interface' 2>/dev/null || true)"
+		[ -n "$interface" ] || interface="$(printf '%s\n' "$status" | jsonfilter -e '@.ifname' 2>/dev/null || true)"
+		[ -n "$interface" ] || interface="${object#hostapd.}"
+		valid_interface "$interface" && printf '%s\n' "$interface"
+	done
+}
+
 lease() {
-	local selector count
-	count=0
-	[ "$#" -gt 0 ] || { echo 'wloc: no client selectors' >&2; exit 1; }
+	local selector value macs bssids all_wireless interfaces interface
+	macs=''
+	bssids=''
+	all_wireless=0
+	interfaces=''
+	[ "$#" -gt 0 ] || { echo 'wloc: no capture selectors' >&2; exit 1; }
 	for selector in "$@"; do
-		if valid_ipv4 "$selector"; then
-			is_lan_target "$selector" || { echo 'wloc: target is not routed through LAN' >&2; exit 1; }
-		elif ! valid_mac "$selector"; then
-			echo 'wloc: invalid client selector' >&2; exit 1
-		fi
-		count=$((count + 1))
+		case "$selector" in
+			mac:*)
+				value="$(normalize_mac "${selector#mac:}")"
+				valid_mac "$value" || { echo 'wloc: invalid MAC capture selector' >&2; exit 1; }
+				case " $macs " in *" $value "*) :;; *) macs="$macs $value";; esac
+				;;
+			bssid:*)
+				value="$(normalize_mac "${selector#bssid:}")"
+				valid_mac "$value" || { echo 'wloc: invalid BSSID capture selector' >&2; exit 1; }
+				case " $bssids " in *" $value "*) :;; *) bssids="$bssids $value";; esac
+				;;
+			wireless:any) all_wireless=1;;
+			*) echo 'wloc: invalid capture selector' >&2; exit 1;;
+		esac
 	done
 	resolve_hosts || { echo 'wloc: Apple WLOC DNS resolution failed' >&2; exit 1; }
-	# Flush and repopulate both selector sets in one transaction so the
-	# heartbeat renews every enabled device without an inconsistent window.
+	if [ "$all_wireless" -eq 1 ]; then
+		interfaces="$(hostapd_interfaces any)"
+	else
+		for value in $bssids; do
+			interfaces="${interfaces}
+$(hostapd_interfaces "$value")"
+		done
+	fi
+	# Flush and repopulate both candidate sets atomically. BSSID selection is
+	# converted to its hostapd ingress interface; Rust still performs the final
+	# live BSSID check in ordered rule matching.
 	{
-		echo "flush set inet $TABLE $CLIENT_SET"
 		echo "flush set inet $TABLE $CLIENT_MAC_SET"
-		for selector in "$@"; do
-			if valid_ipv4 "$selector"; then
-				echo "add element inet $TABLE $CLIENT_SET { $selector timeout 30s }"
-			else
-				echo "add element inet $TABLE $CLIENT_MAC_SET { $selector timeout 30s }"
-			fi
+		echo "flush set inet $TABLE $AP_INTERFACE_SET"
+		for value in $macs; do
+			echo "add element inet $TABLE $CLIENT_MAC_SET { $value timeout 30s }"
+		done
+		printf '%s\n' "$interfaces" | while read -r interface; do
+			valid_interface "$interface" || continue
+			echo "add element inet $TABLE $AP_INTERFACE_SET { \"$interface\" timeout 30s }"
 		done
 	} | nft -f -
 }
@@ -497,5 +535,5 @@ case "${1:-}" in
 		nft list table inet "$TABLE" 2>/dev/null
 		;;
 	check-order) check_prerouting_order;;
-	*) echo 'usage: rules.sh {apply PORT|lease MAC_OR_IP...|reconcile PORT MAC_OR_IP...|cleanup|status|check-order}' >&2; exit 2;;
+	*) echo 'usage: rules.sh {apply PORT|lease CAPTURE_SELECTOR...|reconcile PORT CAPTURE_SELECTOR...|cleanup|status|check-order}' >&2; exit 2;;
 esac

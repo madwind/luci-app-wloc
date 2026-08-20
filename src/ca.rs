@@ -177,7 +177,11 @@ fn ca_params() -> Result<CertificateParams, rcgen::Error> {
     Ok(params)
 }
 
-fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
+fn write_atomic(
+    path: &Path,
+    data: &[u8],
+    #[cfg_attr(not(unix), allow(unused_variables))] mode: u32,
+) -> std::io::Result<()> {
     let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);

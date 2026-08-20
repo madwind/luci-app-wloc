@@ -1,6 +1,7 @@
 [package]
 name = "wloc-rs"
-version = "0.1.8"
+# The installable package version lives in version.env. This crate is private.
+version = "0.0.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"

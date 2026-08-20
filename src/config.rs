@@ -1,7 +1,39 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::wloc::PatchTarget;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MacAddress([u8; 6]);
+
+impl MacAddress {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let mut bytes = [0_u8; 6];
+        let parts = value.split(':').collect::<Vec<_>>();
+        if parts.len() != 6 {
+            return Err("invalid MAC address".into());
+        }
+        for (index, part) in parts.iter().enumerate() {
+            if part.len() != 2 {
+                return Err("invalid MAC address".into());
+            }
+            bytes[index] =
+                u8::from_str_radix(part, 16).map_err(|_| "invalid MAC address".to_owned())?;
+        }
+        if bytes == [0; 6] || bytes == [0xff; 6] || bytes[0] & 1 != 0 {
+            return Err("MAC must be an individual unicast address".into());
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn label(self) -> String {
+        self.0
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundProxy {
@@ -28,54 +60,71 @@ impl OutboundProxy {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClientSelector {
-    Mac([u8; 6]),
-    Ipv4(Ipv4Addr),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceSelector {
+    All,
+    Mac(MacAddress),
 }
 
-impl ClientSelector {
-    pub fn parse_mac(value: &str) -> Result<Self, String> {
-        let mut bytes = [0_u8; 6];
-        let parts = value.split(':').collect::<Vec<_>>();
-        if parts.len() != 6 {
-            return Err("invalid client MAC address".into());
+impl DeviceSelector {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "*" => Ok(Self::All),
+            value => MacAddress::parse(value).map(Self::Mac),
         }
-        for (index, part) in parts.iter().enumerate() {
-            if part.len() != 2 {
-                return Err("invalid client MAC address".into());
-            }
-            bytes[index] = u8::from_str_radix(part, 16)
-                .map_err(|_| "invalid client MAC address".to_owned())?;
-        }
-        if bytes == [0; 6] || bytes == [0xff; 6] || bytes[0] & 1 != 0 {
-            return Err("client MAC must be an individual unicast address".into());
-        }
-        Ok(Self::Mac(bytes))
+    }
+
+    pub fn matches(&self, mac: MacAddress) -> bool {
+        matches!(self, Self::All) || matches!(self, Self::Mac(expected) if *expected == mac)
     }
 
     pub fn label(&self) -> String {
         match self {
-            Self::Mac(bytes) => bytes
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join(":"),
-            Self::Ipv4(address) => address.to_string(),
+            Self::All => "all".into(),
+            Self::Mac(mac) => mac.label(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkSelector {
+    Any,
+    Bssid(MacAddress),
+}
+
+impl NetworkSelector {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "*" => Ok(Self::Any),
+            value => MacAddress::parse(value).map(Self::Bssid),
+        }
+    }
+
+    pub fn matches(&self, bssid: Option<MacAddress>) -> bool {
+        matches!(self, Self::Any)
+            || matches!((self, bssid), (Self::Bssid(expected), Some(actual)) if *expected == actual)
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Any => "any".into(),
+            Self::Bssid(bssid) => bssid.label(),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ClientTarget {
+pub struct LocationRule {
     pub id: String,
     pub name: String,
-    pub selector: ClientSelector,
+    pub device: DeviceSelector,
+    pub network: NetworkSelector,
+    pub ssid: Option<String>,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
 }
 
-impl ClientTarget {
+impl LocationRule {
     fn safe_log_name(&self) -> String {
         self.name
             .chars()
@@ -87,35 +136,20 @@ impl ClientTarget {
                 }
             })
             .take(80)
-            .collect::<String>()
+            .collect()
     }
 
     pub fn log_context(&self) -> String {
-        let name = self.safe_log_name();
-        match &self.selector {
-            ClientSelector::Mac(_) => {
-                let mac = self.selector.label().to_uppercase();
-                format!("device=\"{name}\" mac={mac}")
-            }
-            ClientSelector::Ipv4(_) => {
-                let selector = self.selector.label();
-                format!("device=\"{name}\" selector={selector}")
-            }
-        }
+        format!(
+            "rule_name=\"{}\" device={} network={}",
+            self.safe_log_name(),
+            self.device.label().to_uppercase(),
+            self.network.label().to_uppercase()
+        )
     }
 
     pub fn log_context_with_ip(&self, ip: IpAddr) -> String {
-        let name = self.safe_log_name();
-        match &self.selector {
-            ClientSelector::Mac(_) => {
-                let mac = self.selector.label().to_uppercase();
-                format!("device=\"{name}\" mac={mac} ip={ip}")
-            }
-            ClientSelector::Ipv4(_) => {
-                let selector = self.selector.label();
-                format!("device=\"{name}\" selector={selector} ip={ip}")
-            }
-        }
+        format!("{} ip={ip}", self.log_context())
     }
 }
 
@@ -123,7 +157,8 @@ impl ClientTarget {
 pub struct Config {
     pub listen_port: u16,
     pub runtime_log: bool,
-    pub clients: Vec<ClientTarget>,
+    /// Enabled rules in exact UCI order. Never sort this vector.
+    pub rules: Vec<LocationRule>,
     pub state_dir: PathBuf,
     pub rules_helper: PathBuf,
 }
@@ -132,7 +167,7 @@ fn parse_target<I>(args: &mut I, flag: &str) -> Result<PatchTarget, String>
 where
     I: Iterator<Item = String>,
 {
-    let missing = || format!("{flag} requires SELECTOR LATITUDE LONGITUDE");
+    let missing = || format!("{flag} requires ID DEVICE NETWORK LATITUDE LONGITUDE");
     let latitude = args
         .next()
         .ok_or_else(missing)?
@@ -157,7 +192,7 @@ impl Config {
     {
         let mut listen_port = 61520_u16;
         let mut runtime_log = false;
-        let mut clients = Vec::new();
+        let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
         let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.sh");
         let mut args = arguments.into_iter();
@@ -172,46 +207,34 @@ impl Config {
                         .map_err(|_| "invalid listen port")?
                 }
                 "--runtime-log" => runtime_log = true,
-                "--client" => {
-                    let id = parse_client_id(&args.next().ok_or_else(value)?)?;
-                    let selector = ClientSelector::parse_mac(&args.next().ok_or_else(value)?)?;
+                "--rule" => {
+                    let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
+                    if rules.iter().any(|rule: &LocationRule| rule.id == id) {
+                        return Err(format!("duplicate rule ID: {id}"));
+                    }
+                    let device = DeviceSelector::parse(&args.next().ok_or_else(value)?)?;
+                    let network = NetworkSelector::parse(&args.next().ok_or_else(value)?)?;
                     let target = parse_target(&mut args, &flag)?;
-                    clients.push(ClientTarget {
+                    rules.push(LocationRule {
                         name: id.clone(),
                         id,
-                        selector,
+                        device,
+                        network,
+                        ssid: None,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
                 }
-                "--client-ip" => {
-                    let id = parse_client_id(&args.next().ok_or_else(value)?)?;
-                    let selector = ClientSelector::Ipv4(
-                        args.next()
-                            .ok_or_else(value)?
-                            .parse()
-                            .map_err(|_| "invalid client IPv4")?,
-                    );
-                    let target = parse_target(&mut args, &flag)?;
-                    clients.push(ClientTarget {
-                        name: id.clone(),
-                        id,
-                        selector,
-                        target,
-                        outbound: OutboundProxy::Direct,
-                    });
+                "--rule-name" => {
+                    let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
+                    rule_mut(&mut rules, &id, "name")?.name = args.next().ok_or_else(value)?;
                 }
-                "--client-name" => {
-                    let id = parse_client_id(&args.next().ok_or_else(value)?)?;
-                    let name = args.next().ok_or_else(value)?;
-                    let client = clients
-                        .iter_mut()
-                        .find(|client| client.id == id)
-                        .ok_or_else(|| format!("name refers to unknown client rule ID: {id}"))?;
-                    client.name = name;
+                "--rule-ssid" => {
+                    let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
+                    rule_mut(&mut rules, &id, "SSID")?.ssid = Some(args.next().ok_or_else(value)?);
                 }
-                "--client-proxy" => {
-                    let id = parse_client_id(&args.next().ok_or_else(value)?)?;
+                "--rule-proxy" => {
+                    let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     let proxy_type = args.next().ok_or_else(value)?;
                     let host = parse_proxy_host(&args.next().ok_or_else(value)?)?;
                     let port = args
@@ -227,14 +250,11 @@ impl Config {
                         "socks5" => OutboundProxy::Socks5 { host, port },
                         _ => return Err("proxy type must be http or socks5".into()),
                     };
-                    let client = clients
-                        .iter_mut()
-                        .find(|client| client.id == id)
-                        .ok_or_else(|| format!("proxy refers to unknown client rule ID: {id}"))?;
-                    if client.outbound != OutboundProxy::Direct {
-                        return Err(format!("duplicate proxy for client rule ID: {id}"));
+                    let rule = rule_mut(&mut rules, &id, "proxy")?;
+                    if rule.outbound != OutboundProxy::Direct {
+                        return Err(format!("duplicate proxy for rule ID: {id}"));
                     }
-                    client.outbound = outbound;
+                    rule.outbound = outbound;
                 }
                 "--state-dir" => state_dir = PathBuf::from(args.next().ok_or_else(value)?),
                 "--rules-helper" => rules_helper = PathBuf::from(args.next().ok_or_else(value)?),
@@ -242,38 +262,49 @@ impl Config {
                 _ => return Err(format!("unknown argument: {flag}\n{}", Self::usage())),
             }
         }
-        if clients.is_empty() {
-            return Err("at least one --client or --client-ip is required".into());
-        }
-        clients.sort_by_key(|client| client.selector.label());
-        for pair in clients.windows(2) {
-            if pair[0].selector == pair[1].selector {
-                return Err(format!(
-                    "duplicate client selector: {}",
-                    pair[0].selector.label()
-                ));
-            }
-        }
-        let mut ids = clients
-            .iter()
-            .map(|client| client.id.as_str())
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err("duplicate client rule ID".into());
+        if rules.is_empty() {
+            return Err("at least one --rule is required".into());
         }
         Ok(Self {
             listen_port,
             runtime_log,
-            clients,
+            rules,
             state_dir,
             rules_helper,
         })
     }
 
-    pub const fn usage() -> &'static str {
-        "wlocd --client ID MAC LATITUDE LONGITUDE [--client-name ID NAME] [--client ...] [--client-proxy ID TYPE HOST PORT] [--client-ip ID IPv4 LATITUDE LONGITUDE] [--listen-port PORT] [--runtime-log]"
+    pub fn capture_selectors(&self) -> Vec<String> {
+        let mut selectors = Vec::new();
+        for rule in &self.rules {
+            let selector = match (rule.device, rule.network) {
+                (DeviceSelector::Mac(mac), _) => format!("mac:{}", mac.label()),
+                (DeviceSelector::All, NetworkSelector::Bssid(bssid)) => {
+                    format!("bssid:{}", bssid.label())
+                }
+                (DeviceSelector::All, NetworkSelector::Any) => "wireless:any".into(),
+            };
+            if !selectors.contains(&selector) {
+                selectors.push(selector);
+            }
+        }
+        selectors
     }
+
+    pub const fn usage() -> &'static str {
+        "wlocd --rule ID MAC_OR_* BSSID_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-ssid ID SSID] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+    }
+}
+
+fn rule_mut<'a>(
+    rules: &'a mut [LocationRule],
+    id: &str,
+    attribute: &str,
+) -> Result<&'a mut LocationRule, String> {
+    rules
+        .iter_mut()
+        .find(|rule| rule.id == id)
+        .ok_or_else(|| format!("{attribute} refers to unknown rule ID: {id}"))
 }
 
 fn parse_proxy_host(value: &str) -> Result<String, String> {
@@ -288,14 +319,14 @@ fn parse_proxy_host(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn parse_client_id(value: &str) -> Result<String, String> {
+fn parse_rule_id(value: &str) -> Result<String, String> {
     if value.is_empty()
         || value.len() > 64
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
-        return Err("invalid client rule ID".into());
+        return Err("invalid rule ID".into());
     }
     Ok(value.to_owned())
 }
@@ -304,148 +335,118 @@ fn parse_client_id(value: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn uses_the_default_listen_port() {
-        let config = Config::from_iter(
-            ["--client", "client_a", "02:11:22:33:44:55", "1", "2"]
-                .into_iter()
-                .map(str::to_owned),
-        )
-        .unwrap();
-        assert_eq!(config.listen_port, 61520);
+    fn args<'a>(values: &'a [&'a str]) -> impl Iterator<Item = String> + 'a {
+        values.iter().map(|value| (*value).to_owned())
     }
 
     #[test]
-    fn parses_multiple_clients_and_normalizes_mac() {
-        let config = Config::from_iter(
-            [
-                "--client",
-                "client_a",
-                "AA:BB:CC:DD:EE:02",
-                "51.5074",
-                "-0.1277",
-                "--client",
-                "client_b",
-                "02:11:22:33:44:55",
-                "22.3193",
-                "114.1694",
-                "--client-name",
-                "client_b",
-                "iPhone SE 3",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        )
+    fn preserves_rule_order_without_implicit_priority() {
+        let config = Config::from_iter(args(&[
+            "--rule",
+            "iphone_ap1",
+            "02:11:22:33:44:55",
+            "aa:bb:cc:dd:ee:01",
+            "1",
+            "2",
+            "--rule",
+            "all_ap1",
+            "*",
+            "aa:bb:cc:dd:ee:01",
+            "3",
+            "4",
+            "--rule",
+            "fallback",
+            "*",
+            "*",
+            "5",
+            "6",
+        ]))
         .unwrap();
-        assert_eq!(config.clients.len(), 2);
-        assert_eq!(config.clients[1].selector.label(), "aa:bb:cc:dd:ee:02");
-        assert_eq!(config.clients[1].target.latitude, 51.5074);
-        let named = config
-            .clients
-            .iter()
-            .find(|client| client.id == "client_b")
-            .unwrap();
-        assert_eq!(named.name, "iPhone SE 3");
         assert_eq!(
-            named.log_context(),
-            "device=\"iPhone SE 3\" mac=02:11:22:33:44:55"
+            config
+                .rules
+                .iter()
+                .map(|rule| rule.id.as_str())
+                .collect::<Vec<_>>(),
+            ["iphone_ap1", "all_ap1", "fallback"]
         );
         assert_eq!(
-            named.log_context_with_ip("192.0.2.10".parse().unwrap()),
-            "device=\"iPhone SE 3\" mac=02:11:22:33:44:55 ip=192.0.2.10"
+            config.capture_selectors(),
+            [
+                "mac:02:11:22:33:44:55",
+                "bssid:aa:bb:cc:dd:ee:01",
+                "wireless:any"
+            ]
         );
-        let default_named = config
-            .clients
-            .iter()
-            .find(|client| client.id == "client_a")
-            .unwrap();
-        assert!(default_named
-            .log_context()
-            .contains("mac=AA:BB:CC:DD:EE:02"));
     }
 
     #[test]
-    fn rejects_duplicate_and_multicast_mac() {
-        let duplicate = Config::from_iter(
-            [
-                "--client",
-                "client_a",
-                "02:11:22:33:44:55",
-                "1",
-                "2",
-                "--client",
-                "client_b",
-                "02:11:22:33:44:55",
-                "4",
-                "5",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        );
-        assert!(duplicate.unwrap_err().contains("duplicate"));
-        assert!(ClientSelector::parse_mac("01:00:5e:00:00:01").is_err());
-
-        let duplicate_id = Config::from_iter(
-            [
-                "--client",
-                "same",
-                "02:11:22:33:44:55",
-                "1",
-                "2",
-                "--client",
-                "same",
-                "02:11:22:33:44:56",
-                "4",
-                "5",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        );
-        assert!(duplicate_id.unwrap_err().contains("rule ID"));
-        assert!(parse_client_id("contains space").is_err());
-    }
-
-    #[test]
-    fn parses_per_client_http_and_socks5_proxies() {
-        let config = Config::from_iter(
-            [
-                "--client",
-                "direct",
-                "02:11:22:33:44:51",
-                "1",
-                "2",
-                "--client",
-                "proxied",
-                "02:11:22:33:44:52",
-                "4",
-                "5",
-                "--client-proxy",
-                "proxied",
-                "socks5",
-                "192.0.2.10",
-                "1080",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        )
+    fn parses_rule_metadata_and_proxy() {
+        let config = Config::from_iter(args(&[
+            "--rule",
+            "phone",
+            "02:11:22:33:44:55",
+            "*",
+            "51.5074",
+            "-0.1277",
+            "--rule-name",
+            "phone",
+            "iPhone 16",
+            "--rule-ssid",
+            "phone",
+            "Home Wi-Fi",
+            "--rule-proxy",
+            "phone",
+            "socks5",
+            "192.0.2.10",
+            "1080",
+        ]))
         .unwrap();
-        let direct = config
-            .clients
-            .iter()
-            .find(|client| client.id == "direct")
-            .unwrap();
-        assert_eq!(direct.outbound, OutboundProxy::Direct);
-        let proxied = config
-            .clients
-            .iter()
-            .find(|client| client.id == "proxied")
-            .unwrap();
+        let rule = &config.rules[0];
+        assert_eq!(rule.name, "iPhone 16");
+        assert_eq!(rule.ssid.as_deref(), Some("Home Wi-Fi"));
         assert_eq!(
-            proxied.outbound,
+            rule.outbound,
             OutboundProxy::Socks5 {
                 host: "192.0.2.10".into(),
                 port: 1080
             }
         );
+    }
+
+    #[test]
+    fn accepts_overlapping_rules_but_rejects_duplicate_ids() {
+        let overlapping = Config::from_iter(args(&[
+            "--rule",
+            "first",
+            "02:11:22:33:44:55",
+            "*",
+            "1",
+            "2",
+            "--rule",
+            "second",
+            "02:11:22:33:44:55",
+            "*",
+            "3",
+            "4",
+        ]));
+        assert!(overlapping.is_ok());
+
+        let duplicate_id = Config::from_iter(args(&[
+            "--rule", "same", "*", "*", "1", "2", "--rule", "same", "*", "*", "3", "4",
+        ]));
+        assert!(duplicate_id.unwrap_err().contains("duplicate rule ID"));
+        assert!(MacAddress::parse("01:00:5e:00:00:01").is_err());
+    }
+
+    #[test]
+    fn network_and_device_matchers_are_explicit() {
+        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
+        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+        assert!(DeviceSelector::All.matches(phone));
+        assert!(DeviceSelector::Mac(phone).matches(phone));
+        assert!(NetworkSelector::Any.matches(None));
+        assert!(NetworkSelector::Bssid(ap).matches(Some(ap)));
+        assert!(!NetworkSelector::Bssid(ap).matches(None));
     }
 }

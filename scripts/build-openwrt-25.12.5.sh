@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../version.env
+. "$PROJECT/version.env"
+
 VERSION=25.12.5
 RUST_TOOLCHAIN=1.89.0
 BUILD_PROFILE="${1:-filogic}"
@@ -41,7 +45,6 @@ SDK_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${S
 ZSTD_VERSION=1.5.7
 ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 
-PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_ROOT="${OPENWRT_CACHE_ROOT:-$PROJECT/.build/openwrt-${VERSION}-${BUILD_PROFILE}}"
 if [ -n "${OPENWRT_BUILD_ROOT:-}" ]; then
 	BUILD_ROOT="$OPENWRT_BUILD_ROOT"
@@ -114,7 +117,7 @@ PACKAGE_DST="$SDK_DIR/package/luci-app-wloc"
 case "$PACKAGE_DST" in "$SDK_DIR/package/"*) ;; *) echo 'unsafe package destination' >&2; exit 1;; esac
 rm -rf "$PACKAGE_DST"
 mkdir -p "$PACKAGE_DST"
-cp "$PROJECT/Makefile" "$PROJECT/Cargo.toml" "$PROJECT/Cargo.lock" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
+cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/Cargo.toml" "$PROJECT/Cargo.lock" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
 cp -a "$PROJECT/src" "$PROJECT/openwrt" "$PACKAGE_DST/"
 
 echo 'Installing LuCI package definitions'
@@ -146,8 +149,8 @@ printf '%s\n' 'CONFIG_PACKAGE_luci-app-wloc=m' >>"$SDK_DIR/.config"
 grep -qs '^CONFIG_PACKAGE_luci-app-wloc=m$' "$SDK_DIR/.config" \
 	|| { echo 'luci-app-wloc is not selected in the SDK config' >&2; exit 1; }
 echo 'Building native OpenWrt APK v3 package'
-PACKAGE_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "$PROJECT/Cargo.toml")"
-PACKAGE_RELEASE="$(awk -F':=' '/^PKG_RELEASE:=/ { print $2; exit }' "$PROJECT/Makefile")"
+PACKAGE_VERSION="$WLOC_VERSION"
+PACKAGE_RELEASE="$WLOC_RELEASE"
 EXPECTED_APK="luci-app-wloc-${PACKAGE_VERSION}-r${PACKAGE_RELEASE}.apk"
 mkdir -p "$SDK_DIR/bin"
 find "$SDK_DIR/bin" -type f -name 'luci-app-wloc-*.apk' -delete

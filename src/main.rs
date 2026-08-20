@@ -109,11 +109,7 @@ fn main() {
 
 fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::from_args().map_err(|e| format!("configuration: {e}"))?;
-    let selectors = config
-        .clients
-        .iter()
-        .map(|client| client.selector.label())
-        .collect::<Vec<_>>();
+    let selectors = config.capture_selectors();
     let (ca, generated) = CaBundle::load_or_generate(&config.state_dir)?;
     let ca = Arc::new(ca);
     let fingerprint = ca.fingerprint();
@@ -149,14 +145,19 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
         let status = Arc::new(Status::new(
             status_path,
-            config.clients.len(),
+            config.rules.len(),
             config.runtime_log,
             fingerprint,
         )?);
-        for configured in &config.clients {
+        for (priority, configured) in config.rules.iter().enumerate() {
             status.update_detail(
-                "device_configured",
-                &format!("{} rule={}", configured.log_context(), configured.id),
+                "rule_configured",
+                &format!(
+                    "{} rule={} priority={}",
+                    configured.log_context(),
+                    configured.id,
+                    priority + 1
+                ),
                 None,
                 |_| {},
             );
@@ -177,8 +178,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "interception_armed",
             &format!(
-                "clients={} hosts=gs-loc.apple.com,gs-loc-cn.apple.com protocol=tcp/443 priority={} detected_proxy_priorities={}",
-                config.clients.len(),
+                "rules={} matching=first hosts=gs-loc.apple.com,gs-loc-cn.apple.com protocol=tcp/443 priority={} detected_proxy_priorities={}",
+                config.rules.len(),
                 runtime_file("/var/run/wloc/prerouting.priority"),
                 runtime_file("/var/run/wloc/prerouting.details"),
             ),
@@ -228,7 +229,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let proxy = Arc::new(Proxy::new(
             server,
             client,
-            config.clients,
+            config.rules,
             config.listen_port,
             Arc::clone(&status),
         ));

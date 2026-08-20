@@ -6,65 +6,107 @@ STOP=10
 
 RULES=/usr/libexec/wloc/rules.sh
 START_ERROR=/var/run/wloc/start-error
-client_count=0
-client_error=''
-client_macs=''
+rule_count=0
+rule_error=''
+capture_selectors=''
 
-validate_client() {
-	local section client_enabled name mac latitude longitude normalized proxy_type proxy_host proxy_port
-	section="$1"
-	config_get_bool client_enabled "$section" enabled 1
-	[ "$client_enabled" -eq 1 ] || return 0
-	config_get name "$section" name "$section"
-	config_get mac "$section" mac
-	config_get latitude "$section" latitude
-	config_get longitude "$section" longitude
-	config_get proxy_type "$section" proxy_type direct
-	config_get proxy_host "$section" proxy_host
-	config_get proxy_port "$section" proxy_port
-	normalized="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
-	[ -n "$mac" ] && [ -n "$latitude" ] && [ -n "$longitude" ] || {
-		client_error="incomplete device rule: $name"; return 0;
-	}
-	case "$proxy_type" in
-		direct) ;;
-		http|socks5)
-			[ -n "$proxy_host" ] && [ -n "$proxy_port" ] || {
-				client_error="incomplete $proxy_type proxy for device rule: $name"; return 0;
-			}
-			case "$proxy_port" in
-				*[!0-9]*|'') client_error="invalid proxy port for device rule: $name"; return 0;;
-			esac
-			[ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
-				client_error="invalid proxy port for device rule: $name"; return 0;
-			}
-			;;
-		*) client_error="invalid outbound type for device rule: $name"; return 0;;
+valid_mac() {
+	local first_octet
+	case "$1" in
+		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+		*) return 1;;
 	esac
-	case " $client_macs " in
-		*" $normalized "*) client_error="duplicate device MAC: $normalized"; return 0;;
-	esac
-	client_macs="$client_macs $normalized"
-	client_count=$((client_count + 1))
+	first_octet="${1%%:*}"
+	case "$first_octet" in [0-9A-Fa-f][13579BbDdFf]) return 1;; esac
+	[ "$1" != '00:00:00:00:00:00' ]
 }
 
-append_client() {
-	local section client_enabled name mac latitude longitude proxy_type proxy_host proxy_port
+add_capture_selector() {
+	case " $capture_selectors " in *" $1 "*) return;; esac
+	capture_selectors="$capture_selectors $1"
+}
+
+validate_rule() {
+	local section rule_enabled name device mac network bssid latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
-	config_get_bool client_enabled "$section" enabled 1
-	[ "$client_enabled" -eq 1 ] || return 0
+	config_get_bool rule_enabled "$section" enabled 1
+	[ "$rule_enabled" -eq 1 ] || return 0
 	config_get name "$section" name "$section"
+	config_get device "$section" device mac
 	config_get mac "$section" mac
+	config_get network "$section" network any
+	config_get bssid "$section" bssid
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
 	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
-	procd_append_param command --client "$section" "$mac" "$latitude" "$longitude"
-	procd_append_param command --client-name "$section" "$name"
+	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
+
+	[ -n "$latitude" ] && [ -n "$longitude" ] || {
+		rule_error="incomplete location parameters for rule: $name"; return 0;
+	}
+	case "$device" in
+		mac)
+			valid_mac "$mac" || { rule_error="invalid device MAC for rule: $name"; return 0; }
+			add_capture_selector "mac:$mac"
+			;;
+		all) ;;
+		*) rule_error="invalid device selector for rule: $name"; return 0;;
+	esac
+	case "$network" in
+		any)
+			[ "$device" != all ] || add_capture_selector 'wireless:any'
+			;;
+		bssid)
+			valid_mac "$bssid" || { rule_error="invalid BSSID for rule: $name"; return 0; }
+			[ "$device" != all ] || add_capture_selector "bssid:$bssid"
+			;;
+		*) rule_error="invalid network source for rule: $name"; return 0;;
+	esac
+	case "$proxy_type" in
+		direct) ;;
+		http|socks5)
+			[ -n "$proxy_host" ] && [ -n "$proxy_port" ] || {
+				rule_error="incomplete $proxy_type proxy for rule: $name"; return 0;
+			}
+			case "$proxy_port" in *[!0-9]*|'') rule_error="invalid proxy port for rule: $name"; return 0;; esac
+			[ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
+				rule_error="invalid proxy port for rule: $name"; return 0;
+			}
+			;;
+		*) rule_error="invalid outbound type for rule: $name"; return 0;;
+	esac
+	rule_count=$((rule_count + 1))
+}
+
+append_rule() {
+	local section rule_enabled name device mac network bssid ssid latitude longitude proxy_type proxy_host proxy_port device_arg network_arg
+	section="$1"
+	config_get_bool rule_enabled "$section" enabled 1
+	[ "$rule_enabled" -eq 1 ] || return 0
+	config_get name "$section" name "$section"
+	config_get device "$section" device mac
+	config_get mac "$section" mac
+	config_get network "$section" network any
+	config_get bssid "$section" bssid
+	config_get ssid "$section" ssid
+	config_get latitude "$section" latitude
+	config_get longitude "$section" longitude
+	config_get proxy_type "$section" proxy_type direct
+	config_get proxy_host "$section" proxy_host
+	config_get proxy_port "$section" proxy_port
+	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
+	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
+	[ "$device" = all ] && device_arg='*' || device_arg="$mac"
+	[ "$network" = any ] && network_arg='*' || network_arg="$bssid"
+	# config_foreach preserves UCI section order; wlocd must receive it unchanged.
+	procd_append_param command --rule "$section" "$device_arg" "$network_arg" "$latitude" "$longitude"
+	procd_append_param command --rule-name "$section" "$name"
+	[ -z "$ssid" ] || procd_append_param command --rule-ssid "$section" "$ssid"
 	[ "$proxy_type" = direct ] || \
-		procd_append_param command --client-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
+		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
 }
 
 listen_port_in_use() {
@@ -93,46 +135,24 @@ start_service() {
 
 	"$RULES" cleanup
 	[ "$enabled" -eq 1 ] || return 0
-	case "$listen_port" in
-		''|*[!0-9]*) startup_failure 'invalid local listen port; interception remains disabled'; return 1;;
-	esac
+	case "$listen_port" in ''|*[!0-9]*) startup_failure 'invalid local listen port; interception remains disabled'; return 1;; esac
 	[ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
-		startup_failure 'invalid local listen port; interception remains disabled'
-		return $?
+		startup_failure 'invalid local listen port; interception remains disabled'; return $?;
 	}
 	if listen_port_in_use "$listen_port"; then
-		startup_failure "local listen port $listen_port is already in use; interception remains disabled"
-		return $?
+		startup_failure "local listen port $listen_port is already in use; interception remains disabled"; return $?;
 	fi
 
-	client_count=0
-	client_error=''
-	client_macs=''
-	config_foreach validate_client client
-	[ -z "$client_error" ] || {
-		startup_failure "$client_error; interception remains disabled"
-		return $?
-	}
+	rule_count=0
+	rule_error=''
+	capture_selectors=''
+	config_foreach validate_rule rule
+	[ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
+	[ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules; interception remains disabled'; return $?; }
 
-	# Legacy 0.1.x configurations remain usable until the UI migrates them to
-	# a MAC device rule.
-	legacy=0
-	if [ "$client_count" -eq 0 ]; then
-		config_get target_ipv4 main target_ipv4
-		config_get latitude main latitude
-		config_get longitude main longitude
-		[ -n "$target_ipv4" ] && [ -n "$latitude" ] && [ -n "$longitude" ] || {
-			startup_failure 'no enabled device rules; interception remains disabled'
-			return $?
-		}
-		legacy=1
-	fi
-
-	# Create empty short-lived selector sets. wlocd fills them only after its
-	# transparent listener and CA are ready.
+	# Start with empty short-lived sets. wlocd arms them after its listener is ready.
 	"$RULES" apply "$listen_port" || {
-		startup_failure 'runtime rules could not be applied; no safe prerouting priority was found'
-		return $?
+		startup_failure 'runtime rules could not be applied; no safe prerouting priority was found'; return $?;
 	}
 	mkdir -p /etc/wloc
 	chmod 0700 /etc/wloc
@@ -140,15 +160,10 @@ start_service() {
 	procd_open_instance
 	procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"
 	[ "$runtime_log" -eq 1 ] && procd_append_param command --runtime-log
-	if [ "$legacy" -eq 1 ]; then
-		procd_append_param command --client-ip legacy "$target_ipv4" "$latitude" "$longitude"
-	else
-		config_foreach append_client client
-	fi
+	config_foreach append_rule rule
 	procd_set_param env WLOC_PROFILE_PATH=/www/wloc-ca.mobileconfig \
 		WLOC_STATUS_PATH=/var/run/wloc/status.json \
 		WLOC_START_ERROR_PATH="$START_ERROR"
-	# Allow up to five minutes for NTP to establish a certificate-safe clock.
 	procd_set_param respawn 3600 5 60
 	procd_set_param stdout 1
 	procd_set_param stderr 1

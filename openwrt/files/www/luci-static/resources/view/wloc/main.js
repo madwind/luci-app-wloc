@@ -9,6 +9,7 @@
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
+var callAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'access_points', expect: {} });
 var callLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: {} });
 
 function truthy(value) {
@@ -85,13 +86,15 @@ return view.extend({
 		return Promise.all([
 			uci.load('wloc'),
 			callLeases().catch(function() { return {}; }),
+			callAccessPoints().catch(function() { return {}; }),
 			callStatus().catch(function() { return {}; })
 		]);
 	},
 
 	render: function(data) {
 		var leases = data[1].dhcp_leases || data[1].leases || [];
-		var initialStatus = data[2] || {};
+		var accessPoints = data[2].access_points || [];
+		var initialStatus = data[3] || {};
 		var initialLogs = initialStatus.runtime_log || '';
 		var lookupResultNodes = {};
 		var lastUpdatedNodes = {};
@@ -161,32 +164,59 @@ return view.extend({
 			]);
 		};
 
-		var clients = map.section(form.GridSection, 'client', _('Device location rules'));
-		clients.anonymous = true;
-		clients.addremove = true;
-		clients.sortable = true;
-		clients.nodescriptions = true;
-		clients.addbtntitle = _('Add device rule');
+		var rules = map.section(form.GridSection, 'rule', _('Ordered location rules'),
+			_('Drag rows to set priority. Matching runs from top to bottom and stops at the first match.'));
+		rules.anonymous = true;
+		rules.addremove = true;
+		rules.sortable = true;
+		rules.nodescriptions = true;
+		rules.addbtntitle = _('Add rule');
+		rules.sectiontitle = function(sectionId) {
+			var ordered = uci.sections('wloc', 'rule');
+			var index = ordered.findIndex(function(rule) { return rule['.name'] === sectionId; });
+			return _('%d. %s').format(index + 1, uci.get('wloc', sectionId, 'name') || _('Unnamed rule'));
+		};
+		var orderOption = rules.option(form.DummyValue, '_order', _('Priority'));
+		orderOption.textvalue = function(sectionId) {
+			return String(uci.sections('wloc', 'rule').findIndex(function(rule) {
+				return rule['.name'] === sectionId;
+			}) + 1);
+		};
 
-		option = clients.option(form.Flag, 'enabled', _('Enabled'));
+		option = rules.option(form.Flag, 'enabled', _('Enabled'));
 		option.default = '1';
 		option.rmempty = false;
 
-		option = clients.option(form.Value, 'name', _('Name'));
-		option.placeholder = _('My iPhone');
+		option = rules.option(form.Value, 'name', _('Name'));
+		option.placeholder = _('iPhone at living room AP');
 		option.rmempty = false;
 
-		var macOption = clients.option(form.Value, 'mac', _('Source MAC'));
+		var deviceSummary = rules.option(form.DummyValue, '_device_summary', _('Device'));
+		deviceSummary.textvalue = function(sectionId) {
+			return uci.get('wloc', sectionId, 'device') === 'all'
+				? _('All devices') : String(uci.get('wloc', sectionId, 'mac') || _('MAC not set')).toUpperCase();
+		};
+
+		var deviceOption = rules.option(form.ListValue, 'device', _('Device match'));
+		deviceOption.modalonly = true;
+		deviceOption.value('mac', _('Specified MAC'));
+		deviceOption.value('all', _('All devices'));
+		deviceOption.default = 'mac';
+		deviceOption.rmempty = false;
+
+		var macOption = rules.option(form.Value, 'mac', _('Device MAC'));
+		macOption.modalonly = true;
+		macOption.depends('device', 'mac');
 		macOption.rmempty = false;
 		macOption.placeholder = 'aa:bb:cc:dd:ee:ff';
-		macOption.description = _('Select a current DHCP device or enter a MAC address manually. Update this value if the iPhone private Wi-Fi address changes.');
+		macOption.description = _('Select a current DHCP device or enter its MAC address. Private Wi-Fi addresses are distinct devices.');
 		leases.forEach(function(lease) {
 			var mac = (lease.macaddr || lease.mac || '').toUpperCase();
 			var ip = lease.ipaddr || lease.ip || '';
 			if (mac)
 				macOption.value(mac, '%s - %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' - ' + ip : ''));
 		});
-	macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+		macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
 			var widget = form.Value.prototype.renderWidget.apply(this, arguments);
 			var select = widget && widget.nodeName === 'SELECT' ? widget
 				: (widget && widget.querySelector ? widget.querySelector('select') : null);
@@ -231,29 +261,87 @@ return view.extend({
 				return _('Enter a valid MAC address.');
 			if ((parseInt(value.slice(0, 2), 16) & 1) !== 0 || value === '00:00:00:00:00:00')
 				return _('The MAC address must be an individual unicast address.');
-			var duplicate = uci.sections('wloc', 'client').some(function(rule) {
-				return rule['.name'] !== sectionId && String(rule.mac || '').toLowerCase() === value;
-			});
-			return duplicate ? _('This MAC address is already used by another rule.') : true;
+			return true;
 		};
 
-		var latitudeOption = clients.option(form.Value, 'latitude', _('Latitude'));
+		var sourceSummary = rules.option(form.DummyValue, '_source_summary', _('Network source'));
+		sourceSummary.textvalue = function(sectionId) {
+			if (uci.get('wloc', sectionId, 'network') !== 'bssid')
+				return _('Any source');
+			var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
+			var ssid = uci.get('wloc', sectionId, 'ssid');
+			return ssid ? '%s · %s'.format(ssid, bssid) : bssid;
+		};
+
+		var networkOption = rules.option(form.ListValue, 'network', _('Network source match'));
+		networkOption.modalonly = true;
+		networkOption.value('any', _('Any source'));
+		networkOption.value('bssid', _('Specified AP (BSSID)'));
+		networkOption.default = 'any';
+		networkOption.rmempty = false;
+
+		var bssidOption = rules.option(form.Value, 'bssid', _('Access point'));
+		bssidOption.modalonly = true;
+		bssidOption.depends('network', 'bssid');
+		bssidOption.rmempty = false;
+		bssidOption.description = _('SSID is shown for recognition; matching always uses BSSID. Same-name access points remain separate.');
+		accessPoints.forEach(function(ap) {
+			var bssid = String(ap.bssid || '').toUpperCase();
+			if (bssid)
+				bssidOption.value(bssid, '%s · %s · %s'.format(ap.ssid || _('Hidden SSID'), bssid, ap.interface || _('unknown interface')));
+		});
+		uci.sections('wloc', 'rule').forEach(function(rule) {
+			var bssid = String(rule.bssid || '').toUpperCase();
+			if (bssid && !accessPoints.some(function(ap) { return String(ap.bssid || '').toUpperCase() === bssid; }))
+				bssidOption.value(bssid, '%s · %s · %s'.format(rule.ssid || _('Unavailable AP'), bssid, _('not currently active')));
+		});
+		bssidOption.cfgvalue = function(sectionId) {
+			return String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
+		};
+		bssidOption.write = function(sectionId, value) {
+			value = String(value || '').toLowerCase();
+			uci.set('wloc', sectionId, 'bssid', value);
+			var ap = accessPoints.find(function(candidate) {
+				return String(candidate.bssid || '').toLowerCase() === value;
+			});
+			if (ap && ap.ssid)
+				uci.set('wloc', sectionId, 'ssid', ap.ssid);
+			else
+				uci.unset('wloc', sectionId, 'ssid');
+		};
+		bssidOption.validate = function(sectionId, value) {
+			value = String(value || '').toLowerCase();
+			if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(value))
+				return _('Select a valid access point BSSID.');
+			return (parseInt(value.slice(0, 2), 16) & 1) === 0 && value !== '00:00:00:00:00:00'
+				? true : _('The BSSID must be an individual unicast address.');
+		};
+
+		var locationSummary = rules.option(form.DummyValue, '_location_summary', _('Location'));
+		locationSummary.textvalue = function(sectionId) {
+			return '%s, %s'.format(uci.get('wloc', sectionId, 'latitude') || '—', uci.get('wloc', sectionId, 'longitude') || '—');
+		};
+
+		var latitudeOption = rules.option(form.Value, 'latitude', _('Latitude'));
+		latitudeOption.modalonly = true;
 		latitudeOption.rmempty = false;
 		latitudeOption.description = _('Fixed virtual baseline. Each later response adds only the movement since the previous real location; the baseline itself never changes.');
 		latitudeOption.validate = coordinateValidator(-90, 90);
 
-		var longitudeOption = clients.option(form.Value, 'longitude', _('Longitude'));
+		var longitudeOption = rules.option(form.Value, 'longitude', _('Longitude'));
+		longitudeOption.modalonly = true;
 		longitudeOption.rmempty = false;
 		longitudeOption.validate = coordinateValidator(-180, 180);
 
-		var proxyTypeOption = clients.option(form.ListValue, 'proxy_type', _('Outbound'));
+		var proxyTypeOption = rules.option(form.ListValue, 'proxy_type', _('Outbound'));
+		proxyTypeOption.modalonly = true;
 		proxyTypeOption.value('direct', _('Direct'));
 		proxyTypeOption.value('http', _('HTTP proxy'));
 		proxyTypeOption.value('socks5', _('SOCKS5 proxy'));
 		proxyTypeOption.default = 'direct';
 		proxyTypeOption.rmempty = false;
 
-		var proxyHostOption = clients.option(form.Value, 'proxy_host', _('Proxy host'));
+		var proxyHostOption = rules.option(form.Value, 'proxy_host', _('Proxy host'));
 		proxyHostOption.modalonly = true;
 		proxyHostOption.rmempty = false;
 		proxyHostOption.placeholder = '192.0.2.10';
@@ -265,7 +353,7 @@ return view.extend({
 				? true : _('Enter a valid proxy hostname or IP address.');
 		};
 
-		var proxyPortOption = clients.option(form.Value, 'proxy_port', _('Proxy port'));
+		var proxyPortOption = rules.option(form.Value, 'proxy_port', _('Proxy port'));
 		proxyPortOption.modalonly = true;
 		proxyPortOption.rmempty = false;
 		proxyPortOption.datatype = 'port';
@@ -274,7 +362,7 @@ return view.extend({
 		proxyPortOption.depends('proxy_type', 'socks5');
 		proxyPortOption.description = _('HTTP CONNECT and SOCKS5 proxies without authentication are supported.');
 
-		var lastUpdatedOption = clients.option(form.DummyValue, '_last_updated', _('Last updated'));
+		var lastUpdatedOption = rules.option(form.DummyValue, '_last_updated', _('Last updated'));
 		lastUpdatedOption.rmempty = true;
 		lastUpdatedOption.textvalue = function(sectionId) {
 			var activity = clientActivity(sectionId, initialStatus);
@@ -289,7 +377,7 @@ return view.extend({
 			return node;
 		};
 
-		var lastResultOption = clients.option(form.DummyValue, '_last_result', _('Last result'));
+		var lastResultOption = rules.option(form.DummyValue, '_last_result', _('Last result'));
 		lastResultOption.rmempty = true;
 		function renderClientResult(node, activity) {
 			var hasActivity = !!activity;
@@ -316,13 +404,13 @@ return view.extend({
 			return node;
 		};
 
-		var ipOption = clients.option(form.Value, 'ip', _('IP address'));
+		var ipOption = rules.option(form.Value, 'ip', _('IP address'));
 		ipOption.modalonly = true;
 		ipOption.rmempty = true;
 		ipOption.placeholder = '8.8.8.8';
-		ipOption.description = _('The browser sends this address directly to ipinfo.io. It is saved with this device rule; lookup results stay on this page.');
+		ipOption.description = _('The browser sends this address directly to ipinfo.io. It is saved with this rule; lookup results stay on this page.');
 
-		var lookupButton = clients.option(form.Button, '_lookup_action', _('IP location'));
+		var lookupButton = rules.option(form.Button, '_lookup_action', _('IP location'));
 		lookupButton.modalonly = true;
 		lookupButton.rmempty = true;
 		lookupButton.inputtitle = _('Fill from IP location');
@@ -375,7 +463,7 @@ return view.extend({
 			});
 		};
 
-		var lookupResultOption = clients.option(form.DummyValue, '_lookup_result', _('Lookup result'));
+		var lookupResultOption = rules.option(form.DummyValue, '_lookup_result', _('Lookup result'));
 		lookupResultOption.modalonly = true;
 		lookupResultOption.rmempty = true;
 		lookupResultOption.renderWidget = function(sectionId) {
@@ -440,7 +528,7 @@ return view.extend({
 
 		function renderClientActivity(status) {
 			initialStatus = status;
-			uci.sections('wloc', 'client').forEach(function(rule) {
+			uci.sections('wloc', 'rule').forEach(function(rule) {
 				var sectionId = rule['.name'];
 				var activity = clientActivity(sectionId, status);
 				updateNodes(lastUpdatedNodes, sectionId, function(node) {
@@ -495,6 +583,7 @@ return view.extend({
 			poll.add(refresh, 5);
 			refresh();
 			return E('div', { 'class': 'wloc-console' }, [
+				E('style', {}, '.wloc-console .cbi-section-table-row[draggable="true"]{transition:box-shadow .14s ease,transform .14s ease}.wloc-console .cbi-section-table-row[draggable="true"]:hover{box-shadow:inset 3px 0 0 var(--wloc-accent)}.wloc-console .cbi-section-table-row.drag-over{box-shadow:inset 0 2px 0 var(--wloc-accent)}@media(prefers-reduced-motion:reduce){.wloc-console .cbi-section-table-row[draggable="true"]{transition:none}}'),
 				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}.wloc-result-error{display:block;margin-top:.2rem;max-width:16rem;overflow-wrap:anywhere;font-size:.85em;font-weight:400}'),
 				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
 				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
