@@ -349,6 +349,12 @@ return view.extend({
 			devices.parent_section_id = sectionId;
 			devicesValue.parent_section_id = sectionId;
 		}
+		function parentSectionFromEvent(event) {
+			var target = event && (event.currentTarget || event.target);
+			var sectionNode = target && target.closest
+				? target.closest('[data-section-id]') : null;
+			return sectionNode ? sectionNode.getAttribute('data-section-id') : '';
+		}
 		var devicesLoad = devicesValue.load;
 		devicesValue.load = function(sectionId) {
 			setDeviceParent(sectionId);
@@ -376,7 +382,7 @@ return view.extend({
 			return uci.get('wloc', sectionId, 'name') || _('Unnamed device condition');
 		};
 		devices.handleAdd = function(event, name) {
-			var parentId = this.parent_section_id;
+			var parentId = parentSectionFromEvent(event);
 			if (!parentId)
 				return;
 			var configName = this.uciconfig || this.map.config;

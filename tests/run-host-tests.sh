@@ -281,6 +281,8 @@ grep -q "form.ListValue, 'ssid'" openwrt/files/www/luci-static/resources/view/wl
 grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'event.currentTarget' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "closest('\[data-section-id\]')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q 'config_foreach append_rule_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
