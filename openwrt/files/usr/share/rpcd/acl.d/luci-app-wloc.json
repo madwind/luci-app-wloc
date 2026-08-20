@@ -6,7 +6,7 @@
         "luci.wloc": [ "status", "access_points", "test", "logs" ],
         "luci-rpc": [ "getDHCPLeases" ]
       },
-      "uci": [ "wloc" ]
+      "uci": [ "wloc", "wireless" ]
     },
     "write": {
       "ubus": {

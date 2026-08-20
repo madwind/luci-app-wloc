@@ -86,6 +86,7 @@ return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.load('wloc'),
+			uci.load('wireless').catch(function() { return {}; }),
 			callLeases().catch(function() { return {}; }),
 			callAccessPoints().catch(function() { return {}; }),
 			callStatus().catch(function() { return {}; })
@@ -93,9 +94,9 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var leases = data[1].dhcp_leases || data[1].leases || [];
-		var accessPoints = data[2].access_points || [];
-		var initialStatus = data[3] || {};
+		var leases = data[2].dhcp_leases || data[2].leases || [];
+		var accessPoints = data[3].access_points || [];
+		var initialStatus = data[4] || {};
 		var initialLogs = initialStatus.runtime_log || '';
 		var lookupResultNodes = {};
 		var lastUpdatedNodes = {};
@@ -208,6 +209,13 @@ return view.extend({
 		wifiSsidOption.rmempty = false;
 		wifiSsidOption.retain = true;
 		wifiSsidOption.description = _('All APs broadcasting this name belong to the same WiFi / AP group.');
+		function addSsidChoice(ssid, label) {
+			ssid = String(ssid || '');
+			if (!ssid || knownSsids.indexOf(ssid) >= 0)
+				return;
+			knownSsids.push(ssid);
+			wifiSsidOption.value(ssid, label || ssid);
+		}
 		var knownSsids = [];
 		accessPoints.forEach(function(ap) {
 			var ssid = String(ap.ssid || '');
@@ -217,13 +225,20 @@ return view.extend({
 			var count = accessPoints.filter(function(candidate) {
 				return String(candidate.ssid || '') === ssid;
 			}).length;
-			wifiSsidOption.value(ssid, '%s - %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
+			addSsidChoice(ssid, '%s - %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
+		});
+		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
+			var mode = String(wifi.mode || 'ap');
+			var ssid = String(wifi.ssid || '');
+			if ([ 'ap', 'ap-wds' ].indexOf(mode) < 0 || !ssid || knownSsids.indexOf(ssid) >= 0)
+				return;
+			addSsidChoice(ssid, '%s - %s'.format(ssid,
+				String(wifi.disabled || '0') === '1' ? _('disabled') : _('not currently active')));
 		});
 		uci.sections('wloc', 'wifi').forEach(function(wifi) {
 			var ssid = String(wifi.ssid || '');
 			if ((wifi.network || 'ssid') === 'ssid' && ssid && knownSsids.indexOf(ssid) < 0) {
-				knownSsids.push(ssid);
-				wifiSsidOption.value(ssid, '%s - %s'.format(ssid, _('not currently active')));
+				addSsidChoice(ssid, '%s - %s'.format(ssid, _('not currently active')));
 			}
 		});
 		wifiSsidOption.cfgvalue = function(sectionId) {
@@ -256,6 +271,12 @@ return view.extend({
 			var bssid = String(wifi.bssid || '').toUpperCase();
 			if (bssid && knownBssids.indexOf(bssid) < 0)
 				addBssidChoice(bssid, '%s - %s - %s'.format(wifi.ssid || _('Unavailable AP'), bssid, _('not currently active')));
+		});
+		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
+			var mode = String(wifi.mode || 'ap');
+			var bssid = String(wifi.bssid || wifi.macaddr || '').toUpperCase();
+			if ([ 'ap', 'ap-wds' ].indexOf(mode) >= 0 && bssid)
+				addBssidChoice(bssid, '%s - %s - %s'.format(wifi.ssid || _('Configured AP'), bssid, _('configured in wireless')));
 		});
 		wifiBssidOption.cfgvalue = function(sectionId) {
 			return String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();

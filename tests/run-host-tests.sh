@@ -271,6 +271,9 @@ grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc
 grep -q "flush set inet \$TABLE \$AP_INTERFACE_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
 grep -q "form.TypedSection, 'wifi'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "uci.load('wireless')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "uci.sections('wireless', 'wifi-iface')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q '"uci": \[ "wloc", "wireless" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
 ! grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
