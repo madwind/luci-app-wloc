@@ -16,6 +16,14 @@ order and then child device order; the first match wins. Requests without a
 matching condition pass through unchanged. Use this package only on
 devices you own or are authorized to test.
 
+Each WiFi/AP group can also be given a daily disable window in router local
+time. During the window, matching configured AP interfaces receive a temporary
+runtime `disabled` override and are reloaded; the original wireless UCI values
+are restored when the window ends and are never committed by WLOC. Equal start
+and end times mean all day, and an end time earlier than the start crosses
+midnight. An SSID window applies to every configured AP using that SSID; a
+BSSID window uses the selected wireless section/interface when available.
+
 The nftables rules put explicitly selected devices in a MAC set and AP-wide
 rules in a hostapd interface set, then match the resolved IPv4 addresses of
 both Apple WLOC hostnames and TCP/443. They do not capture the whole LAN bridge.

@@ -66,6 +66,7 @@ define Package/luci-app-wloc/install
 	$(INSTALL_BIN) $(CURDIR)/openwrt/files/etc/uci-defaults/luci-app-wloc $(1)/etc/uci-defaults/luci-app-wloc
 	$(INSTALL_DIR) $(1)/usr/libexec/wloc
 	$(INSTALL_BIN) $(CURDIR)/openwrt/files/usr/libexec/wloc/rules.sh $(1)/usr/libexec/wloc/rules.sh
+	$(INSTALL_BIN) $(CURDIR)/openwrt/files/usr/libexec/wloc/wifi-schedule.sh $(1)/usr/libexec/wloc/wifi-schedule.sh
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) $(CURDIR)/openwrt/files/usr/libexec/rpcd/luci.wloc $(1)/usr/libexec/rpcd/luci.wloc
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d

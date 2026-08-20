@@ -217,16 +217,52 @@ emit_access_points() {
 	json_dump
 }
 
+emit_configured_access_points() {
+	local section mode ssid bssid macaddr ifname device disabled
+	. /lib/functions.sh
+
+	json_init
+	json_add_array access_points
+	append_configured_access_point() {
+		section="$1"
+		config_get mode "$section" mode ap
+		case "$mode" in
+			ap|ap-wds) ;;
+			*) return 0;;
+		esac
+		config_get ssid "$section" ssid
+		config_get bssid "$section" bssid
+		config_get macaddr "$section" macaddr
+		config_get ifname "$section" ifname
+		config_get device "$section" device
+		config_get_bool disabled "$section" disabled 0
+		[ -n "$ssid" ] || [ -n "$bssid" ] || [ -n "$macaddr" ] || return 0
+		json_add_object
+		json_add_string section "$section"
+		json_add_string ssid "$ssid"
+		json_add_string bssid "${bssid:-$macaddr}"
+		json_add_string interface "$ifname"
+		json_add_string device "$device"
+		json_add_boolean disabled "$disabled"
+		json_close_object
+	}
+	config_load wireless
+	config_foreach append_configured_access_point wifi-iface
+	json_close_array
+	json_dump
+}
+
 case "$1" in
 list)
 	json_init
-	for method in status access_points restart disable regenerate_ca cleanup test logs; do json_add_object "$method"; json_close_object; done
+	for method in status access_points configured_access_points restart disable regenerate_ca cleanup test logs; do json_add_object "$method"; json_close_object; done
 	json_dump
 	;;
 call)
 	case "$2" in
 	status) emit_status;;
 	access_points) emit_access_points;;
+	configured_access_points) emit_configured_access_points;;
 	restart)
 		"$INIT" restart >/dev/null 2>&1
 		sleep 1

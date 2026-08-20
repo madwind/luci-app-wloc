@@ -11,6 +11,7 @@ var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {}
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'access_points', expect: {} });
+var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
 var callIwinfoDevices = rpc.declare({ object: 'iwinfo', method: 'devices', expect: {} });
 var callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ], expect: {} });
 var callLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: {} });
@@ -131,6 +132,7 @@ return view.extend({
 			uci.load('wireless').catch(function() { return {}; }),
 			callLeases().catch(function() { return {}; }),
 			callWirelessAccessPoints(),
+			callConfiguredAccessPoints().catch(function() { return {}; }),
 			callStatus().catch(function() { return {}; })
 		]);
 	},
@@ -138,11 +140,46 @@ return view.extend({
 	render: function(data) {
 		var leases = data[2].dhcp_leases || data[2].leases || [];
 		var accessPoints = data[3].access_points || [];
-		var initialStatus = data[4] || {};
+		var configuredAccessPoints = (data[4] || {}).access_points || [];
+		var initialStatus = data[5] || {};
 		var initialLogs = initialStatus.runtime_log || '';
 		var lookupResultNodes = {};
 		var lastUpdatedNodes = {};
 		var lastResultNodes = {};
+		var configuredWireless = [];
+		var configuredWirelessKeys = {};
+
+		function addConfiguredWireless(source) {
+			var ssid = String(source && source.ssid || '');
+			var bssid = String(source && source.bssid || '').toUpperCase();
+			var section = String(source && (source.section || source.wireless_section) || '');
+			var interfaceName = String(source && (source.interface || source.ifname || source.device) || '');
+			var key = section || (bssid ? 'bssid:' + bssid : 'ssid:' + ssid + '|interface:' + interfaceName);
+			if ((!ssid && !bssid) || configuredWirelessKeys[key])
+				return;
+			configuredWirelessKeys[key] = true;
+			configuredWireless.push({
+				ssid: ssid,
+				bssid: bssid,
+				section: section,
+				interface: interfaceName,
+				disabled: truthy(source && source.disabled)
+			});
+		}
+
+		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
+			var mode = String(wifi.mode || 'ap');
+			if ([ 'ap', 'ap-wds' ].indexOf(mode) < 0)
+				return;
+			addConfiguredWireless({
+				section: wifi['.name'],
+				ssid: wifi.ssid,
+				bssid: wifi.bssid || wifi.macaddr,
+				interface: wifi.ifname || wifi.device,
+				disabled: wifi.disabled
+			});
+		});
+		configuredAccessPoints.forEach(addConfiguredWireless);
 
 		function rememberNode(nodes, sectionId, node) {
 			if (!nodes[sectionId])
@@ -251,6 +288,10 @@ return view.extend({
 		wifiSsidOption.rmempty = false;
 		wifiSsidOption.retain = true;
 		wifiSsidOption.description = _('All APs broadcasting this name belong to the same WiFi / AP group.');
+		if (!accessPoints.length && configuredWireless.length)
+			wifiSsidOption.description = _('Live AP data is not ready; choices are loaded from the saved wireless configuration.');
+		if (!accessPoints.length && !configuredWireless.length)
+			wifiSsidOption.description = _('No AP is currently visible and the saved wireless configuration could not be read. Check the wireless config and rpcd permissions, then reload this page.');
 		function addSsidChoice(ssid, label) {
 			ssid = String(ssid || '');
 			if (!ssid || knownSsids.indexOf(ssid) >= 0)
@@ -269,13 +310,11 @@ return view.extend({
 			}).length;
 			addSsidChoice(ssid, '%s - %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
 		});
-		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
-			var mode = String(wifi.mode || 'ap');
+		configuredWireless.forEach(function(wifi) {
 			var ssid = String(wifi.ssid || '');
-			if ([ 'ap', 'ap-wds' ].indexOf(mode) < 0 || !ssid || knownSsids.indexOf(ssid) >= 0)
+			if (!ssid || knownSsids.indexOf(ssid) >= 0)
 				return;
-			addSsidChoice(ssid, '%s - %s'.format(ssid,
-				String(wifi.disabled || '0') === '1' ? _('disabled') : _('not currently active')));
+			addSsidChoice(ssid, '%s - %s'.format(ssid, wifi.disabled ? _('disabled') : _('configured in wireless')));
 		});
 		uci.sections('wloc', 'wifi').forEach(function(wifi) {
 			var ssid = String(wifi.ssid || '');
@@ -296,6 +335,10 @@ return view.extend({
 		wifiBssidOption.depends('network', 'bssid');
 		wifiBssidOption.rmempty = false;
 		wifiBssidOption.description = _('Select one AP by BSSID. A BSSID identifies one radio, even when several radios use the same WiFi name.');
+		if (!accessPoints.length && configuredWireless.length)
+			wifiBssidOption.description = _('Live AP data is not ready; choices are loaded from the saved wireless configuration.');
+		if (!accessPoints.length && !configuredWireless.length)
+			wifiBssidOption.description = _('No AP is currently visible. Existing saved BSSID values remain selectable, but a new BSSID needs the wireless interface to be available.');
 		var knownBssids = [];
 		function addBssidChoice(bssid, label) {
 			bssid = String(bssid || '').toUpperCase();
@@ -309,16 +352,15 @@ return view.extend({
 			if (bssid)
 				addBssidChoice(bssid, '%s - %s - %s'.format(ap.ssid || _('Hidden SSID'), bssid, ap.interface || _('unknown interface')));
 		});
+		configuredWireless.forEach(function(wifi) {
+			var bssid = String(wifi.bssid || '').toUpperCase();
+			if (bssid)
+				addBssidChoice(bssid, '%s - %s - %s'.format(wifi.ssid || _('Configured AP'), bssid, _('configured in wireless')));
+		});
 		uci.sections('wloc', 'wifi').forEach(function(wifi) {
 			var bssid = String(wifi.bssid || '').toUpperCase();
-			if (bssid && knownBssids.indexOf(bssid) < 0)
+			if (bssid)
 				addBssidChoice(bssid, '%s - %s - %s'.format(wifi.ssid || _('Unavailable AP'), bssid, _('not currently active')));
-		});
-		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
-			var mode = String(wifi.mode || 'ap');
-			var bssid = String(wifi.bssid || wifi.macaddr || '').toUpperCase();
-			if ([ 'ap', 'ap-wds' ].indexOf(mode) >= 0 && bssid)
-				addBssidChoice(bssid, '%s - %s - %s'.format(wifi.ssid || _('Configured AP'), bssid, _('configured in wireless')));
 		});
 		wifiBssidOption.cfgvalue = function(sectionId) {
 			return String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
@@ -326,13 +368,22 @@ return view.extend({
 		wifiBssidOption.write = function(sectionId, value) {
 			value = String(value || '').toLowerCase();
 			uci.set('wloc', sectionId, 'bssid', value);
-			var ap = accessPoints.find(function(candidate) {
+			var matches = accessPoints.concat(configuredWireless).filter(function(candidate) {
 				return String(candidate.bssid || '').toLowerCase() === value;
 			});
+			var ap = matches.find(function(candidate) { return candidate.section; }) || matches[0];
 			if (ap && ap.ssid)
 				uci.set('wloc', sectionId, 'ssid', ap.ssid);
 			else
 				uci.unset('wloc', sectionId, 'ssid');
+			if (ap && ap.section)
+				uci.set('wloc', sectionId, 'wireless_section', ap.section);
+			else
+				uci.unset('wloc', sectionId, 'wireless_section');
+			if (ap && ap.interface)
+				uci.set('wloc', sectionId, 'wireless_ifname', ap.interface);
+			else
+				uci.unset('wloc', sectionId, 'wireless_ifname');
 		};
 		wifiBssidOption.validate = function(sectionId, value) {
 			value = String(value || '').toLowerCase();
@@ -341,6 +392,33 @@ return view.extend({
 			return (parseInt(value.slice(0, 2), 16) & 1) === 0 && value !== '00:00:00:00:00:00'
 				? true : _('The BSSID must be an individual unicast address.');
 		};
+		wifiSections.option(form.HiddenValue, 'wireless_section');
+		wifiSections.option(form.HiddenValue, 'wireless_ifname');
+
+		var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
+		scheduleEnabledOption.default = '0';
+		scheduleEnabledOption.rmempty = false;
+		scheduleEnabledOption.description = _('Disable the matching WiFi/AP every day during the time window below, using the router local time.');
+
+		function scheduleTimeValidator(sectionId, value) {
+			return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))
+				? true : _('Enter a time in HH:MM format.');
+		}
+
+		var scheduleStartOption = wifiSections.option(form.Value, 'schedule_start', _('Disable from'));
+		scheduleStartOption.depends('schedule_enabled', '1');
+		scheduleStartOption.default = '22:00';
+		scheduleStartOption.rmempty = false;
+		scheduleStartOption.placeholder = '22:00';
+		scheduleStartOption.validate = scheduleTimeValidator;
+
+		var scheduleEndOption = wifiSections.option(form.Value, 'schedule_end', _('Restore at'));
+		scheduleEndOption.depends('schedule_enabled', '1');
+		scheduleEndOption.default = '06:00';
+		scheduleEndOption.rmempty = false;
+		scheduleEndOption.placeholder = '06:00';
+		scheduleEndOption.description = _('If the end is earlier than the start, the window crosses midnight. Equal times mean all day.');
+		scheduleEndOption.validate = scheduleTimeValidator;
 
 		var devicesValue = wifiSections.option(form.SectionValue, '_devices', form.GridSection,
 			'device', _('Device conditions'), _('Add one or more device conditions under this WiFi / AP.'));
@@ -548,6 +626,13 @@ return view.extend({
 			}).length;
 			ssidOption.value(ssid, '%s · %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
 		});
+		configuredWireless.forEach(function(wifi) {
+			var ssid = String(wifi.ssid || '');
+			if (ssid && knownSsids.indexOf(ssid) < 0) {
+				knownSsids.push(ssid);
+				ssidOption.value(ssid, '%s · %s'.format(ssid, wifi.disabled ? _('disabled') : _('configured in wireless')));
+			}
+		});
 		uci.sections('wloc', 'device').forEach(function(device) {
 			var ssid = String(device.ssid || '');
 			if (device.network === 'ssid' && ssid && knownSsids.indexOf(ssid) < 0) {
@@ -574,6 +659,11 @@ return view.extend({
 			if (bssid)
 				bssidOption.value(bssid, '%s · %s · %s'.format(ap.ssid || _('Hidden SSID'), bssid, ap.interface || _('unknown interface')));
 		});
+		configuredWireless.forEach(function(wifi) {
+			var bssid = String(wifi.bssid || '').toUpperCase();
+			if (bssid && !accessPoints.some(function(ap) { return String(ap.bssid || '').toUpperCase() === bssid; }))
+				bssidOption.value(bssid, '%s · %s · %s'.format(wifi.ssid || _('Configured AP'), bssid, _('configured in wireless')));
+		});
 		uci.sections('wloc', 'device').forEach(function(device) {
 			var bssid = String(device.bssid || '').toUpperCase();
 			if (bssid && !accessPoints.some(function(ap) { return String(ap.bssid || '').toUpperCase() === bssid; }))
@@ -585,7 +675,7 @@ return view.extend({
 		bssidOption.write = function(sectionId, value) {
 			value = String(value || '').toLowerCase();
 			uci.set('wloc', sectionId, 'bssid', value);
-			var ap = accessPoints.find(function(candidate) {
+			var ap = accessPoints.concat(configuredWireless).find(function(candidate) {
 				return String(candidate.bssid || '').toLowerCase() === value;
 			});
 			if (ap && ap.ssid)

@@ -285,15 +285,27 @@ grep -q 'event.currentTarget' openwrt/files/www/luci-static/resources/view/wloc/
 grep -q "closest('\[data-section-id\]')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q 'config_foreach append_rule_for_wifi device' openwrt/files/etc/init.d/wloc
+grep -q 'procd_set_param command "\$SCHEDULE" run' openwrt/files/etc/init.d/wloc
+grep -q 'wifi-schedule.sh' openwrt/files/etc/init.d/wloc Makefile
+grep -q 'window_active()' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q 'uci -q set "wireless.\$section.disabled=1"' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q 'wifi reload' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "method: 'configured_access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "object: 'iwinfo', method: 'devices'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "object: 'iwinfo', method: 'info'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'emit_configured_access_points' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q 'configured_access_points' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q '"iwinfo": \[ "devices", "info" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
 grep -q '+rpcd-mod-iwinfo' Makefile
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "parentSummary.cfgvalue = parentSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "deviceSummary.cfgvalue = deviceSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "locationSummary.cfgvalue = locationSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "'schedule_enabled'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "'schedule_start'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "'schedule_end'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.HiddenValue, 'wireless_section'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "form.Value, 'accuracy'" openwrt/files/www/luci-static/resources/view/wloc/main.js
