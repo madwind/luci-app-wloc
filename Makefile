@@ -26,7 +26,7 @@ define Package/luci-app-wloc
   SUBMENU:=Web Servers/Proxies
   TITLE:=Apple WLOC movement-following location proxy for OpenWrt
   URL:=https://github.com/madwind/luci-app-wloc
-  DEPENDS:=+libc +libgcc +nftables +ip-full +jsonfilter +rpcd +uhttpd +luci-base
+  DEPENDS:=+libc +libgcc +nftables +ip-full +jsonfilter +rpcd +rpcd-mod-iwinfo +uhttpd +luci-base
 endef
 
 define Package/luci-app-wloc/description

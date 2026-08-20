@@ -284,6 +284,10 @@ grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/ma
 grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q 'config_foreach append_rule_for_wifi device' openwrt/files/etc/init.d/wloc
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "object: 'iwinfo', method: 'devices'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "object: 'iwinfo', method: 'info'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q '"iwinfo": \[ "devices", "info" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
+grep -q '+rpcd-mod-iwinfo' Makefile
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js

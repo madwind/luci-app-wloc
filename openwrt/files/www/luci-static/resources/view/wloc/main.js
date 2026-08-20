@@ -11,6 +11,8 @@ var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {}
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'access_points', expect: {} });
+var callIwinfoDevices = rpc.declare({ object: 'iwinfo', method: 'devices', expect: {} });
+var callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ], expect: {} });
 var callLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: {} });
 
 function truthy(value) {
@@ -82,13 +84,53 @@ function lookupIpInfo(ip) {
 	});
 }
 
+function callWirelessAccessPoints() {
+	return Promise.all([
+		callAccessPoints().catch(function() { return {}; }),
+		callIwinfoDevices().then(function(result) {
+			var devices = Array.isArray(result.devices) ? result.devices : [];
+			return Promise.all(devices.map(function(device) {
+				return callIwinfoInfo(device).then(function(info) {
+					var mode = String(info.mode || '').toLowerCase();
+					if (mode && [ 'master', 'ap' ].indexOf(mode) < 0)
+						return null;
+					return {
+						ssid: info.ssid || '',
+						bssid: info.bssid || '',
+						interface: device
+					};
+				}).catch(function() { return null; });
+			}));
+		}).catch(function() { return []; })
+	]).then(function(results) {
+		var accessPoints = [];
+		var seenBssids = {};
+
+		function addAccessPoint(ap) {
+			var bssid = String(ap && ap.bssid || '').toUpperCase();
+			if (!/^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(bssid) || seenBssids[bssid])
+				return;
+			seenBssids[bssid] = true;
+			accessPoints.push({
+				ssid: String(ap.ssid || ''),
+				bssid: bssid,
+				interface: String(ap.interface || ap.device || '')
+			});
+		}
+
+		(results[1] || []).forEach(addAccessPoint);
+		(results[0].access_points || []).forEach(addAccessPoint);
+		return { access_points: accessPoints };
+	});
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.load('wloc'),
 			uci.load('wireless').catch(function() { return {}; }),
 			callLeases().catch(function() { return {}; }),
-			callAccessPoints().catch(function() { return {}; }),
+			callWirelessAccessPoints(),
 			callStatus().catch(function() { return {}; })
 		]);
 	},

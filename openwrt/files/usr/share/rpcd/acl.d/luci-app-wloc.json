@@ -4,7 +4,8 @@
     "read": {
       "ubus": {
         "luci.wloc": [ "status", "access_points", "test", "logs" ],
-        "luci-rpc": [ "getDHCPLeases" ]
+        "luci-rpc": [ "getDHCPLeases" ],
+        "iwinfo": [ "devices", "info" ]
       },
       "uci": [ "wloc", "wireless" ]
     },
