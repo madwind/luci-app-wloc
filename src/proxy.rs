@@ -107,21 +107,27 @@ struct H2Entry {
     sender: h2::client::SendRequest<Bytes>,
 }
 
-fn first_matching_rule(
-    rules: &[LocationRule],
+fn first_matching_rule<'a>(
+    rules: &'a [LocationRule],
     mac: MacAddress,
     bssid: Option<MacAddress>,
-) -> Option<&LocationRule> {
+    ssid: Option<&str>,
+) -> Option<&'a LocationRule> {
     rules
         .iter()
-        .find(|rule| rule.device.matches(mac) && rule.network.matches(bssid))
+        .find(|rule| rule.device.matches(mac) && rule.network.matches(bssid, ssid))
 }
 
 fn network_lookup_required(rules: &[LocationRule], mac: MacAddress) -> bool {
     rules
         .iter()
         .find(|rule| rule.device.matches(mac))
-        .is_some_and(|rule| matches!(rule.network, NetworkSelector::Bssid(_)))
+        .is_some_and(|rule| {
+            matches!(
+                &rule.network,
+                NetworkSelector::Bssid(_) | NetworkSelector::Ssid(_)
+            )
+        })
 }
 
 #[derive(Clone)]
@@ -256,6 +262,9 @@ impl Proxy {
             &self.rules,
             identity.mac,
             access_point.as_ref().map(|access_point| access_point.bssid),
+            access_point
+                .as_ref()
+                .map(|access_point| access_point.ssid.as_str()),
         )
         .cloned())
     }
@@ -1263,14 +1272,36 @@ mod peer_identity_tests {
             ),
         ];
         assert_eq!(
-            first_matching_rule(&rules, phone, Some(ap)).unwrap().id,
+            first_matching_rule(&rules, phone, Some(ap), None)
+                .unwrap()
+                .id,
             "all_first"
         );
         rules.reverse();
         assert_eq!(
-            first_matching_rule(&rules, phone, Some(ap)).unwrap().id,
+            first_matching_rule(&rules, phone, Some(ap), None)
+                .unwrap()
+                .id,
             "specific_later"
         );
+    }
+
+    #[test]
+    fn matches_a_configured_ssid_across_access_points() {
+        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
+        let ap = MacAddress::parse("aa:bb:cc:dd:ee:02").unwrap();
+        let rules = vec![rule(
+            "wifi_name",
+            DeviceSelector::Mac(phone),
+            NetworkSelector::Ssid("Diablo".into()),
+        )];
+        assert_eq!(
+            first_matching_rule(&rules, phone, Some(ap), Some("Diablo"))
+                .unwrap()
+                .id,
+            "wifi_name"
+        );
+        assert!(first_matching_rule(&rules, phone, Some(ap), Some("Guest")).is_none());
     }
 
     #[test]

@@ -86,9 +86,10 @@ impl DeviceSelector {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkSelector {
     Any,
+    Ssid(String),
     Bssid(MacAddress),
 }
 
@@ -96,18 +97,34 @@ impl NetworkSelector {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "*" => Ok(Self::Any),
+            value if value.starts_with("ssid:") => {
+                let ssid = &value["ssid:".len()..];
+                if ssid.is_empty()
+                    || ssid.len() > 32
+                    || ssid
+                        .chars()
+                        .any(|character| character == '\0' || character.is_control())
+                {
+                    return Err("invalid SSID".into());
+                }
+                Ok(Self::Ssid(ssid.into()))
+            }
             value => MacAddress::parse(value).map(Self::Bssid),
         }
     }
 
-    pub fn matches(&self, bssid: Option<MacAddress>) -> bool {
-        matches!(self, Self::Any)
-            || matches!((self, bssid), (Self::Bssid(expected), Some(actual)) if *expected == actual)
+    pub fn matches(&self, bssid: Option<MacAddress>, ssid: Option<&str>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Ssid(expected) => ssid == Some(expected.as_str()),
+            Self::Bssid(expected) => bssid == Some(*expected),
+        }
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::Any => "any".into(),
+            Self::Ssid(ssid) => format!("ssid:{ssid}"),
             Self::Bssid(bssid) => bssid.label(),
         }
     }
@@ -277,12 +294,14 @@ impl Config {
     pub fn capture_selectors(&self) -> Vec<String> {
         let mut selectors = Vec::new();
         for rule in &self.rules {
-            let selector = match (rule.device, rule.network) {
+            let selector = match (rule.device, &rule.network) {
                 (DeviceSelector::Mac(mac), _) => format!("mac:{}", mac.label()),
                 (DeviceSelector::All, NetworkSelector::Bssid(bssid)) => {
                     format!("bssid:{}", bssid.label())
                 }
-                (DeviceSelector::All, NetworkSelector::Any) => "wireless:any".into(),
+                (DeviceSelector::All, NetworkSelector::Any | NetworkSelector::Ssid(_)) => {
+                    "wireless:any".into()
+                }
             };
             if !selectors.contains(&selector) {
                 selectors.push(selector);
@@ -292,7 +311,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID MAC_OR_* BSSID_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-ssid ID SSID] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+        "wlocd --rule ID MAC_OR_* NETWORK_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-ssid ID SSID] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
     }
 }
 
@@ -445,8 +464,18 @@ mod tests {
         let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
         assert!(DeviceSelector::All.matches(phone));
         assert!(DeviceSelector::Mac(phone).matches(phone));
-        assert!(NetworkSelector::Any.matches(None));
-        assert!(NetworkSelector::Bssid(ap).matches(Some(ap)));
-        assert!(!NetworkSelector::Bssid(ap).matches(None));
+        assert!(NetworkSelector::Any.matches(None, None));
+        assert!(NetworkSelector::Bssid(ap).matches(Some(ap), Some("Diablo")));
+        assert!(!NetworkSelector::Bssid(ap).matches(None, Some("Diablo")));
+        assert!(NetworkSelector::Ssid("Diablo".into()).matches(Some(ap), Some("Diablo")));
+        assert!(!NetworkSelector::Ssid("Diablo".into()).matches(Some(ap), Some("diablo")));
+    }
+
+    #[test]
+    fn ssid_network_selectors_capture_all_wireless_interfaces() {
+        let config =
+            Config::from_iter(args(&["--rule", "diablo", "*", "ssid:Diablo", "1", "2"])).unwrap();
+        assert_eq!(config.capture_selectors(), ["wireless:any"]);
+        assert_eq!(config.rules[0].network.label(), "ssid:Diablo");
     }
 }

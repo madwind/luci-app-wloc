@@ -8,8 +8,10 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
 Enabled rules are evaluated in their UCI/LuCI order and the first matching rule
-wins. A rule can select one MAC or all wireless devices, and can select one AP
-by BSSID or accept any wireless source. SSID is display metadata only. Requests
+wins. A rule can select one MAC or all wireless devices, and can accept any
+wireless source, match a configured Wi-Fi name (SSID), or select one AP by
+BSSID. SSID matching includes every AP broadcasting that name; BSSID remains
+available when one radio must stay separate. Requests
 without a matching rule pass through unchanged. Use this package only on
 devices you own or are authorized to test.
 

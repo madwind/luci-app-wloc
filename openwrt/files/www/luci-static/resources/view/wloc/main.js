@@ -191,6 +191,23 @@ return view.extend({
 		option.placeholder = _('iPhone at living room AP');
 		option.rmempty = false;
 
+		function modalGroup(optionName, title, description, tone) {
+			var group = rules.option(form.DummyValue, optionName, null);
+			group.modalonly = true;
+			group.rmempty = true;
+			group.cfgvalue = function() { return ''; };
+			group.renderWidget = function() {
+				return E('div', { 'class': 'wloc-modal-group wloc-modal-group-' + tone }, [
+					E('strong', { 'class': 'wloc-modal-group-title' }, title),
+					E('span', { 'class': 'wloc-modal-group-description' }, description)
+				]);
+			};
+			return group;
+		}
+
+		modalGroup('_device_group', _('Device'),
+			_('Choose which client this rule applies to.'), 'device');
+
 		var deviceSummary = rules.option(form.DummyValue, '_device_summary', _('Device'));
 		deviceSummary.textvalue = function(sectionId) {
 			return uci.get('wloc', sectionId, 'device') === 'all'
@@ -264,9 +281,15 @@ return view.extend({
 			return true;
 		};
 
+		modalGroup('_wifi_group', _('WiFi / AP'),
+			_('Limit this rule to a wireless source, or accept any source.'), 'wifi');
+
 		var sourceSummary = rules.option(form.DummyValue, '_source_summary', _('Network source'));
 		sourceSummary.textvalue = function(sectionId) {
-			if (uci.get('wloc', sectionId, 'network') !== 'bssid')
+			var network = uci.get('wloc', sectionId, 'network');
+			if (network === 'ssid')
+				return '%s · %s'.format(_('WiFi name'), uci.get('wloc', sectionId, 'ssid') || _('SSID not set'));
+			if (network !== 'bssid')
 				return _('Any source');
 			var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
 			var ssid = uci.get('wloc', sectionId, 'ssid');
@@ -275,16 +298,51 @@ return view.extend({
 
 		var networkOption = rules.option(form.ListValue, 'network', _('Network source match'));
 		networkOption.modalonly = true;
-		networkOption.value('any', _('Any source'));
+		networkOption.value('any', _('Any WiFi / AP source'));
+		networkOption.value('ssid', _('Specified WiFi name (SSID)'));
 		networkOption.value('bssid', _('Specified AP (BSSID)'));
 		networkOption.default = 'any';
 		networkOption.rmempty = false;
+
+		var ssidOption = rules.option(form.Value, 'ssid', _('WiFi name (SSID)'));
+		ssidOption.modalonly = true;
+		ssidOption.depends('network', 'ssid');
+		ssidOption.rmempty = false;
+		ssidOption.retain = true;
+		ssidOption.description = _('Matches every AP broadcasting this WiFi name. Choose a BSSID below to pin the rule to one radio.');
+		ssidOption.placeholder = _('Select or enter an SSID');
+		var knownSsids = [];
+		accessPoints.forEach(function(ap) {
+			var ssid = String(ap.ssid || '');
+			if (!ssid || knownSsids.indexOf(ssid) >= 0)
+				return;
+			knownSsids.push(ssid);
+			var count = accessPoints.filter(function(candidate) {
+				return String(candidate.ssid || '') === ssid;
+			}).length;
+			ssidOption.value(ssid, '%s · %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
+		});
+		uci.sections('wloc', 'rule').forEach(function(rule) {
+			var ssid = String(rule.ssid || '');
+			if (rule.network === 'ssid' && ssid && knownSsids.indexOf(ssid) < 0) {
+				knownSsids.push(ssid);
+				ssidOption.value(ssid, '%s · %s'.format(ssid, _('not currently active')));
+			}
+		});
+		ssidOption.cfgvalue = function(sectionId) {
+			return String(uci.get('wloc', sectionId, 'ssid') || '');
+		};
+		ssidOption.validate = function(sectionId, value) {
+			value = String(value || '');
+			return value && value.length <= 32 && !/[\x00-\x1f\x7f]/.test(value)
+				? true : _('Enter a valid WiFi name (1-32 characters).');
+		};
 
 		var bssidOption = rules.option(form.Value, 'bssid', _('Access point'));
 		bssidOption.modalonly = true;
 		bssidOption.depends('network', 'bssid');
 		bssidOption.rmempty = false;
-		bssidOption.description = _('SSID is shown for recognition; matching always uses BSSID. Same-name access points remain separate.');
+		bssidOption.description = _('Choose one AP by BSSID. BSSID is unique per radio; same-name access points remain separate.');
 		accessPoints.forEach(function(ap) {
 			var bssid = String(ap.bssid || '').toUpperCase();
 			if (bssid)
@@ -586,6 +644,7 @@ return view.extend({
 				E('style', {}, '.wloc-console .cbi-section-table-row[draggable="true"]{transition:box-shadow .14s ease,transform .14s ease}.wloc-console .cbi-section-table-row[draggable="true"]:hover{box-shadow:inset 3px 0 0 var(--wloc-accent)}.wloc-console .cbi-section-table-row.drag-over{box-shadow:inset 0 2px 0 var(--wloc-accent)}@media(prefers-reduced-motion:reduce){.wloc-console .cbi-section-table-row[draggable="true"]{transition:none}}'),
 				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}.wloc-result-error{display:block;margin-top:.2rem;max-width:16rem;overflow-wrap:anywhere;font-size:.85em;font-weight:400}'),
 				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
+				E('style', {}, '.cbi-modal{--wloc-muted:rgba(127,127,127,.85);--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35)}.cbi-modal .cbi-value[data-name="_device_group"],.cbi-modal .cbi-value[data-name="_wifi_group"]{display:block;margin:1.15rem 0 .35rem}.wloc-modal-group{display:flex;align-items:baseline;gap:.75rem;width:100%;padding:.7rem .85rem;border:1px solid var(--wloc-border);border-left:3px solid;background:var(--wloc-surface)}.wloc-modal-group-device{border-left-color:#8b5cf6}.wloc-modal-group-wifi{border-left-color:#0891b2}.wloc-modal-group-title{font-size:1rem;letter-spacing:.01em}.wloc-modal-group-description{color:var(--wloc-muted);font-size:.85em}@media(prefers-color-scheme:dark){.cbi-modal{--wloc-muted:rgba(255,255,255,.68);--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18)}.wloc-modal-group-device{border-left-color:#a78bfa}.wloc-modal-group-wifi{border-left-color:#22d3ee}}@media(max-width:560px){.wloc-modal-group{display:grid;gap:.2rem}}'),
 				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
 				formNode,
 				E('section', { 'class': 'wloc-card' }, [

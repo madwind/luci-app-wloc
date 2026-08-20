@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn status_uses_bssid_for_identity_and_ssid_only_as_metadata() {
+    fn status_exposes_bssid_and_ssid_for_network_matching() {
         let value: Value = serde_json::from_str(
             r#"{"ssid":"Shared name","bssid":"AA:BB:CC:DD:EE:02","ifname":"wlan1"}"#,
         )

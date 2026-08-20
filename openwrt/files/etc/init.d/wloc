@@ -27,7 +27,7 @@ add_capture_selector() {
 }
 
 validate_rule() {
-	local section rule_enabled name device mac network bssid latitude longitude proxy_type proxy_host proxy_port
+	local section rule_enabled name device mac network bssid ssid latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool rule_enabled "$section" enabled 1
 	[ "$rule_enabled" -eq 1 ] || return 0
@@ -36,6 +36,7 @@ validate_rule() {
 	config_get mac "$section" mac
 	config_get network "$section" network any
 	config_get bssid "$section" bssid
+	config_get ssid "$section" ssid
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
@@ -62,6 +63,10 @@ validate_rule() {
 		bssid)
 			valid_mac "$bssid" || { rule_error="invalid BSSID for rule: $name"; return 0; }
 			[ "$device" != all ] || add_capture_selector "bssid:$bssid"
+			;;
+		ssid)
+			[ -n "$ssid" ] || { rule_error="missing SSID for rule: $name"; return 0; }
+			[ "$device" != all ] || add_capture_selector 'wireless:any'
 			;;
 		*) rule_error="invalid network source for rule: $name"; return 0;;
 	esac
@@ -100,7 +105,12 @@ append_rule() {
 	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
 	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
 	[ "$device" = all ] && device_arg='*' || device_arg="$mac"
-	[ "$network" = any ] && network_arg='*' || network_arg="$bssid"
+	case "$network" in
+		any) network_arg='*';;
+		bssid) network_arg="$bssid";;
+		ssid) network_arg="ssid:$ssid";;
+		*) return 0;;
+	esac
 	# config_foreach preserves UCI section order; wlocd must receive it unchanged.
 	procd_append_param command --rule "$section" "$device_arg" "$network_arg" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
