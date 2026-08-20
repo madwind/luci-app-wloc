@@ -291,6 +291,9 @@ grep -q "object: 'iwinfo', method: 'info'" openwrt/files/www/luci-static/resourc
 grep -q '"iwinfo": \[ "devices", "info" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
 grep -q '+rpcd-mod-iwinfo' Makefile
 grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "parentSummary.cfgvalue = parentSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "deviceSummary.cfgvalue = deviceSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "locationSummary.cfgvalue = locationSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "form.Value, 'accuracy'" openwrt/files/www/luci-static/resources/view/wloc/main.js

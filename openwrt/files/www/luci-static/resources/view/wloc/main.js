@@ -427,7 +427,7 @@ return view.extend({
 
 		var parentSummary = devices.option(form.DummyValue, '_wifi_parent', _('WiFi / AP'));
 		parentSummary.modalonly = true;
-		parentSummary.textvalue = function(sectionId) {
+		parentSummary.cfgvalue = parentSummary.textvalue = function(sectionId) {
 			var parentId = uci.get('wloc', sectionId, 'wifi');
 			var parentName = parentId ? uci.get('wloc', parentId, 'name') : '';
 			return parentName ? '%s - %s'.format(parentName, wifiSourceSummary(parentId)) : _('WiFi / AP not set');
@@ -437,7 +437,7 @@ return view.extend({
 			_('Choose which client this device condition applies to.'), 'device');
 
 		var deviceSummary = devices.option(form.DummyValue, '_device_summary', _('Device'));
-		deviceSummary.textvalue = function(sectionId) {
+		deviceSummary.cfgvalue = deviceSummary.textvalue = function(sectionId) {
 			return uci.get('wloc', sectionId, 'device') === 'all'
 				? _('All devices') : String(uci.get('wloc', sectionId, 'mac') || _('MAC not set')).toUpperCase();
 		};
@@ -612,7 +612,7 @@ return view.extend({
 			_('Set the virtual location and the optional proxy for this device condition.'), 'location');
 
 		var locationSummary = devices.option(form.DummyValue, '_location_summary', _('Location'));
-		locationSummary.textvalue = function(sectionId) {
+		locationSummary.cfgvalue = locationSummary.textvalue = function(sectionId) {
 			return '%s, %s'.format(uci.get('wloc', sectionId, 'latitude') || '—', uci.get('wloc', sectionId, 'longitude') || '—');
 		};
 
