@@ -279,6 +279,7 @@ grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci
 grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "wifiNetworkOption.value('bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "wifiNetworkOption.default = 'any'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiNetworkOption.value('any', _('Any AP'))" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "wifiNetworkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js

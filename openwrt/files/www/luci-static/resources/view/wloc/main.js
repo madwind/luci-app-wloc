@@ -274,15 +274,15 @@ return view.extend({
 				var ssid = uci.get('wloc', sectionId, 'ssid');
 				return ssid ? '%s - %s'.format(ssid, bssid) : bssid;
 			}
-			return _('Any WiFi / AP');
+			return _('Any AP');
 		}
 
 		var wifiNetworkOption = wifiSections.option(form.ListValue, 'network', _('WiFi / AP source'));
-		wifiNetworkOption.value('any', _('Any WiFi / AP'));
+		wifiNetworkOption.value('any', _('Any AP'));
 		wifiNetworkOption.value('bssid', _('Specified AP (BSSID)'));
 		wifiNetworkOption.default = 'any';
 		wifiNetworkOption.rmempty = false;
-		wifiNetworkOption.description = _('This parent selects Any WiFi / AP or one exact AP by BSSID. Add device conditions below it.');
+		wifiNetworkOption.description = _('This parent selects any AP or one exact AP by BSSID. Add device conditions below it.');
 		wifiNetworkOption.cfgvalue = function(sectionId) {
 			// Old SSID parent values are intentionally treated as Any. The UI and
 			// new configurations no longer offer SSID as a parent selector.
