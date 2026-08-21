@@ -249,13 +249,13 @@ return view.extend({
 			]);
 		};
 
-		var wifiSections = map.section(form.TypedSection, 'wifi', _('WiFi / AP'),
-			_('Add a WiFi / AP first, then add device conditions below it. Parent order is the primary priority; device order is secondary.'));
+		var wifiSections = map.section(form.TypedSection, 'wifi', _('AP'),
+			_('Add an AP first, then add device conditions below it. Parent order is the primary priority; device order is secondary.'));
 		wifiSections.anonymous = true;
 		wifiSections.addremove = true;
-		wifiSections.addbtntitle = _('Add WiFi / AP');
+		wifiSections.addbtntitle = _('Add AP');
 		wifiSections.sectiontitle = function(sectionId) {
-			return uci.get('wloc', sectionId, 'name') || _('Unnamed WiFi / AP');
+			return uci.get('wloc', sectionId, 'name') || _('Unnamed AP');
 		};
 
 		option = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
@@ -263,9 +263,9 @@ return view.extend({
 		option.rmempty = false;
 
 		option = wifiSections.option(form.Value, 'name', _('Name'));
-		option.placeholder = _('Living room WiFi');
+		option.placeholder = _('Living room AP');
 		option.rmempty = true;
-		option.description = _('A management name for this WiFi / AP group.');
+		option.description = _('A management name for this AP group.');
 
 		function wifiSourceSummary(sectionId) {
 			var network = uci.get('wloc', sectionId, 'network') || 'any';
@@ -277,7 +277,7 @@ return view.extend({
 			return _('Any AP');
 		}
 
-		var wifiNetworkOption = wifiSections.option(form.ListValue, 'network', _('WiFi / AP source'));
+		var wifiNetworkOption = wifiSections.option(form.ListValue, 'network', _('AP source'));
 		wifiNetworkOption.value('any', _('Any AP'));
 		wifiNetworkOption.value('bssid', _('Specified AP (BSSID)'));
 		wifiNetworkOption.default = 'any';
@@ -389,7 +389,7 @@ return view.extend({
 		scheduleEndOption.validate = scheduleTimeValidator;
 
 		var devicesValue = wifiSections.option(form.SectionValue, '_devices', form.GridSection,
-			'device', _('Device conditions'), _('Add one or more device conditions under this WiFi / AP.'));
+			'device', _('Device conditions'), _('Add one or more device conditions under this AP.'));
 		var devices = devicesValue.subsection;
 		function setDeviceParent(sectionId) {
 			devices.parent_section_id = sectionId;
@@ -471,12 +471,12 @@ return view.extend({
 			return group;
 		}
 
-		var parentSummary = devices.option(form.DummyValue, '_wifi_parent', _('WiFi / AP'));
+		var parentSummary = devices.option(form.DummyValue, '_wifi_parent', _('AP'));
 		parentSummary.modalonly = true;
 		parentSummary.cfgvalue = parentSummary.textvalue = function(sectionId) {
 			var parentId = uci.get('wloc', sectionId, 'wifi');
 			var parentName = parentId ? uci.get('wloc', parentId, 'name') : '';
-			return parentName ? '%s - %s'.format(parentName, wifiSourceSummary(parentId)) : _('WiFi / AP not set');
+			return parentName ? '%s - %s'.format(parentName, wifiSourceSummary(parentId)) : _('AP not set');
 		};
 
 		modalGroup('_device_group', _('Device'),
@@ -570,7 +570,7 @@ return view.extend({
 
 		var networkOption = devices.option(form.ListValue, 'network', _('Network source match'));
 		networkOption.modalonly = true;
-		networkOption.value('any', _('Any WiFi / AP source'));
+		networkOption.value('any', _('Any AP source'));
 		networkOption.value('ssid', _('Specified WiFi name (SSID)'));
 		networkOption.value('bssid', _('Specified AP (BSSID)'));
 		networkOption.default = 'any';
@@ -823,7 +823,7 @@ return view.extend({
 			lookupResultNodes[sectionId] = node;
 			return node;
 		};
-		// WiFi/AP matching belongs to the parent section. Do not expose or parse
+		// AP matching belongs to the parent section. Do not expose or parse
 		// the legacy network fields that used to live on flat device rules.
 		devices.children = devices.children.filter(function(child) {
 			return [ '_source_summary', 'network', 'ssid', 'bssid' ].indexOf(child.option) < 0;
