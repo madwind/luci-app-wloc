@@ -277,7 +277,9 @@ grep -q '"uci": \[ "wloc", "wireless" \]' openwrt/files/usr/share/rpcd/acl.d/luc
 ! grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "form.ListValue, 'ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiNetworkOption.value('bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiNetworkOption.default = 'any'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "wifiNetworkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js

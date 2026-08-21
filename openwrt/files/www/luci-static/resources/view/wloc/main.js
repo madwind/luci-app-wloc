@@ -264,13 +264,11 @@ return view.extend({
 
 		option = wifiSections.option(form.Value, 'name', _('Name'));
 		option.placeholder = _('Living room WiFi');
-		option.rmempty = false;
+		option.rmempty = true;
 		option.description = _('A management name for this WiFi / AP group.');
 
 		function wifiSourceSummary(sectionId) {
-			var network = uci.get('wloc', sectionId, 'network') || 'ssid';
-			if (network === 'ssid')
-				return '%s - %s'.format(_('WiFi name'), uci.get('wloc', sectionId, 'ssid') || _('SSID not set'));
+			var network = uci.get('wloc', sectionId, 'network') || 'any';
 			if (network === 'bssid') {
 				var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
 				var ssid = uci.get('wloc', sectionId, 'ssid');
@@ -281,58 +279,23 @@ return view.extend({
 
 		var wifiNetworkOption = wifiSections.option(form.ListValue, 'network', _('WiFi / AP source'));
 		wifiNetworkOption.value('any', _('Any WiFi / AP'));
-		wifiNetworkOption.value('ssid', _('Specified WiFi name (SSID)'));
 		wifiNetworkOption.value('bssid', _('Specified AP (BSSID)'));
-		wifiNetworkOption.default = 'ssid';
+		wifiNetworkOption.default = 'any';
 		wifiNetworkOption.rmempty = false;
-		wifiNetworkOption.description = _('This parent selects the wireless source. Add device conditions below it.');
-
-		var wifiSsidOption = wifiSections.option(form.ListValue, 'ssid', _('WiFi name (SSID)'));
-		wifiSsidOption.depends('network', 'ssid');
-		wifiSsidOption.rmempty = false;
-		wifiSsidOption.retain = true;
-		wifiSsidOption.description = _('All APs broadcasting this name belong to the same WiFi / AP group.');
-		if (!accessPoints.length && configuredWireless.length)
-			wifiSsidOption.description = _('Live AP data is not ready; choices are loaded from the saved wireless configuration.');
-		if (!accessPoints.length && !configuredWireless.length)
-			wifiSsidOption.description = _('No AP is currently visible and the saved wireless configuration could not be read. Check the wireless config and rpcd permissions, then reload this page.');
-		function addSsidChoice(ssid, label) {
-			ssid = String(ssid || '');
-			if (!ssid || knownSsids.indexOf(ssid) >= 0)
-				return;
-			knownSsids.push(ssid);
-			wifiSsidOption.value(ssid, label || ssid);
-		}
-		var knownSsids = [];
-		accessPoints.forEach(function(ap) {
-			var ssid = String(ap.ssid || '');
-			if (!ssid || knownSsids.indexOf(ssid) >= 0)
-				return;
-			knownSsids.push(ssid);
-			var count = accessPoints.filter(function(candidate) {
-				return String(candidate.ssid || '') === ssid;
-			}).length;
-			addSsidChoice(ssid, '%s - %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
-		});
-		configuredWireless.forEach(function(wifi) {
-			var ssid = String(wifi.ssid || '');
-			if (!ssid || knownSsids.indexOf(ssid) >= 0)
-				return;
-			addSsidChoice(ssid, '%s - %s'.format(ssid, wifi.disabled ? _('disabled') : _('configured in wireless')));
-		});
-		uci.sections('wloc', 'wifi').forEach(function(wifi) {
-			var ssid = String(wifi.ssid || '');
-			if ((wifi.network || 'ssid') === 'ssid' && ssid && knownSsids.indexOf(ssid) < 0) {
-				addSsidChoice(ssid, '%s - %s'.format(ssid, _('not currently active')));
-			}
-		});
-		wifiSsidOption.cfgvalue = function(sectionId) {
-			return String(uci.get('wloc', sectionId, 'ssid') || '');
+		wifiNetworkOption.description = _('This parent selects Any WiFi / AP or one exact AP by BSSID. Add device conditions below it.');
+		wifiNetworkOption.cfgvalue = function(sectionId) {
+			// Old SSID parent values are intentionally treated as Any. The UI and
+			// new configurations no longer offer SSID as a parent selector.
+			return uci.get('wloc', sectionId, 'network') === 'bssid' ? 'bssid' : 'any';
 		};
-		wifiSsidOption.validate = function(sectionId, value) {
-			value = String(value || '');
-			return value && value.length <= 32 && !/[\x00-\x1f\x7f]/.test(value)
-				? true : _('Enter a valid WiFi name (1-32 characters).');
+		wifiNetworkOption.write = function(sectionId, value) {
+			value = value === 'bssid' ? 'bssid' : 'any';
+			uci.set('wloc', sectionId, 'network', value);
+			if (value !== 'bssid') {
+				uci.unset('wloc', sectionId, 'bssid');
+				uci.unset('wloc', sectionId, 'wireless_section');
+				uci.unset('wloc', sectionId, 'wireless_ifname');
+			}
 		};
 
 		var wifiBssidOption = wifiSections.option(form.ListValue, 'bssid', _('Access point (BSSID)'));

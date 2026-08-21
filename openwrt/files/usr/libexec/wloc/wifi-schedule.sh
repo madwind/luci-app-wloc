@@ -132,7 +132,7 @@ collect_active_parent() {
 	config_get end "$section" schedule_end ''
 	valid_time "$start" && valid_time "$end" || return 0
 	window_active "$start" "$end" || return 0
-	config_get network "$section" network ssid
+	config_get network "$section" network any
 	config_get ssid "$section" ssid ''
 	config_get bssid "$section" bssid ''
 	config_get wireless_section "$section" wireless_section ''

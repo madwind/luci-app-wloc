@@ -38,7 +38,7 @@ validate_wifi() {
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
 	config_get name "$section" name "$section"
-	config_get network "$section" network ssid
+	config_get network "$section" network any
 	config_get ssid "$section" ssid
 	config_get bssid "$section" bssid
 	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
@@ -73,7 +73,7 @@ validate_device_for_wifi() {
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get network "$parent" network ssid
+	config_get network "$parent" network any
 	config_get ssid "$parent" ssid
 	config_get bssid "$parent" bssid
 	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
@@ -148,7 +148,7 @@ append_rule_for_wifi() {
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get network "$parent" network ssid
+	config_get network "$parent" network any
 	config_get ssid "$parent" ssid
 	config_get bssid "$parent" bssid
 	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
