@@ -9,7 +9,8 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 WiFi/AP groups are configured first. Each group can accept any wireless source,
 match a configured Wi-Fi name (SSID), or select one AP by BSSID; SSID matching
-includes every AP broadcasting that name, while BSSID keeps one radio separate.
+includes every AP broadcasting that name, while BSSID keeps one AP interface
+separate from other APs on the same radio.
 Device conditions are added underneath their WiFi/AP group and can select one
 MAC or all wireless devices. Enabled conditions are evaluated by parent group
 order and then child device order; the first match wins. Requests without a
@@ -22,7 +23,9 @@ runtime `disabled` override and are reloaded; the original wireless UCI values
 are restored when the window ends and are never committed by WLOC. Equal start
 and end times mean all day, and an end time earlier than the start crosses
 midnight. An SSID window applies to every configured AP using that SSID; a
-BSSID window uses the selected wireless section/interface when available.
+BSSID window targets only the selected `wifi-iface`, resolved by its section,
+explicit BSSID/MAC, or its live AP interface. It never falls back to disabling
+the entire radio when that mapping is unavailable.
 
 The nftables rules put explicitly selected devices in a MAC set and AP-wide
 rules in a hostapd interface set, then match the resolved IPv4 addresses of

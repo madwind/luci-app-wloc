@@ -98,7 +98,9 @@ function callWirelessAccessPoints() {
 					return {
 						ssid: info.ssid || '',
 						bssid: info.bssid || '',
-						interface: device
+						// iwinfo identifies the radio, not a specific virtual AP.
+						// Do not use it as the exact BSSID-to-wifi-iface mapping.
+						interface: ''
 					};
 				}).catch(function() { return null; });
 			}));
@@ -115,12 +117,14 @@ function callWirelessAccessPoints() {
 			accessPoints.push({
 				ssid: String(ap.ssid || ''),
 				bssid: bssid,
-				interface: String(ap.interface || ap.device || '')
+				interface: String(ap.interface || ap.ifname || '')
 			});
 		}
 
-		(results[1] || []).forEach(addAccessPoint);
+		// hostapd reports the real AP interface (including VAPs such as
+		// wlan0-1). Prefer it over iwinfo, which only reports a radio.
 		(results[0].access_points || []).forEach(addAccessPoint);
+		(results[1] || []).forEach(addAccessPoint);
 		return { access_points: accessPoints };
 	});
 }
@@ -153,7 +157,7 @@ return view.extend({
 			var ssid = String(source && source.ssid || '');
 			var bssid = String(source && source.bssid || '').toUpperCase();
 			var section = String(source && (source.section || source.wireless_section) || '');
-			var interfaceName = String(source && (source.interface || source.ifname || source.device) || '');
+			var interfaceName = String(source && (source.interface || source.ifname) || '');
 			var key = section || (bssid ? 'bssid:' + bssid : 'ssid:' + ssid + '|interface:' + interfaceName);
 			if ((!ssid && !bssid) || configuredWirelessKeys[key])
 				return;
@@ -175,7 +179,7 @@ return view.extend({
 				section: wifi['.name'],
 				ssid: wifi.ssid,
 				bssid: wifi.bssid || wifi.macaddr,
-				interface: wifi.ifname || wifi.device,
+				interface: wifi.ifname,
 				disabled: wifi.disabled
 			});
 		});
@@ -334,7 +338,7 @@ return view.extend({
 		var wifiBssidOption = wifiSections.option(form.ListValue, 'bssid', _('Access point (BSSID)'));
 		wifiBssidOption.depends('network', 'bssid');
 		wifiBssidOption.rmempty = false;
-		wifiBssidOption.description = _('Select one AP by BSSID. A BSSID identifies one radio, even when several radios use the same WiFi name.');
+		wifiBssidOption.description = _('Select one AP by BSSID. Scheduled disable targets only that AP\'s wifi-iface, never the whole radio.');
 		if (!accessPoints.length && configuredWireless.length)
 			wifiBssidOption.description = _('Live AP data is not ready; choices are loaded from the saved wireless configuration.');
 		if (!accessPoints.length && !configuredWireless.length)
@@ -366,6 +370,7 @@ return view.extend({
 			return String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
 		};
 		wifiBssidOption.write = function(sectionId, value) {
+			var previousBssid = String(uci.get('wloc', sectionId, 'bssid') || '').toLowerCase();
 			value = String(value || '').toLowerCase();
 			uci.set('wloc', sectionId, 'bssid', value);
 			var matches = accessPoints.concat(configuredWireless).filter(function(candidate) {
@@ -374,15 +379,15 @@ return view.extend({
 			var ap = matches.find(function(candidate) { return candidate.section; }) || matches[0];
 			if (ap && ap.ssid)
 				uci.set('wloc', sectionId, 'ssid', ap.ssid);
-			else
+			else if (previousBssid !== value)
 				uci.unset('wloc', sectionId, 'ssid');
 			if (ap && ap.section)
 				uci.set('wloc', sectionId, 'wireless_section', ap.section);
-			else
+			else if (previousBssid !== value)
 				uci.unset('wloc', sectionId, 'wireless_section');
 			if (ap && ap.interface)
 				uci.set('wloc', sectionId, 'wireless_ifname', ap.interface);
-			else
+			else if (previousBssid !== value)
 				uci.unset('wloc', sectionId, 'wireless_ifname');
 		};
 		wifiBssidOption.validate = function(sectionId, value) {
@@ -398,7 +403,7 @@ return view.extend({
 		var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
 		scheduleEnabledOption.default = '0';
 		scheduleEnabledOption.rmempty = false;
-		scheduleEnabledOption.description = _('Disable the matching WiFi/AP every day during the time window below, using the router local time.');
+		scheduleEnabledOption.description = _('Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio.');
 
 		function scheduleTimeValidator(sectionId, value) {
 			return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))
@@ -613,7 +618,7 @@ return view.extend({
 		ssidOption.depends('network', 'ssid');
 		ssidOption.rmempty = false;
 		ssidOption.retain = true;
-		ssidOption.description = _('Matches every AP broadcasting this WiFi name. Choose a BSSID below to pin the rule to one radio.');
+		ssidOption.description = _('Matches every AP broadcasting this WiFi name. Choose a BSSID below to pin the rule to one AP interface.');
 		ssidOption.placeholder = _('Select or enter an SSID');
 		var knownSsids = [];
 		accessPoints.forEach(function(ap) {
@@ -653,7 +658,7 @@ return view.extend({
 		bssidOption.modalonly = true;
 		bssidOption.depends('network', 'bssid');
 		bssidOption.rmempty = false;
-		bssidOption.description = _('Choose one AP by BSSID. BSSID is unique per radio; same-name access points remain separate.');
+		bssidOption.description = _('Choose one AP by BSSID. BSSID identifies one AP interface; same-name access points remain separate.');
 		accessPoints.forEach(function(ap) {
 			var bssid = String(ap.bssid || '').toUpperCase();
 			if (bssid)

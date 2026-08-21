@@ -290,6 +290,9 @@ grep -q 'wifi-schedule.sh' openwrt/files/etc/init.d/wloc Makefile
 grep -q 'window_active()' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q 'uci -q set "wireless.\$section.disabled=1"' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q 'wifi reload' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q 'network.wireless status' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q 'runtime_ifname_for_section' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+! grep -q '\[ "\$device" = "\$parent_ifname" \]' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "method: 'configured_access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "object: 'iwinfo', method: 'devices'" openwrt/files/www/luci-static/resources/view/wloc/main.js
