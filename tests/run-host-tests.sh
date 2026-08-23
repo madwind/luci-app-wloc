@@ -101,7 +101,7 @@ grep -Fq '. "$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
 grep -Fq 'PACKAGE_VERSION="$WLOC_VERSION"' scripts/build-openwrt-25.12.5.sh
 grep -Fq 'PACKAGE_RELEASE="$WLOC_RELEASE"' scripts/build-openwrt-25.12.5.sh
 grep -Fq '"$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
-[ "$(grep -Fc '. ./version.env' .github/workflows/openwrt-build.yml)" -eq 2 ] \
+[ "$(grep -Fc '. ./version.env' .github/workflows/openwrt-build.yml)" -eq 1 ] \
 	|| { echo 'OpenWrt workflow does not consistently load version.env' >&2; exit 1; }
 ! grep -Eq 'awk .*Cargo\.toml|awk .*PKG_(VERSION|RELEASE)' \
 	scripts/build-openwrt-25.12.5.sh .github/workflows/openwrt-build.yml
@@ -374,20 +374,22 @@ grep -Fq 'run: bash ./tests/run-host-tests.sh' .github/workflows/ci.yml
 grep -q 'x86_64-unknown-linux-musl' Makefile scripts/build-openwrt-25.12.5.sh
 grep -q 'SDK_SHA256=0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c' scripts/build-openwrt-25.12.5.sh
 grep -q 'matrix:' .github/workflows/openwrt-build.yml
-grep -q '^name: WLOC / Host checks' .github/workflows/ci.yml
-grep -q '^name: WLOC / OpenWrt package build' .github/workflows/openwrt-build.yml
+grep -q '^name: WLOC / checks' .github/workflows/ci.yml
+grep -q '^name: WLOC / release packages' .github/workflows/openwrt-build.yml
 grep -q '^name: WLOC / OpenWrt upstream maintenance' .github/workflows/openwrt-upstream.yml
-grep -q '^run-name: Host checks /' .github/workflows/ci.yml
-grep -q '^run-name: OpenWrt packages /' .github/workflows/openwrt-build.yml
+grep -q '^run-name: Checks /' .github/workflows/ci.yml
+grep -q '^run-name: Release packages /' .github/workflows/openwrt-build.yml
 grep -q '^run-name: Upstream check /' .github/workflows/openwrt-upstream.yml
 grep -q 'name: Build APK /' .github/workflows/openwrt-build.yml
 grep -q 'name: Rust quality and host tests' .github/workflows/ci.yml
+grep -q 'uses: dtolnay/rust-toolchain@stable' .github/workflows/ci.yml
 grep -q 'uses: actions/cache@v6' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
 grep -Fq '.build/openwrt-25.12.5-${{ matrix.target }}/downloads' .github/workflows/openwrt-build.yml
 grep -Fq '${{ matrix.sdk_sha256 }}' .github/workflows/openwrt-build.yml
 grep -q '~/.cargo/registry' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
-grep -q "github.ref == 'refs/heads/master'" .github/workflows/openwrt-build.yml
-grep -Fq 'release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"' .github/workflows/openwrt-build.yml
+grep -q 'startsWith(github.ref, '\''refs/tags/v'\'')' .github/workflows/openwrt-build.yml
+grep -Fq 'expected_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"' .github/workflows/openwrt-build.yml
+grep -Fq 'release_tag="$GITHUB_REF_NAME"' .github/workflows/openwrt-build.yml
 grep -Fq -- '--target "$GITHUB_SHA"' .github/workflows/openwrt-build.yml
 grep -q 'docs/images/wloc-dashboard.png' README.md
 ! grep -Eiq 'udp.*(500|4500)|(500|4500).*udp|ePDG|PassWall|OpenClash|sing-box|Xray' \

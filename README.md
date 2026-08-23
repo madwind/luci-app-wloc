@@ -71,11 +71,13 @@ bash ./scripts/build-openwrt-25.12.5.sh x86_64
 
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
-`dist/filogic/` or `dist/x86_64/`. GitHub Actions builds both targets on every
-push and pull request. CI caches each architecture's checksum-pinned SDK archive
-and Cargo downloads, while the build script still verifies the SDK SHA-256 on
-every run. Pushing a `v*` tag creates a GitHub Release containing both
-architecture-specific APKs and their SHA-256 files.
+`dist/filogic/` or `dist/x86_64/`. GitHub Actions runs fast host checks on normal
+pushes and pull requests. The two architecture builds run only for a `v*` tag or
+a manual workflow dispatch, avoiding duplicate SDK builds for every commit. CI
+caches each architecture's checksum-pinned SDK archive and Cargo downloads,
+while the build script still verifies the SDK SHA-256 on every run. A tag must
+match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and creates a GitHub Release containing
+both architecture-specific APKs and their SHA-256 files.
 
 ## Install
 

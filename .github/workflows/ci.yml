@@ -1,13 +1,25 @@
-name: WLOC / Host checks
+name: WLOC / checks
 
-run-name: Host checks / ${{ github.event_name }} / ${{ github.ref_name }}
+run-name: Checks / ${{ github.ref_name }}
 
 on:
   push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
+    branches:
+      - master
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   host-tests:
@@ -16,7 +28,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - name: Cache Cargo build

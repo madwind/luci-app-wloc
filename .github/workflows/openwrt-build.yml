@@ -1,14 +1,19 @@
-name: WLOC / OpenWrt package build
+name: WLOC / release packages
 
-run-name: OpenWrt packages / ${{ github.event_name }} / ${{ github.ref_name }}
+run-name: Release packages / ${{ github.ref_name }}
 
 on:
   push:
-  pull_request:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -51,6 +56,13 @@ jobs:
         run: |
           set -euo pipefail
           . ./version.env
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            expected_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
+            if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match version.env ($expected_tag)." >&2
+              exit 1
+            fi
+          fi
           source_apk="$(find "dist/${{ matrix.target }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
@@ -64,13 +76,11 @@ jobs:
           name: luci-app-wloc-${{ matrix.target }}
           path: release-assets/*
           if-no-files-found: error
+          retention-days: 7
 
   release:
     name: Publish GitHub release
-    if: >-
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/master' ||
-      startsWith(github.ref, 'refs/tags/v'))
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -93,12 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            release_tag="$GITHUB_REF_NAME"
-          else
-            . ./version.env
-            release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
-          fi
+          release_tag="$GITHUB_REF_NAME"
           if gh release view "$release_tag" >/dev/null 2>&1; then
             gh release upload "$release_tag" release-assets/* --clobber
           else
