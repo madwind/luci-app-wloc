@@ -1,1 +1,3 @@
 /etc/config/wloc
+/etc/wloc/ca.key
+/etc/wloc/ca.der

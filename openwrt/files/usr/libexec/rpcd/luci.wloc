@@ -5,6 +5,7 @@
 INIT=/etc/init.d/wloc
 RULES=/usr/libexec/wloc/rules.sh
 STATE=/var/run/wloc/status.json
+RUNTIME_LOG=/var/run/wloc/runtime.log
 CAINFO=/etc/wloc/ca.info.json
 VERSION_CACHE=/var/run/wloc/package.version
 
@@ -24,8 +25,8 @@ load_runtime_state() {
 	service_reason=''
 	session_started_at=0
 	updated_at=0
-	runtime_log=''
 	runtime_log_enabled=0
+	runtime_log_revision=0
 	activity_rows=''
 
 	[ -s "$STATE" ] || return 0
@@ -33,8 +34,8 @@ load_runtime_state() {
 	json_get_vars armed:0 configured_clients:0 ca_fingerprint \
 		accepted_connections:0 passthrough_connections:0 tls_intercepted:0 \
 		wloc_requests:0 patched_responses:0 delivered_responses:0 patch_failures:0 \
-		last_event last_error session_started_at:0 updated_at:0 runtime_log \
-		runtime_log_enabled:0
+		last_event last_error session_started_at:0 updated_at:0 \
+		runtime_log_enabled:0 runtime_log_revision:0
 	if json_select client_activity 2>/dev/null; then
 		json_get_keys activity_keys
 		for activity_index in $activity_keys; do
@@ -136,7 +137,7 @@ emit_status() {
 	json_add_int session_started_at "$session_started_at"
 	json_add_int updated_at "$updated_at"
 	json_add_boolean runtime_log_enabled "$runtime_log_enabled"
-	json_add_string runtime_log "$runtime_log"
+	json_add_int runtime_log_revision "$runtime_log_revision"
 	json_add_int interception_attempts "$attempts"
 	json_add_int intercepted_packets "$intercepted"
 	json_add_boolean path_conflict "$conflict"
@@ -293,7 +294,11 @@ call)
 	logs)
 		load_runtime_state
 		json_init
-		json_add_string logs "$runtime_log"
+		if [ "$runtime_log_enabled" -eq 1 ]; then
+			json_add_string logs "$(cat "$RUNTIME_LOG" 2>/dev/null || true)"
+		else
+			json_add_string logs ''
+		fi
 		json_dump
 		;;
 	*) echo '{"error":"unknown method"}'; exit 1;;

@@ -35,11 +35,10 @@ time_minutes() {
 }
 
 window_active() {
-	local start="$1" end="$2" now start_minutes end_minutes now_minutes
-	now="$(date +%H:%M)"
+	local start="$1" end="$2" start_minutes end_minutes now_minutes
 	start_minutes="$(time_minutes "$start")"
 	end_minutes="$(time_minutes "$end")"
-	now_minutes="$(time_minutes "$now")"
+	now_minutes="${WLOC_NOW_MINUTES:-$(time_minutes "$(date +%H:%M)")}"
 	[ "$start_minutes" -eq "$end_minutes" ] && return 0
 	if [ "$start_minutes" -lt "$end_minutes" ]; then
 		[ "$now_minutes" -ge "$start_minutes" ] && [ "$now_minutes" -lt "$end_minutes" ]
@@ -259,9 +258,18 @@ reconcile() {
 	: >"$DESIRED_FILE"
 	: >"$MATCH_FILE"
 	config_load wloc || return 1
+	WLOC_NOW_MINUTES="$(time_minutes "$(date +%H:%M)")"
 	config_foreach collect_active_parent wifi
+	if [ ! -s "$ACTIVE_FILE" ]; then
+		restore_state
+		return 0
+	fi
 	config_load wireless || return 1
-	load_runtime_interfaces
+	if awk -F "$(printf '\t')" '$2 == "bssid" { found = 1 } END { exit !found }' "$ACTIVE_FILE"; then
+		load_runtime_interfaces
+	else
+		: >"$RUNTIME_FILE"
+	fi
 	config_foreach collect_matching_interface wifi-iface
 	restore_active_state_targets
 
@@ -318,10 +326,14 @@ cleanup() {
 }
 
 run_loop() {
+	local second delay
 	trap cleanup EXIT INT TERM HUP
 	while :; do
 		reconcile || true
-		sleep 30 || break
+		second="$(decimal "$(date +%S)")"
+		delay=$((60 - second))
+		[ "$delay" -ge 1 ] || delay=60
+		sleep "$delay" || break
 	done
 }
 

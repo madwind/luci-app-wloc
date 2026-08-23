@@ -136,7 +136,6 @@ pub struct LocationRule {
     pub name: String,
     pub device: DeviceSelector,
     pub network: NetworkSelector,
-    pub ssid: Option<String>,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
 }
@@ -237,7 +236,6 @@ impl Config {
                         id,
                         device,
                         network,
-                        ssid: None,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
@@ -245,10 +243,6 @@ impl Config {
                 "--rule-name" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     rule_mut(&mut rules, &id, "name")?.name = args.next().ok_or_else(value)?;
-                }
-                "--rule-ssid" => {
-                    let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
-                    rule_mut(&mut rules, &id, "SSID")?.ssid = Some(args.next().ok_or_else(value)?);
                 }
                 "--rule-proxy" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
@@ -311,7 +305,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID MAC_OR_* NETWORK_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-ssid ID SSID] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+        "wlocd --rule ID MAC_OR_* NETWORK_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
     }
 }
 
@@ -411,9 +405,6 @@ mod tests {
             "--rule-name",
             "phone",
             "iPhone 16",
-            "--rule-ssid",
-            "phone",
-            "Home Wi-Fi",
             "--rule-proxy",
             "phone",
             "socks5",
@@ -423,7 +414,6 @@ mod tests {
         .unwrap();
         let rule = &config.rules[0];
         assert_eq!(rule.name, "iPhone 16");
-        assert_eq!(rule.ssid.as_deref(), Some("Home Wi-Fi"));
         assert_eq!(
             rule.outbound,
             OutboundProxy::Socks5 {

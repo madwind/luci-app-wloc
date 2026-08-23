@@ -8,6 +8,7 @@
 'require dom';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
+var callLogs = rpc.declare({ object: 'luci.wloc', method: 'logs', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'access_points', expect: {} });
@@ -159,7 +160,8 @@ return view.extend({
 			// the BSSID choices for the lifetime of this page.
 			callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS),
 			callConfiguredAccessPoints().catch(function() { return {}; }),
-			callStatus().catch(function() { return {}; })
+			callStatus().catch(function() { return {}; }),
+			callLogs().catch(function() { return {}; })
 		]);
 	},
 
@@ -168,7 +170,10 @@ return view.extend({
 		var accessPoints = data[3].access_points || [];
 		var configuredAccessPoints = (data[4] || {}).access_points || [];
 		var initialStatus = data[5] || {};
-		var initialLogs = initialStatus.runtime_log || '';
+		var initialLogs = (data[6] || {}).logs || '';
+		var lastLogRevision = initialLogs
+			? String(initialStatus.session_started_at || 0) + ':' + String(initialStatus.runtime_log_revision || 0)
+			: '';
 		var lookupResultNodes = {};
 		var lastUpdatedNodes = {};
 		var lastResultNodes = {};
@@ -248,9 +253,8 @@ return view.extend({
 		option = settings.option(form.Value, 'listen_port', _('Local listen port'));
 		option.datatype = 'port';
 		option.default = '61520';
-		option.description = _('Startup stops safely if the selected port is already occupied.');
 		option.rmempty = false;
-		option.description = _('Normally this should not be changed. Only enabled devices connecting to Apple WLOC over TCP 443 are intercepted.');
+		option.description = _('Normally this should not be changed. Startup stops safely if the selected port is occupied; only enabled devices connecting to Apple WLOC over TCP 443 are intercepted.');
 		option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
 		option.default = '0';
 		option.rmempty = false;
@@ -590,117 +594,6 @@ return view.extend({
 			return true;
 		};
 
-		var sourceSummary = devices.option(form.DummyValue, '_source_summary', _('Network source'));
-		sourceSummary.modalonly = true;
-		sourceSummary.textvalue = function(sectionId) {
-			var network = uci.get('wloc', sectionId, 'network');
-			if (network === 'ssid')
-				return '%s · %s'.format(_('WiFi name'), uci.get('wloc', sectionId, 'ssid') || _('SSID not set'));
-			if (network !== 'bssid')
-				return _('Any source');
-			var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
-			var ssid = uci.get('wloc', sectionId, 'ssid');
-			return ssid ? '%s · %s'.format(ssid, bssid) : bssid;
-		};
-
-		var networkOption = devices.option(form.ListValue, 'network', _('Network source match'));
-		networkOption.modalonly = true;
-		networkOption.value('any', _('Any AP source'));
-		networkOption.value('ssid', _('Specified WiFi name (SSID)'));
-		networkOption.value('bssid', _('Specified AP (BSSID)'));
-		networkOption.default = 'any';
-		networkOption.rmempty = false;
-
-		var ssidOption = devices.option(form.Value, 'ssid', _('WiFi name (SSID)'));
-		ssidOption.modalonly = true;
-		ssidOption.depends('network', 'ssid');
-		ssidOption.rmempty = false;
-		ssidOption.retain = true;
-		ssidOption.description = _('Matches every AP broadcasting this WiFi name. Choose a BSSID below to pin the rule to one AP interface.');
-		ssidOption.placeholder = _('Select or enter an SSID');
-		var knownSsids = [];
-		accessPoints.forEach(function(ap) {
-			var ssid = String(ap.ssid || '');
-			if (!ssid || knownSsids.indexOf(ssid) >= 0)
-				return;
-			knownSsids.push(ssid);
-			var count = accessPoints.filter(function(candidate) {
-				return String(candidate.ssid || '') === ssid;
-			}).length;
-			ssidOption.value(ssid, '%s · %d AP%s'.format(ssid, count, count === 1 ? '' : 's'));
-		});
-		configuredWireless.forEach(function(wifi) {
-			var ssid = String(wifi.ssid || '');
-			if (ssid && knownSsids.indexOf(ssid) < 0) {
-				knownSsids.push(ssid);
-				ssidOption.value(ssid, '%s · %s'.format(ssid, wifi.disabled ? _('disabled') : _('configured in wireless')));
-			}
-		});
-		uci.sections('wloc', 'device').forEach(function(device) {
-			var ssid = String(device.ssid || '');
-			if (device.network === 'ssid' && ssid && knownSsids.indexOf(ssid) < 0) {
-				knownSsids.push(ssid);
-				ssidOption.value(ssid, '%s · %s'.format(ssid, _('not currently active')));
-			}
-		});
-		ssidOption.cfgvalue = function(sectionId) {
-			return String(uci.get('wloc', sectionId, 'ssid') || '');
-		};
-		ssidOption.validate = function(sectionId, value) {
-			value = String(value || '');
-			return value && value.length <= 32 && !/[\x00-\x1f\x7f]/.test(value)
-				? true : _('Enter a valid WiFi name (1-32 characters).');
-		};
-
-		var bssidOption = devices.option(form.Value, 'bssid', _('Access point'));
-		bssidOption.modalonly = true;
-		bssidOption.depends('network', 'bssid');
-		bssidOption.rmempty = false;
-		bssidOption.description = _('Choose one AP by BSSID. BSSID identifies one AP interface; same-name access points remain separate.');
-		accessPoints.forEach(function(ap) {
-			var bssid = String(ap.bssid || '').toUpperCase();
-			if (bssid)
-				bssidOption.value(bssid, '%s · %s · %s'.format(ap.ssid || _('Hidden SSID'), bssid, ap.interface || _('unknown interface')));
-		});
-		configuredWireless.forEach(function(wifi) {
-			var bssid = String(wifi.bssid || '').toUpperCase();
-			if (bssid && !accessPoints.some(function(ap) { return String(ap.bssid || '').toUpperCase() === bssid; }))
-				bssidOption.value(bssid, '%s · %s · %s'.format(wifi.ssid || _('Configured AP'), bssid, _('configured in wireless')));
-		});
-		uci.sections('wloc', 'device').forEach(function(device) {
-			var bssid = String(device.bssid || '').toUpperCase();
-			if (bssid && !accessPoints.some(function(ap) { return String(ap.bssid || '').toUpperCase() === bssid; }))
-				bssidOption.value(bssid, '%s · %s · %s'.format(device.ssid || _('Unavailable AP'), bssid, _('not currently active')));
-		});
-		bssidOption.cfgvalue = function(sectionId) {
-			return String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
-		};
-		bssidOption.write = function(sectionId, value) {
-			value = String(value || '').toLowerCase();
-			uci.set('wloc', sectionId, 'bssid', value);
-			var ap = accessPoints.concat(configuredWireless).find(function(candidate) {
-				return String(candidate.bssid || '').toLowerCase() === value;
-			});
-			if (ap && ap.ssid)
-				uci.set('wloc', sectionId, 'ssid', ap.ssid);
-			else
-				uci.unset('wloc', sectionId, 'ssid');
-		};
-		bssidOption.validate = function(sectionId, value) {
-			value = String(value || '').toLowerCase();
-			if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(value))
-				return _('Select a valid access point BSSID.');
-			return (parseInt(value.slice(0, 2), 16) & 1) === 0 && value !== '00:00:00:00:00:00'
-				? true : _('The BSSID must be an individual unicast address.');
-		};
-		sourceSummary.hidden = true;
-		networkOption.deps = [];
-		networkOption.depends('_wloc_parent_only', '1');
-		ssidOption.deps = [];
-		ssidOption.depends('_wloc_parent_only', '1');
-		bssidOption.deps = [];
-		bssidOption.depends('_wloc_parent_only', '1');
-
 		modalGroup('_location_group', _('Location and outbound'),
 			_('Set the virtual location and the optional proxy for this device condition.'), 'location');
 
@@ -858,12 +751,6 @@ return view.extend({
 			lookupResultNodes[sectionId] = node;
 			return node;
 		};
-		// AP matching belongs to the parent section. Do not expose or parse
-		// the legacy network fields that used to live on flat device rules.
-		devices.children = devices.children.filter(function(child) {
-			return [ '_source_summary', 'network', 'ssid', 'bssid' ].indexOf(child.option) < 0;
-		});
-
 		var statusNode = E('div', { 'class': 'wloc-status' });
 		var fingerprintNode = E('div', { 'class': 'wloc-fingerprint' });
 		var logNode = E('pre', { 'class': 'wloc-log', 'tabindex': '0' }, initialLogs || _('No events in this session yet.'));
@@ -940,12 +827,27 @@ return view.extend({
 			scrollRuntimeLogToBottom();
 		}
 
+		function refreshRuntimeLog(status, force) {
+			if (!truthy(status.runtime_log_enabled)) {
+				lastLogRevision = '';
+				renderRuntimeLog(status, '');
+				return Promise.resolve();
+			}
+			var revision = String(status.session_started_at || 0) + ':' + String(status.runtime_log_revision || 0);
+			if ((!force && document.visibilityState === 'hidden') || (!force && revision === lastLogRevision))
+				return Promise.resolve();
+			return callLogs().then(function(result) {
+				lastLogRevision = revision;
+				renderRuntimeLog(status, (result || {}).logs || '');
+			});
+		}
+
 		function refresh() {
 			return callStatus().then(function(status) {
 				status = status || {};
 				renderStatus(status);
 				renderClientActivity(status);
-				renderRuntimeLog(status, status.runtime_log || '');
+				return refreshRuntimeLog(status, false);
 			}).catch(function() {
 				// Keep the last known state visible when a single poll request fails.
 			});
@@ -972,7 +874,7 @@ return view.extend({
 		return map.render().then(function(formNode) {
 			renderClientActivity(initialStatus);
 			scrollRuntimeLogToBottom();
-			poll.add(refresh, 5);
+			poll.add(refresh, 10);
 			refresh();
 			return E('div', { 'class': 'wloc-console' }, [
 				E('style', {}, '.wloc-console #cbi-wloc-wifi>.cbi-section-node{margin:1rem 0;padding:1rem;border:1px solid var(--wloc-border);background:var(--wloc-surface);border-radius:.25rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node>.cbi-section-remove{margin-bottom:.5rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node .cbi-section{margin-top:.8rem;padding-top:.7rem;border-top:1px solid var(--wloc-border)}'),

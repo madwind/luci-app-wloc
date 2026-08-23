@@ -7,10 +7,10 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-WiFi/AP groups are configured first. Each group can accept any wireless source,
-match a configured Wi-Fi name (SSID), or select one AP by BSSID; SSID matching
-includes every AP broadcasting that name, while BSSID keeps one AP interface
-separate from other APs on the same radio.
+WiFi/AP groups are configured first. Each group can accept any wireless source
+or select one AP by BSSID, which keeps one AP interface separate from other APs
+on the same radio. Legacy UCI groups using `network=ssid` remain supported by
+the service until they are edited, but new LuCI configurations use Any or BSSID.
 Device conditions are added underneath their WiFi/AP group and can select one
 MAC or all wireless devices. Enabled conditions are evaluated by parent group
 order and then child device order; the first match wins. Requests without a
@@ -22,10 +22,10 @@ time. During the window, matching configured AP interfaces receive a temporary
 runtime `disabled` override and are reloaded; the original wireless UCI values
 are restored when the window ends and are never committed by WLOC. Equal start
 and end times mean all day, and an end time earlier than the start crosses
-midnight. An SSID window applies to every configured AP using that SSID; a
-BSSID window targets only the selected `wifi-iface`, resolved by its section,
-explicit BSSID/MAC, or its live AP interface. It never falls back to disabling
-the entire radio when that mapping is unavailable.
+midnight. An Any-AP window applies to every configured AP, while a BSSID window
+targets only the selected `wifi-iface`, resolved by its section, explicit
+BSSID/MAC, or its live AP interface. It never falls back to disabling the entire
+radio when that mapping is unavailable.
 
 The nftables rules put explicitly selected devices in a MAC set and AP-wide
 rules in a hostapd interface set, then match the resolved IPv4 addresses of
@@ -72,8 +72,9 @@ bash ./scripts/build-openwrt-25.12.5.sh x86_64
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
 `dist/filogic/` or `dist/x86_64/`. GitHub Actions runs fast host checks on normal
-pushes and pull requests. The two architecture builds run only for a `v*` tag or
-a manual workflow dispatch, avoiding duplicate SDK builds for every commit. CI
+pushes, pull requests, and every release tag. The two architecture builds run
+only for a `v*` tag or a manual workflow dispatch, avoiding duplicate SDK builds
+for every commit. CI
 caches each architecture's checksum-pinned SDK archive and Cargo downloads,
 while the build script still verifies the SDK SHA-256 on every run. A tag must
 match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and creates a GitHub Release containing
@@ -98,6 +99,12 @@ generated CA profile on that device and explicitly enable full trust in iOS
 Certificate Trust Settings. Each device condition can use the router's direct
 connection, an HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its
 Apple WLOC traffic.
+
+The generated CA key and certificate are retained by OpenWrt sysupgrade so
+trusted devices do not unexpectedly lose interception after a firmware update.
+Because a sysupgrade backup therefore contains the private CA key, store backup
+archives securely. The downloadable mobileconfig uses stable identifiers and is
+rewritten only when its CA changes.
 
 The default local listener is TCP port `61520`. Upgrades migrate the previous
 `8443`, `58443`, and `28443` defaults while retaining any other custom port. WLOC checks

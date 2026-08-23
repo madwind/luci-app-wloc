@@ -12,16 +12,23 @@ DEFAULT_PRIORITY=-105
 # while moving ahead of the earliest detected transparent-proxy base chain.
 MIN_SAFE_PRIORITY=-199
 STAMP=/var/run/wloc/hosts.refreshed
+DNS_ATTEMPT_STAMP=/var/run/wloc/hosts.attempted
 ORDER_STATE=/var/run/wloc/order-conflict
+ORDER_CHECK_STAMP=/var/run/wloc/order-checked
 PRIORITY_STATE=/var/run/wloc/prerouting.priority
 PRIORITY_DETAILS=/var/run/wloc/prerouting.details
 HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
 HOST_TIMEOUT=15m
-DNS_SAMPLES=3
+DNS_SAMPLES=1
+DNS_REFRESH_SECONDS=300
+DNS_RETRY_SECONDS=60
+DNS_QUERY_TIMEOUT=3
+ORDER_CHECK_SECONDS=60
 
 cleanup() {
 	nft delete table inet "$TABLE" 2>/dev/null || true
-	rm -f "$STAMP" "$ORDER_STATE" "$PRIORITY_STATE" "$PRIORITY_DETAILS"
+	rm -f "$STAMP" "$DNS_ATTEMPT_STAMP" "$ORDER_STATE" "$ORDER_CHECK_STAMP" \
+		"$PRIORITY_STATE" "$PRIORITY_DETAILS"
 }
 
 valid_port() {
@@ -49,19 +56,30 @@ valid_mac() {
 	[ "$1" != '00:00:00:00:00:00' ]
 }
 
+host_set_populated() {
+	nft list set inet "$TABLE" "$HOST_SET" 2>/dev/null \
+		| grep -q 'elements = {'
+}
+
 resolve_hosts() {
-	local now last addresses host resolved_ip sample
+	local now last attempt addresses host resolved_ip sample
 	[ -d "${STAMP%/*}" ] || mkdir -p "${STAMP%/*}"
 	now="$(date +%s)"
 	last="$(cat "$STAMP" 2>/dev/null || echo 0)"
-	[ $((now - last)) -ge 60 ] || return 0
+	[ $((now - last)) -ge "$DNS_REFRESH_SECONDS" ] || return 0
+	attempt="$(cat "$DNS_ATTEMPT_STAMP" 2>/dev/null || echo 0)"
+	if [ $((now - attempt)) -lt "$DNS_RETRY_SECONDS" ]; then
+		host_set_populated
+		return $?
+	fi
+	printf '%s\n' "$now" >"$DNS_ATTEMPT_STAMP"
 	addresses=''
 	for host in $HOSTS; do
 		sample=0
 		while [ "$sample" -lt "$DNS_SAMPLES" ]; do
 			# BusyBox nslookup prints the DNS server as an Address before the
 			# answer Name. Parse only Address lines in the answer section.
-			for resolved_ip in $(timeout 5 nslookup "$host" 2>/dev/null \
+			for resolved_ip in $(timeout "$DNS_QUERY_TIMEOUT" nslookup "$host" 2>/dev/null \
 				| sed -n '/^Name:[[:space:]]/,$ s/^Address[^:]*:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p'); do
 				valid_ipv4 "$resolved_ip" || continue
 				case " $addresses " in
@@ -75,9 +93,8 @@ resolve_hosts() {
 	if [ -z "$addresses" ]; then
 		# A short DNS outage must not tear down otherwise valid interception.
 		# Existing CDN addresses have their own timeout and remain safe to use;
-		# keep retrying resolution on every reconciliation until it recovers.
-		nft list set inet "$TABLE" "$HOST_SET" 2>/dev/null \
-			| grep -q 'elements = {' && return 0
+		# retry on the bounded failure cadence until it recovers.
+		host_set_populated && return 0
 		return 1
 	fi
 	# Keep a rolling address pool instead of flushing it on every DNS answer.
@@ -100,17 +117,45 @@ table_healthy() {
 	awk \
 		-v client_mac_set="$CLIENT_MAC_SET" \
 		-v ap_interface_set="$AP_INTERFACE_SET" \
-		-v host_set="$HOST_SET" '
+		-v host_set="$HOST_SET" \
+		-v port="$1" '
 		$1 == "set" {
+			current_set = $2
 			in_host = ($2 == host_set)
 			if ($2 == client_mac_set) client_mac = 1
 			if ($2 == ap_interface_set) ap_interface = 1
 			if ($2 == host_set) host = 1
 		}
+		current_set == client_mac_set && $1 == "type" && $2 == "ether_addr" { client_type = 1 }
+		current_set == ap_interface_set && $1 == "type" && $2 == "ifname" { ap_type = 1 }
+		current_set == host_set && $1 == "type" && $2 == "ipv4_addr" { host_type = 1 }
+		current_set == client_mac_set && $1 == "flags" && $2 == "timeout" { client_timeout = 1 }
+		current_set == ap_interface_set && $1 == "flags" && $2 == "timeout" { ap_timeout = 1 }
+		current_set == host_set && $1 == "flags" && $2 == "timeout" { host_timeout = 1 }
 		in_host && $1 == "elements" && $2 == "=" && $3 == "{" { host_elements = 1 }
-		in_host && $1 == "}" { in_host = 0 }
-		$1 == "chain" && $2 == "redirect_prerouting" { redirect_chain = 1 }
-		END { exit !(client_mac && ap_interface && host && host_elements && redirect_chain) }
+		$1 == "chain" {
+			current_set = ""
+			in_host = 0
+			in_redirect = ($2 == "redirect_prerouting")
+			if (in_redirect) redirect_chain = 1
+		}
+		in_redirect && /type[[:space:]]+nat[[:space:]]+hook[[:space:]]+prerouting/ { redirect_hook = 1 }
+		in_redirect && index($0, "ether saddr @" client_mac_set) \
+			&& index($0, "ip daddr @" host_set) \
+			&& index($0, "tcp dport 443") \
+			&& index($0, "redirect to :" port) \
+			&& index($0, "comment \"wloc owned MAC redirect\"") { mac_redirect = 1 }
+		in_redirect && index($0, "iifname @" ap_interface_set) \
+			&& index($0, "ip daddr @" host_set) \
+			&& index($0, "tcp dport 443") \
+			&& index($0, "redirect to :" port) \
+			&& index($0, "comment \"wloc owned AP redirect\"") { ap_redirect = 1 }
+		END {
+			exit !(client_mac && client_type && client_timeout \
+				&& ap_interface && ap_type && ap_timeout \
+				&& host && host_type && host_timeout && host_elements && redirect_chain \
+				&& redirect_hook && mac_redirect && ap_redirect)
+		}
 	'
 }
 
@@ -320,6 +365,18 @@ EOF
 	return 0
 }
 
+order_check_due() {
+	local now last
+	[ "$(cat "$ORDER_STATE" 2>/dev/null || true)" = 0 ] || return 0
+	now="$(date +%s)"
+	last="$(cat "$ORDER_CHECK_STAMP" 2>/dev/null || echo 0)"
+	[ $((now - last)) -ge "$ORDER_CHECK_SECONDS" ]
+}
+
+mark_order_checked() {
+	date +%s >"$ORDER_CHECK_STAMP"
+}
+
 check_prerouting_order() {
 	local own_priority analysis record numeric family table_name chain priority_text verdict via relation order_conflict order_unknown proxy_seen
 	[ -d "${ORDER_STATE%/*}" ] || mkdir -p "${ORDER_STATE%/*}"
@@ -379,13 +436,17 @@ EOF
 	else
 		printf '%s\n' 0 >"$ORDER_STATE"
 	fi
+	mark_order_checked
 	return 0
 }
 
 rules_healthy() {
-	local table_dump
+	local port="$1" table_dump
 	table_dump="$(nft list table inet "$TABLE" 2>/dev/null)" || return 1
-	printf '%s\n' "$table_dump" | table_healthy && order_healthy
+	printf '%s\n' "$table_dump" | table_healthy "$port" || return 1
+	order_check_due || return 0
+	order_healthy || return 1
+	mark_order_checked
 }
 
 apply_rules() {
@@ -515,7 +576,7 @@ reconcile() {
 	# Firewall reloads and competing rule managers may remove the runtime-only
 	# table or add an earlier proxy hook. Recreate WLOC at a newly verified
 	# priority before renewing its short-lived selectors.
-	rules_healthy || apply_rules "$port"
+	rules_healthy "$port" || apply_rules "$port"
 	lease "$@"
 }
 

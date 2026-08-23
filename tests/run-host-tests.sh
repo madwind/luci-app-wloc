@@ -31,6 +31,10 @@ grep -q '^HOST_SET=apple_wloc_v4$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DEFAULT_PRIORITY=-105$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^MIN_SAFE_PRIORITY=-199$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_TIMEOUT=15m$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^DNS_SAMPLES=1$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^DNS_REFRESH_SECONDS=300$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^DNS_QUERY_TIMEOUT=3$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^ORDER_CHECK_SECONDS=60$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'iifname @\$AP_INTERFACE_SET.*redirect to :\$port comment "wloc owned AP redirect"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'priority \$priority' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^analyze_prerouting_proxies()' openwrt/files/usr/libexec/wloc/rules.sh
@@ -46,7 +50,7 @@ grep -q 'ether saddr @\$CLIENT_MAC_SET' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'nft get element inet "\$TABLE" "\$HOST_SET"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^rules_healthy()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^reconcile()' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'rules_healthy || apply_rules "\$port"' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'rules_healthy "\$port" || apply_rules "\$port"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^table_healthy()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'reconcile_rules_async(' src/main.rs
 grep -q 'interception_rearmed' src/main.rs
@@ -64,6 +68,8 @@ grep -q 'status.path_conflict' openwrt/files/www/luci-static/resources/view/wloc
 grep -q 'serviceStatusOption.rmempty = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'caOption.rmempty = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'runtime_log_enabled:0' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q 'runtime_log_revision:0' openwrt/files/usr/libexec/rpcd/luci.wloc
+! grep -q 'json_add_string runtime_log ' openwrt/files/usr/libexec/rpcd/luci.wloc
 ! grep -q 'logread -e wlocd' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'Current-session in-memory log' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'scrollTop = logNode.scrollHeight' openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -109,6 +115,8 @@ grep -Fq '"$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
 ! grep -q 'kmod-nft-tproxy' Makefile
 grep -q '^/etc/config/wloc$' Makefile
 grep -q '^/etc/config/wloc$' openwrt/files/lib/upgrade/keep.d/luci-app-wloc
+grep -q '^/etc/wloc/ca.key$' openwrt/files/lib/upgrade/keep.d/luci-app-wloc
+grep -q '^/etc/wloc/ca.der$' openwrt/files/lib/upgrade/keep.d/luci-app-wloc
 grep -q '"config": "wloc"' openwrt/files/usr/share/ucitrack/luci-app-wloc.json
 grep -q '"init": "wloc"' openwrt/files/usr/share/ucitrack/luci-app-wloc.json
 ! grep -q 'old_mac=\|target_ipv4\|=client' "$defaults_script"
@@ -140,24 +148,37 @@ valid_mac '02:11:22:33:44:55' \
 healthy_table_fixture='table inet wloc {
 	set target_clients_mac {
 		type ether_addr
+		flags timeout
 	}
 	set target_ap_interfaces {
 		type ifname
+		flags timeout
 	}
 	set apple_wloc_v4 {
 		type ipv4_addr
+		flags timeout
 		elements = { 17.0.0.1 timeout 14m }
 	}
 	chain redirect_prerouting {
+		type nat hook prerouting priority -105; policy accept;
+		ether saddr @target_clients_mac ip daddr @apple_wloc_v4 meta l4proto tcp tcp dport 443 counter redirect to :61520 comment "wloc owned MAC redirect"
+		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 meta l4proto tcp tcp dport 443 counter redirect to :61520 comment "wloc owned AP redirect"
 	}
 }'
-printf '%s\n' "$healthy_table_fixture" | table_healthy \
+printf '%s\n' "$healthy_table_fixture" | table_healthy 61520 \
 	|| { echo 'consolidated nftables health parser rejected a healthy table' >&2; exit 1; }
-printf '%s\n' "$healthy_table_fixture" | sed '/elements =/d' | table_healthy \
+printf '%s\n' "$healthy_table_fixture" | sed '/elements =/d' | table_healthy 61520 \
 	&& { echo 'consolidated nftables health parser accepted an empty host set' >&2; exit 1; }
+printf '%s\n' "$healthy_table_fixture" | sed '/flags timeout/d' | table_healthy 61520 \
+	&& { echo 'consolidated nftables health parser accepted non-expiring selector sets' >&2; exit 1; }
+printf '%s\n' "$healthy_table_fixture" | sed '/wloc owned MAC redirect/d' | table_healthy 61520 \
+	&& { echo 'consolidated nftables health parser accepted a missing MAC redirect' >&2; exit 1; }
+printf '%s\n' "$healthy_table_fixture" | table_healthy 61521 \
+	&& { echo 'consolidated nftables health parser accepted the wrong redirect port' >&2; exit 1; }
 
 order_state="$(mktemp)"
 order_log="$(mktemp)"
+order_check_stamp="$(mktemp)"
 order_fixture='table inet routed_proxy {
  chain ingress {
   type filter hook prerouting priority mangle - 1; policy accept;
@@ -253,6 +274,7 @@ table ip direct_proxy {
  }
 }'
 ORDER_STATE="$order_state"
+ORDER_CHECK_STAMP="$order_check_stamp"
 check_prerouting_order 2>"$order_log"
 [ "$(cat "$order_state")" = 0 ] \
 	|| { echo 'nftables order checker rejected a verified WLOC-first order' >&2; exit 1; }
@@ -267,7 +289,7 @@ order_fixture="$(printf '%s\n' "$order_fixture" | sed 's/priority mangle - 1/pri
 	|| { echo 'nftables order checker accepted a newly earlier proxy chain' >&2; exit 1; }
 [ "$(cat "$order_state")" = 1 ] \
 	|| { echo 'nftables order checker did not persist its ordering conflict' >&2; exit 1; }
-rm -f "$order_state" "$order_log"
+rm -f "$order_state" "$order_log" "$order_check_stamp"
 grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc/rules.sh
 grep -q "flush set inet \$TABLE \$AP_INTERFACE_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
@@ -282,6 +304,8 @@ grep -q "wifiNetworkOption.value('bssid'" openwrt/files/www/luci-static/resource
 grep -q "wifiNetworkOption.default = 'any'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "wifiNetworkOption.value('any', _('Any AP'))" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "wifiNetworkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "networkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "devices.option(form.Value, 'ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -296,6 +320,8 @@ grep -q 'uci -q set "wireless.\$section.disabled=1"' openwrt/files/usr/libexec/w
 grep -q 'wifi reload' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q 'network.wireless status' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q 'runtime_ifname_for_section' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q '\[ ! -s "\$ACTIVE_FILE" \]' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
+grep -q 'delay=\$((60 - second))' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 ! grep -q '\[ "\$device" = "\$parent_ifname" \]' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "method: 'configured_access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -344,6 +370,7 @@ grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q "grep -q '=device\$'" openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'last_error' openwrt/files/usr/libexec/rpcd/luci.wloc src/status.rs
 grep -q -- '--rule-name' openwrt/files/etc/init.d/wloc src/config.rs
+! grep -q -- '--rule-ssid' openwrt/files/etc/init.d/wloc src/config.rs
 grep -q 'rule_name=\\"{}\\" device={} network={}' src/config.rs
 grep -q 'rule_configured' src/main.rs
 grep -q 'first_matching_rule' src/proxy.rs
@@ -363,12 +390,14 @@ grep -q "actionButton.call(this, _('Restart')" openwrt/files/www/luci-static/res
 grep -q "'runtime_log', _('Enable runtime log')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'JSON.stringify' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'getUIElement(sectionId)' openwrt/files/www/luci-static/resources/view/wloc/main.js
-! grep -q 'callLogs' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'poll.add(refresh, 5)' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'callLogs' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'runtime_log_revision' openwrt/files/www/luci-static/resources/view/wloc/main.js src/status.rs openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q 'poll.add(refresh, 10)' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'write_atomic' src/status.rs
 grep -q 'update_detail_lines' src/proxy.rs
 grep -q 'upstream_reused' src/proxy.rs
 grep -q 'EXPECTED_APK=' scripts/build-openwrt-25.12.5.sh
+grep -q 'usr/libexec/wloc/wifi-schedule.sh' scripts/build-openwrt-25.12.5.sh
 ! grep -Fq 'bash "$PROJECT/tests/run-host-tests.sh"' scripts/build-openwrt-25.12.5.sh
 grep -Fq 'run: bash ./tests/run-host-tests.sh' .github/workflows/ci.yml
 grep -q 'x86_64-unknown-linux-musl' Makefile scripts/build-openwrt-25.12.5.sh
@@ -382,7 +411,12 @@ grep -q '^run-name: Release packages /' .github/workflows/openwrt-build.yml
 grep -q '^run-name: Upstream check /' .github/workflows/openwrt-upstream.yml
 grep -q 'name: Build APK /' .github/workflows/openwrt-build.yml
 grep -q 'name: Rust quality and host tests' .github/workflows/ci.yml
-grep -q 'uses: dtolnay/rust-toolchain@stable' .github/workflows/ci.yml
+grep -q 'workflow_call:' .github/workflows/ci.yml
+grep -q 'uses: dtolnay/rust-toolchain@1.89.0' .github/workflows/ci.yml
+grep -q 'uses: ./\.github/workflows/ci.yml' .github/workflows/openwrt-build.yml
+grep -q 'needs: host-tests' .github/workflows/openwrt-build.yml
+grep -q 'repository = "https://github.com/madwind/luci-app-wloc"' Cargo.toml
+grep -q 'features = \["io-util", "macros", "net", "rt", "time"\]' Cargo.toml
 grep -q 'uses: actions/cache@v6' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
 grep -Fq '.build/openwrt-25.12.5-${{ matrix.target }}/downloads' .github/workflows/openwrt-build.yml
 grep -Fq '${{ matrix.sdk_sha256 }}' .github/workflows/openwrt-build.yml

@@ -1,9 +1,17 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::config::MacAddress;
+
+const CACHE_TTL: Duration = Duration::from_secs(2);
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+const SYNC_LOOKUP_BUDGET: Duration = Duration::from_secs(4);
+const UBUS_TIMEOUT_SECONDS: &str = "1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessPoint {
@@ -15,6 +23,19 @@ pub struct AccessPoint {
 #[derive(Clone)]
 pub struct HostapdNetworkSource {
     ubus_path: PathBuf,
+    state: Arc<tokio::sync::Mutex<LookupState>>,
+}
+
+#[derive(Default)]
+struct LookupState {
+    results: HashMap<MacAddress, CachedAccessPoint>,
+    in_flight: HashMap<MacAddress, Arc<tokio::sync::Mutex<()>>>,
+}
+
+#[derive(Clone)]
+struct CachedAccessPoint {
+    result: Result<Option<AccessPoint>, String>,
+    expires_at: Instant,
 }
 
 impl HostapdNetworkSource {
@@ -23,16 +44,65 @@ impl HostapdNetworkSource {
             ubus_path: std::env::var_os("WLOC_UBUS_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("ubus")),
+            state: Arc::new(tokio::sync::Mutex::new(LookupState::default())),
         }
     }
 
-    /// Resolve every time an AP-constrained rule is considered. Deliberately
-    /// do not cache this result: a station may roam between same-SSID BSSIDs.
+    /// Coalesce simultaneous lookups and keep only a two-second snapshot. This
+    /// avoids process storms while still observing station roaming promptly.
     pub async fn current_for(&self, mac: MacAddress) -> Result<Option<AccessPoint>, String> {
+        let lookup_gate = {
+            let mut state = self.state.lock().await;
+            let now = Instant::now();
+            state.results.retain(|_, entry| entry.expires_at > now);
+            state
+                .in_flight
+                .retain(|_, gate| Arc::strong_count(gate) > 1);
+            if let Some(entry) = state.results.get(&mac) {
+                return entry.result.clone();
+            }
+            Arc::clone(
+                state
+                    .in_flight
+                    .entry(mac)
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+
+        let _lookup = lookup_gate.lock().await;
+        {
+            let mut state = self.state.lock().await;
+            let now = Instant::now();
+            state.results.retain(|_, entry| entry.expires_at > now);
+            if let Some(entry) = state.results.get(&mac) {
+                return entry.result.clone();
+            }
+        }
+
         let ubus_path = self.ubus_path.clone();
-        tokio::task::spawn_blocking(move || current_for_sync(&ubus_path, mac))
-            .await
-            .map_err(|error| format!("hostapd lookup task failed: {error}"))?
+        let task = tokio::task::spawn_blocking(move || current_for_sync(&ubus_path, mac));
+        let result = match tokio::time::timeout(LOOKUP_TIMEOUT, task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(format!("hostapd lookup task failed: {error}")),
+            Err(_) => Err("hostapd lookup timed out".to_owned()),
+        };
+
+        let mut state = self.state.lock().await;
+        state.results.insert(
+            mac,
+            CachedAccessPoint {
+                result: result.clone(),
+                expires_at: Instant::now() + CACHE_TTL,
+            },
+        );
+        let owns_gate = state
+            .in_flight
+            .get(&mac)
+            .is_some_and(|gate| Arc::ptr_eq(gate, &lookup_gate));
+        if owns_gate {
+            state.in_flight.remove(&mac);
+        }
+        result
     }
 }
 
@@ -43,12 +113,19 @@ impl Default for HostapdNetworkSource {
 }
 
 fn current_for_sync(ubus: &Path, mac: MacAddress) -> Result<Option<AccessPoint>, String> {
-    let objects = command_output(ubus, &["-S", "-t", "3", "list", "hostapd.*"])?;
+    let deadline = Instant::now() + SYNC_LOOKUP_BUDGET;
+    let objects = command_output(
+        ubus,
+        &["-S", "-t", UBUS_TIMEOUT_SECONDS, "list", "hostapd.*"],
+    )?;
     for object in objects
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
+        if Instant::now() >= deadline {
+            return Err("hostapd lookup exceeded its time budget".into());
+        }
         if !object.starts_with("hostapd.") || !safe_object_name(object) {
             continue;
         }
@@ -76,7 +153,18 @@ fn command_output(program: &Path, arguments: &[&str]) -> Result<String, String> 
 }
 
 fn call_json(ubus: &Path, object: &str, method: &str) -> Result<Value, String> {
-    let output = command_output(ubus, &["-S", "-t", "3", "call", object, method, "{}"])?;
+    let output = command_output(
+        ubus,
+        &[
+            "-S",
+            "-t",
+            UBUS_TIMEOUT_SECONDS,
+            "call",
+            object,
+            method,
+            "{}",
+        ],
+    )?;
     serde_json::from_str(&output)
         .map_err(|error| format!("invalid {object}.{method} JSON: {error}"))
 }

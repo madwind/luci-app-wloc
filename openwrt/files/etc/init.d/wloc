@@ -163,7 +163,6 @@ append_rule_for_wifi() {
 	# Parent WiFi/AP order is the primary order; child device order is secondary.
 	procd_append_param command --rule "$section" "$device_arg" "$network_arg" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
-	[ -z "$ssid" ] || procd_append_param command --rule-ssid "$section" "$ssid"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
 }
@@ -186,7 +185,8 @@ startup_failure() {
 
 start_service() {
 	mkdir -p /var/run/wloc
-	rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
+	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
+		/var/run/wloc/package.version "$START_ERROR"
 	config_load wloc
 
 	# Keep WiFi/AP schedules independent from the WLOC interception daemon.
@@ -244,6 +244,7 @@ start_service() {
 	done
 	procd_set_param env WLOC_PROFILE_PATH=/www/wloc-ca.mobileconfig \
 		WLOC_STATUS_PATH=/var/run/wloc/status.json \
+		WLOC_RUNTIME_LOG_PATH=/var/run/wloc/runtime.log \
 		WLOC_START_ERROR_PATH="$START_ERROR"
 	procd_set_param respawn 3600 5 60
 	procd_set_param stdout 1
@@ -260,7 +261,7 @@ stop_service() {
 service_stopped() {
 	"$SCHEDULE" stop >/dev/null 2>&1 || true
 	"$RULES" cleanup
-	rm -f /var/run/wloc/status.json
+	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log
 }
 
 reload_service() {

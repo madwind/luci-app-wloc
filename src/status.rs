@@ -28,8 +28,8 @@ struct Snapshot {
     last_error: Option<String>,
     session_started_at: u64,
     updated_at: u64,
-    runtime_log: String,
     runtime_log_enabled: bool,
+    runtime_log_revision: u64,
     client_activity: Vec<ClientActivity>,
 }
 
@@ -49,10 +49,15 @@ struct Inner {
     log_bytes: usize,
 }
 
+struct PendingWrite {
+    snapshot: Snapshot,
+    runtime_log: Option<String>,
+}
+
 pub struct Status {
     started: Instant,
     inner: Mutex<Inner>,
-    pending: Arc<Mutex<Option<Snapshot>>>,
+    pending: Arc<Mutex<Option<PendingWrite>>>,
     notify: mpsc::SyncSender<()>,
 }
 
@@ -80,6 +85,7 @@ fn safe_text(value: &str, limit: usize) -> String {
 impl Status {
     pub fn new(
         path: PathBuf,
+        log_path: PathBuf,
         configured_clients: usize,
         runtime_log_enabled: bool,
         fingerprint: String,
@@ -100,14 +106,31 @@ impl Status {
             last_event: "session_started".into(),
             session_started_at: now,
             updated_at: now,
-            runtime_log: logs.iter().cloned().collect::<Vec<_>>().join("\n"),
+            runtime_log_revision: u64::from(runtime_log_enabled),
             ..Snapshot::default()
         };
         let initial = serde_json::to_vec_pretty(&snapshot).map_err(std::io::Error::other)?;
         let pending = Arc::new(Mutex::new(None));
         let (notify, receiver) = mpsc::sync_channel(1);
-        spawn_writer(path.clone(), Arc::clone(&pending), receiver)?;
+        spawn_writer(
+            path.clone(),
+            log_path.clone(),
+            Arc::clone(&pending),
+            receiver,
+        )?;
         write_atomic(&path, &initial)?;
+        if runtime_log_enabled {
+            write_atomic(
+                &log_path,
+                logs.iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .as_bytes(),
+            )?;
+        } else {
+            let _ = std::fs::remove_file(log_path);
+        }
         Ok(Self {
             started: Instant::now(),
             inner: Mutex::new(Inner {
@@ -161,7 +184,7 @@ impl Status {
         inner.snapshot.last_error = error.map(|value| safe_text(value, 360));
         inner.snapshot.updated_at = epoch_seconds();
 
-        if inner.snapshot.runtime_log_enabled {
+        let runtime_log = if inner.snapshot.runtime_log_enabled {
             push_log(
                 &mut inner,
                 format_log_line(self.started, event, detail, error),
@@ -172,14 +195,21 @@ impl Status {
                     format_log_line(self.started, "wloc_location_patched", line, None),
                 );
             }
-        }
-        inner.snapshot.runtime_log = inner.logs.iter().cloned().collect::<Vec<_>>().join("\n");
+            inner.snapshot.runtime_log_revision =
+                inner.snapshot.runtime_log_revision.saturating_add(1);
+            Some(inner.logs.iter().cloned().collect::<Vec<_>>().join("\n"))
+        } else {
+            None
+        };
         let snapshot = inner.snapshot.clone();
         drop(inner);
         *self
             .pending
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PendingWrite {
+            snapshot,
+            runtime_log,
+        });
         let _ = self.notify.try_send(());
     }
 }
@@ -210,7 +240,8 @@ fn push_log(inner: &mut Inner, line: String) {
 
 fn spawn_writer(
     path: PathBuf,
-    pending: Arc<Mutex<Option<Snapshot>>>,
+    log_path: PathBuf,
+    pending: Arc<Mutex<Option<PendingWrite>>>,
     receiver: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new()
@@ -224,9 +255,15 @@ fn spawn_writer(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take();
-                if let Some(snapshot) = snapshot {
-                    let result = serde_json::to_vec_pretty(&snapshot)
-                        .map_err(std::io::Error::other)
+                if let Some(pending) = snapshot {
+                    let result = pending
+                        .runtime_log
+                        .as_deref()
+                        .map_or(Ok(()), |log| write_atomic(&log_path, log.as_bytes()))
+                        .and_then(|_| {
+                            serde_json::to_vec_pretty(&pending.snapshot)
+                                .map_err(std::io::Error::other)
+                        })
                         .and_then(|data| write_atomic(&path, &data));
                     if let Err(error) = result {
                         let now = Instant::now();
@@ -368,8 +405,16 @@ mod tests {
             std::process::id(),
             epoch_seconds()
         ));
+        let log_path = path.with_extension("log");
         std::fs::write(&path, br#"{"runtime_log":"old session"}"#).unwrap();
-        let status = Status::new(path.clone(), 2, true, "fingerprint".into()).unwrap();
+        let status = Status::new(
+            path.clone(),
+            log_path.clone(),
+            2,
+            true,
+            "fingerprint".into(),
+        )
+        .unwrap();
         status.update_detail_lines(
             "response_delivered",
             "kind=1 mode=upstream_patched bytes=42",
@@ -385,7 +430,7 @@ mod tests {
             },
         );
         let value = read_snapshot(&path, "response_delivered");
-        let log = value["runtime_log"].as_str().unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(log.contains("event=session_started"));
         assert!(log.contains("event=response_delivered"));
         assert_eq!(log.matches("event=wloc_location_patched").count(), 2);
@@ -397,7 +442,10 @@ mod tests {
         assert_eq!(value["client_activity"][0]["client_id"], "client_a");
         assert_eq!(value["client_activity"][0]["success"], true);
         assert_eq!(value["client_activity"][0]["last_error"], "");
+        assert!(value.get("runtime_log").is_none());
+        assert!(value["runtime_log_revision"].as_u64().unwrap() >= 2);
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(log_path);
     }
 
     #[test]
@@ -407,11 +455,20 @@ mod tests {
             std::process::id(),
             epoch_seconds()
         ));
-        let status = Status::new(path.clone(), 1, false, "fingerprint".into()).unwrap();
+        let log_path = path.with_extension("log");
+        let status = Status::new(
+            path.clone(),
+            log_path.clone(),
+            1,
+            false,
+            "fingerprint".into(),
+        )
+        .unwrap();
         status.update_detail("request_received", "body_bytes=42", None, |_| {});
         let value = read_snapshot(&path, "request_received");
         assert_eq!(value["runtime_log_enabled"], false);
-        assert_eq!(value["runtime_log"], "");
+        assert_eq!(value["runtime_log_revision"], 0);
+        assert!(!log_path.exists());
         assert_eq!(value["last_event"], "request_received");
         let _ = std::fs::remove_file(path);
     }
@@ -423,7 +480,8 @@ mod tests {
             std::process::id(),
             epoch_seconds()
         ));
-        let status = Status::new(path.clone(), 1, false, "fingerprint".into()).unwrap();
+        let log_path = path.with_extension("log");
+        let status = Status::new(path.clone(), log_path, 1, false, "fingerprint".into()).unwrap();
         status.update_detail(
             "client_failed",
             "rule=client_a category=upstream",

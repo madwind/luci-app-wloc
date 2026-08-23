@@ -11,7 +11,6 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
 };
-use ring::rand::{SecureRandom, SystemRandom};
 use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -212,15 +211,19 @@ fn pem_certificate(der: &[u8]) -> String {
     pem
 }
 
-fn uuid() -> Result<String, &'static str> {
+fn stable_uuid(certificate: &[u8], label: &[u8]) -> String {
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    context.update(b"org.openwrt.wloc.mobileconfig\0");
+    context.update(label);
+    context.update(certificate);
+    let digest = context.finish();
     let mut bytes = [0_u8; 16];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| "random UUID generation failed")?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes.copy_from_slice(&digest.as_ref()[..16]);
+    // RFC 9562 version 8 is reserved for application-defined UUIDs.
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+    format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15])
 }
 
 pub fn write_mobileconfig(
@@ -248,11 +251,14 @@ pub fn write_mobileconfig(
 <key>PayloadUUID</key><string>{}</string><key>PayloadVersion</key><integer>1</integer>
 </dict></plist>
 "#,
-        uuid()?,
-        uuid()?
+        stable_uuid(ca.cert_der(), b"certificate"),
+        stable_uuid(ca.cert_der(), b"profile")
     );
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
+    }
+    if fs::read(output).ok().as_deref() == Some(profile.as_bytes()) {
+        return Ok(());
     }
     write_atomic(output, profile.as_bytes(), 0o644)?;
     Ok(())
@@ -362,5 +368,20 @@ mod tests {
         assert!(CaBundle::load_or_generate(&first_dir).is_err());
         let _ = fs::remove_dir_all(first_dir);
         let _ = fs::remove_dir_all(second_dir);
+    }
+
+    #[test]
+    fn mobileconfig_is_stable_for_an_existing_ca() {
+        let dir = test_dir("profile");
+        let (ca, _) = CaBundle::load_or_generate(&dir).unwrap();
+        let profile = dir.join("wloc-ca.mobileconfig");
+        write_mobileconfig(&ca, &profile).unwrap();
+        let first = fs::read(&profile).unwrap();
+        write_mobileconfig(&ca, &profile).unwrap();
+        let second = fs::read(&profile).unwrap();
+        assert_eq!(first, second);
+        let text = String::from_utf8(first).unwrap();
+        assert_eq!(text.matches("<key>PayloadUUID</key>").count(), 2);
+        let _ = fs::remove_dir_all(dir);
     }
 }

@@ -143,8 +143,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
+        let runtime_log_path = std::env::var_os("WLOC_RUNTIME_LOG_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/run/wloc/runtime.log"));
         let status = Arc::new(Status::new(
             status_path,
+            runtime_log_path,
             config.rules.len(),
             config.runtime_log,
             fingerprint,

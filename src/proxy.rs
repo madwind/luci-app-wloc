@@ -1253,7 +1253,6 @@ mod peer_identity_tests {
             name: id.into(),
             device,
             network,
-            ssid: None,
             target: PatchTarget::new(1.0, 2.0).unwrap(),
             outbound: OutboundProxy::Direct,
         }
