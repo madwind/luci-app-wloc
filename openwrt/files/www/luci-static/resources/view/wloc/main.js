@@ -15,6 +15,8 @@ var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'con
 var callIwinfoDevices = rpc.declare({ object: 'iwinfo', method: 'devices', expect: {} });
 var callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ], expect: {} });
 var callLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: {} });
+var AP_DISCOVERY_ATTEMPTS = 6;
+var AP_DISCOVERY_RETRY_MS = 1500;
 
 function truthy(value) {
 	return value === true || value === 1 || value === '1' || value === 'true';
@@ -85,7 +87,13 @@ function lookupIpInfo(ip) {
 	});
 }
 
-function callWirelessAccessPoints() {
+function wait(milliseconds) {
+	return new Promise(function(resolve) {
+		window.setTimeout(resolve, milliseconds);
+	});
+}
+
+function callWirelessAccessPointsOnce() {
 	return Promise.all([
 		callAccessPoints().catch(function() { return {}; }),
 		callIwinfoDevices().then(function(result) {
@@ -93,7 +101,7 @@ function callWirelessAccessPoints() {
 			return Promise.all(devices.map(function(device) {
 				return callIwinfoInfo(device).then(function(info) {
 					var mode = String(info.mode || '').toLowerCase();
-					if (mode && [ 'master', 'ap' ].indexOf(mode) < 0)
+					if (mode && [ 'master', 'master (vlan)', 'ap', 'wds' ].indexOf(mode) < 0)
 						return null;
 					return {
 						ssid: info.ssid || '',
@@ -129,13 +137,27 @@ function callWirelessAccessPoints() {
 	});
 }
 
+function callWirelessAccessPoints(attempts) {
+	attempts = Math.max(1, Number(attempts) || 1);
+	return callWirelessAccessPointsOnce().then(function(result) {
+		if ((result.access_points || []).length || attempts <= 1)
+			return result;
+		return wait(AP_DISCOVERY_RETRY_MS).then(function() {
+			return callWirelessAccessPoints(attempts - 1);
+		});
+	});
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.load('wloc'),
 			uci.load('wireless').catch(function() { return {}; }),
 			callLeases().catch(function() { return {}; }),
-			callWirelessAccessPoints(),
+			// rpcd may become reachable before hostapd and the wireless interfaces
+			// after a router restart. Do not freeze that transient empty result into
+			// the BSSID choices for the lifetime of this page.
+			callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS),
 			callConfiguredAccessPoints().catch(function() { return {}; }),
 			callStatus().catch(function() { return {}; })
 		]);
@@ -233,6 +255,19 @@ return view.extend({
 		option.default = '0';
 		option.rmempty = false;
 		option.description = _('Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates.');
+		var refreshAccessPointsOption = settings.option(form.Button, '_refresh_access_points', _('AP discovery'));
+		refreshAccessPointsOption.inputtitle = _('Refresh AP list');
+		refreshAccessPointsOption.inputstyle = 'apply';
+		refreshAccessPointsOption.description = _('Retry AP discovery after WiFi or the router has restarted. The page reloads only after at least one BSSID is found.');
+		refreshAccessPointsOption.onclick = function() {
+			return callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS).then(function(result) {
+				if (!(result.access_points || []).length) {
+					ui.addNotification(null, E('p', {}, _('No active AP BSSID was found. WiFi may still be starting; try again shortly.')), 'warning');
+					return;
+				}
+				window.location.reload();
+			});
+		};
 		var caOption = settings.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
 		caOption.rmempty = true;
 		caOption.cfgvalue = function() { return 'certificate'; };

@@ -21,6 +21,7 @@ else
 fi
 if command -v node >/dev/null 2>&1; then
 	node --check openwrt/files/www/luci-static/resources/view/wloc/main.js
+	node tests/ap-discovery.test.js
 fi
 
 grep -q '^TABLE=wloc$' openwrt/files/usr/libexec/wloc/rules.sh
@@ -300,6 +301,9 @@ grep -q "method: 'access_points'" openwrt/files/www/luci-static/resources/view/w
 grep -q "method: 'configured_access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "object: 'iwinfo', method: 'devices'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "object: 'iwinfo', method: 'info'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS)" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -Fq "'master (vlan)'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "'_refresh_access_points'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'emit_configured_access_points' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'configured_access_points' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q '"iwinfo": \[ "devices", "info" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
