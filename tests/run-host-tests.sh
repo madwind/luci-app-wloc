@@ -107,7 +107,7 @@ grep -Fq '. "$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
 grep -Fq 'PACKAGE_VERSION="$WLOC_VERSION"' scripts/build-openwrt-25.12.5.sh
 grep -Fq 'PACKAGE_RELEASE="$WLOC_RELEASE"' scripts/build-openwrt-25.12.5.sh
 grep -Fq '"$PROJECT/version.env"' scripts/build-openwrt-25.12.5.sh
-[ "$(grep -Fc '. ./version.env' .github/workflows/openwrt-build.yml)" -eq 1 ] \
+[ "$(grep -Fc '. ./version.env' .github/workflows/openwrt-build.yml)" -eq 2 ] \
 	|| { echo 'OpenWrt workflow does not consistently load version.env' >&2; exit 1; }
 ! grep -Eq 'awk .*Cargo\.toml|awk .*PKG_(VERSION|RELEASE)' \
 	scripts/build-openwrt-25.12.5.sh .github/workflows/openwrt-build.yml
@@ -422,8 +422,10 @@ grep -Fq '.build/openwrt-25.12.5-${{ matrix.target }}/downloads' .github/workflo
 grep -Fq '${{ matrix.sdk_sha256 }}' .github/workflows/openwrt-build.yml
 grep -q '~/.cargo/registry' .github/workflows/openwrt-build.yml .github/workflows/ci.yml
 grep -q 'startsWith(github.ref, '\''refs/tags/v'\'')' .github/workflows/openwrt-build.yml
+grep -q "github.ref == 'refs/heads/master'" .github/workflows/openwrt-build.yml
+grep -A7 '^  push:' .github/workflows/openwrt-build.yml | grep -q 'version.env'
 grep -Fq 'expected_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"' .github/workflows/openwrt-build.yml
-grep -Fq 'release_tag="$GITHUB_REF_NAME"' .github/workflows/openwrt-build.yml
+grep -Fq 'release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"' .github/workflows/openwrt-build.yml
 grep -Fq -- '--target "$GITHUB_SHA"' .github/workflows/openwrt-build.yml
 grep -q 'docs/images/wloc-dashboard.png' README.md
 ! grep -Eiq 'udp.*(500|4500)|(500|4500).*udp|ePDG|PassWall|OpenClash|sing-box|Xray' \
