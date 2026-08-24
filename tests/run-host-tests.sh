@@ -33,7 +33,7 @@ grep -q '^MIN_SAFE_PRIORITY=-199$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_TIMEOUT=15m$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DNS_SAMPLES=1$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DNS_REFRESH_SECONDS=300$' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q '^DNS_QUERY_TIMEOUT=3$' openwrt/files/usr/libexec/wloc/rules.sh
+! grep -q 'timeout .*nslookup' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^ORDER_CHECK_SECONDS=60$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'iifname @\$AP_INTERFACE_SET.*redirect to :\$port comment "wloc owned AP redirect"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'priority \$priority' openwrt/files/usr/libexec/wloc/rules.sh

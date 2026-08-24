@@ -22,7 +22,6 @@ HOST_TIMEOUT=15m
 DNS_SAMPLES=1
 DNS_REFRESH_SECONDS=300
 DNS_RETRY_SECONDS=60
-DNS_QUERY_TIMEOUT=3
 ORDER_CHECK_SECONDS=60
 
 cleanup() {
@@ -79,7 +78,7 @@ resolve_hosts() {
 		while [ "$sample" -lt "$DNS_SAMPLES" ]; do
 			# BusyBox nslookup prints the DNS server as an Address before the
 			# answer Name. Parse only Address lines in the answer section.
-			for resolved_ip in $(timeout "$DNS_QUERY_TIMEOUT" nslookup "$host" 2>/dev/null \
+			for resolved_ip in $(nslookup "$host" 2>/dev/null \
 				| sed -n '/^Name:[[:space:]]/,$ s/^Address[^:]*:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p'); do
 				valid_ipv4 "$resolved_ip" || continue
 				case " $addresses " in
