@@ -60,82 +60,11 @@ impl OutboundProxy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeviceSelector {
-    All,
-    Mac(MacAddress),
-}
-
-impl DeviceSelector {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "*" => Ok(Self::All),
-            value => MacAddress::parse(value).map(Self::Mac),
-        }
-    }
-
-    pub fn matches(&self, mac: MacAddress) -> bool {
-        matches!(self, Self::All) || matches!(self, Self::Mac(expected) if *expected == mac)
-    }
-
-    pub fn label(&self) -> String {
-        match self {
-            Self::All => "all".into(),
-            Self::Mac(mac) => mac.label(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum NetworkSelector {
-    Any,
-    Ssid(String),
-    Bssid(MacAddress),
-}
-
-impl NetworkSelector {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "*" => Ok(Self::Any),
-            value if value.starts_with("ssid:") => {
-                let ssid = &value["ssid:".len()..];
-                if ssid.is_empty()
-                    || ssid.len() > 32
-                    || ssid
-                        .chars()
-                        .any(|character| character == '\0' || character.is_control())
-                {
-                    return Err("invalid SSID".into());
-                }
-                Ok(Self::Ssid(ssid.into()))
-            }
-            value => MacAddress::parse(value).map(Self::Bssid),
-        }
-    }
-
-    pub fn matches(&self, bssid: Option<MacAddress>, ssid: Option<&str>) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Ssid(expected) => ssid == Some(expected.as_str()),
-            Self::Bssid(expected) => bssid == Some(*expected),
-        }
-    }
-
-    pub fn label(&self) -> String {
-        match self {
-            Self::Any => "any".into(),
-            Self::Ssid(ssid) => format!("ssid:{ssid}"),
-            Self::Bssid(bssid) => bssid.label(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocationRule {
     pub id: String,
     pub name: String,
-    pub device: DeviceSelector,
-    pub network: NetworkSelector,
+    pub bssid: MacAddress,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
 }
@@ -157,10 +86,9 @@ impl LocationRule {
 
     pub fn log_context(&self) -> String {
         format!(
-            "rule_name=\"{}\" device={} network={}",
+            "rule_name=\"{}\" ap_bssid={}",
             self.safe_log_name(),
-            self.device.label().to_uppercase(),
-            self.network.label().to_uppercase()
+            self.bssid.label().to_uppercase()
         )
     }
 
@@ -228,14 +156,12 @@ impl Config {
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
                         return Err(format!("duplicate rule ID: {id}"));
                     }
-                    let device = DeviceSelector::parse(&args.next().ok_or_else(value)?)?;
-                    let network = NetworkSelector::parse(&args.next().ok_or_else(value)?)?;
+                    let bssid = MacAddress::parse(&args.next().ok_or_else(value)?)?;
                     let target = parse_target(&mut args, &flag)?;
                     rules.push(LocationRule {
                         name: id.clone(),
                         id,
-                        device,
-                        network,
+                        bssid,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
@@ -285,27 +211,8 @@ impl Config {
         })
     }
 
-    pub fn capture_selectors(&self) -> Vec<String> {
-        let mut selectors = Vec::new();
-        for rule in &self.rules {
-            let selector = match (rule.device, &rule.network) {
-                (DeviceSelector::Mac(mac), _) => format!("mac:{}", mac.label()),
-                (DeviceSelector::All, NetworkSelector::Bssid(bssid)) => {
-                    format!("bssid:{}", bssid.label())
-                }
-                (DeviceSelector::All, NetworkSelector::Any | NetworkSelector::Ssid(_)) => {
-                    "wireless:any".into()
-                }
-            };
-            if !selectors.contains(&selector) {
-                selectors.push(selector);
-            }
-        }
-        selectors
-    }
-
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID MAC_OR_* NETWORK_OR_* LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+        "wlocd --rule ID AP_BSSID LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
     }
 }
 
@@ -356,23 +263,15 @@ mod tests {
     fn preserves_rule_order_without_implicit_priority() {
         let config = Config::from_iter(args(&[
             "--rule",
-            "iphone_ap1",
-            "02:11:22:33:44:55",
+            "ap1",
             "aa:bb:cc:dd:ee:01",
             "1",
             "2",
             "--rule",
-            "all_ap1",
-            "*",
-            "aa:bb:cc:dd:ee:01",
+            "ap2",
+            "aa:bb:cc:dd:ee:02",
             "3",
             "4",
-            "--rule",
-            "fallback",
-            "*",
-            "*",
-            "5",
-            "6",
         ]))
         .unwrap();
         assert_eq!(
@@ -381,15 +280,7 @@ mod tests {
                 .iter()
                 .map(|rule| rule.id.as_str())
                 .collect::<Vec<_>>(),
-            ["iphone_ap1", "all_ap1", "fallback"]
-        );
-        assert_eq!(
-            config.capture_selectors(),
-            [
-                "mac:02:11:22:33:44:55",
-                "bssid:aa:bb:cc:dd:ee:01",
-                "wireless:any"
-            ]
+            ["ap1", "ap2"]
         );
     }
 
@@ -397,23 +288,22 @@ mod tests {
     fn parses_rule_metadata_and_proxy() {
         let config = Config::from_iter(args(&[
             "--rule",
-            "phone",
-            "02:11:22:33:44:55",
-            "*",
+            "ap",
+            "aa:bb:cc:dd:ee:01",
             "51.5074",
             "-0.1277",
             "--rule-name",
-            "phone",
-            "iPhone 16",
+            "ap",
+            "Living room",
             "--rule-proxy",
-            "phone",
+            "ap",
             "socks5",
             "192.0.2.10",
             "1080",
         ]))
         .unwrap();
         let rule = &config.rules[0];
-        assert_eq!(rule.name, "iPhone 16");
+        assert_eq!(rule.name, "Living room");
         assert_eq!(
             rule.outbound,
             OutboundProxy::Socks5 {
@@ -428,44 +318,39 @@ mod tests {
         let overlapping = Config::from_iter(args(&[
             "--rule",
             "first",
-            "02:11:22:33:44:55",
-            "*",
+            "aa:bb:cc:dd:ee:01",
             "1",
             "2",
             "--rule",
             "second",
-            "02:11:22:33:44:55",
-            "*",
+            "aa:bb:cc:dd:ee:01",
             "3",
             "4",
         ]));
         assert!(overlapping.is_ok());
 
         let duplicate_id = Config::from_iter(args(&[
-            "--rule", "same", "*", "*", "1", "2", "--rule", "same", "*", "*", "3", "4",
+            "--rule",
+            "same",
+            "aa:bb:cc:dd:ee:01",
+            "1",
+            "2",
+            "--rule",
+            "same",
+            "aa:bb:cc:dd:ee:02",
+            "3",
+            "4",
         ]));
         assert!(duplicate_id.unwrap_err().contains("duplicate rule ID"));
         assert!(MacAddress::parse("01:00:5e:00:00:01").is_err());
     }
 
     #[test]
-    fn network_and_device_matchers_are_explicit() {
-        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
+    fn ap_bssid_is_explicit() {
         let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
-        assert!(DeviceSelector::All.matches(phone));
-        assert!(DeviceSelector::Mac(phone).matches(phone));
-        assert!(NetworkSelector::Any.matches(None, None));
-        assert!(NetworkSelector::Bssid(ap).matches(Some(ap), Some("Diablo")));
-        assert!(!NetworkSelector::Bssid(ap).matches(None, Some("Diablo")));
-        assert!(NetworkSelector::Ssid("Diablo".into()).matches(Some(ap), Some("Diablo")));
-        assert!(!NetworkSelector::Ssid("Diablo".into()).matches(Some(ap), Some("diablo")));
-    }
-
-    #[test]
-    fn ssid_network_selectors_capture_all_wireless_interfaces() {
         let config =
-            Config::from_iter(args(&["--rule", "diablo", "*", "ssid:Diablo", "1", "2"])).unwrap();
-        assert_eq!(config.capture_selectors(), ["wireless:any"]);
-        assert_eq!(config.rules[0].network.label(), "ssid:Diablo");
+            Config::from_iter(args(&["--rule", "diablo", "aa:bb:cc:dd:ee:01", "1", "2"])).unwrap();
+        assert_eq!(config.rules[0].bssid, ap);
+        assert!(Config::from_iter(args(&["--rule", "bad", "*", "1", "2"])).is_err());
     }
 }

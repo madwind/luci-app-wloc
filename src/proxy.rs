@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::client_hello::peek_sni;
-use crate::config::{LocationRule, MacAddress, NetworkSelector, OutboundProxy};
+use crate::config::{LocationRule, MacAddress, OutboundProxy};
 use crate::network_source::HostapdNetworkSource;
 use crate::status::Status;
 use crate::wloc::{
@@ -109,25 +109,9 @@ struct H2Entry {
 
 fn first_matching_rule<'a>(
     rules: &'a [LocationRule],
-    mac: MacAddress,
     bssid: Option<MacAddress>,
-    ssid: Option<&str>,
 ) -> Option<&'a LocationRule> {
-    rules
-        .iter()
-        .find(|rule| rule.device.matches(mac) && rule.network.matches(bssid, ssid))
-}
-
-fn network_lookup_required(rules: &[LocationRule], mac: MacAddress) -> bool {
-    rules
-        .iter()
-        .find(|rule| rule.device.matches(mac))
-        .is_some_and(|rule| {
-            matches!(
-                &rule.network,
-                NetworkSelector::Bssid(_) | NetworkSelector::Ssid(_)
-            )
-        })
+    bssid.and_then(|bssid| rules.iter().find(|rule| rule.bssid == bssid))
 }
 
 #[derive(Clone)]
@@ -157,12 +141,10 @@ impl Proxy {
     ) -> Self {
         let followers = rules
             .iter()
-            .map(|client| {
+            .map(|rule| {
                 (
-                    client.id.clone(),
-                    Arc::new(tokio::sync::Mutex::new(LocationFollower::new(
-                        client.target,
-                    ))),
+                    rule.id.clone(),
+                    Arc::new(tokio::sync::Mutex::new(LocationFollower::new(rule.target))),
                 )
             })
             .collect();
@@ -187,9 +169,9 @@ impl Proxy {
         }
     }
 
-    fn client_detail(&self, client: &str, ip: IpAddr, detail: String) -> String {
-        let rule = self.rules.iter().find(|target| target.id == client);
-        let rule_token = format!("rule={client}");
+    fn rule_detail(&self, rule_id: &str, ip: IpAddr, detail: String) -> String {
+        let rule = self.rules.iter().find(|target| target.id == rule_id);
+        let rule_token = format!("rule={rule_id}");
         let detail = if detail.split_whitespace().any(|token| token == rule_token) {
             detail
         } else {
@@ -236,35 +218,26 @@ impl Proxy {
         let Some(identity) = self.identity_for(peer).await? else {
             return Ok(None);
         };
-        let needs_ap = network_lookup_required(&self.rules, identity.mac);
-        let access_point = if needs_ap {
-            match self.network_source.current_for(identity.mac).await {
-                Ok(access_point) => access_point,
-                Err(error) => {
-                    self.status.update_detail(
-                        "network_source_failed",
-                        &unmatched_context(
-                            identity.hostname.as_deref(),
-                            Some(identity.mac),
-                            peer,
-                            "hostapd",
-                        ),
-                        Some(&error),
-                        |_| {},
-                    );
-                    None
-                }
+        let access_point = match self.network_source.current_for(identity.mac).await {
+            Ok(access_point) => access_point,
+            Err(error) => {
+                self.status.update_detail(
+                    "network_source_failed",
+                    &unmatched_context(
+                        identity.hostname.as_deref(),
+                        Some(identity.mac),
+                        peer,
+                        "hostapd",
+                    ),
+                    Some(&error),
+                    |_| {},
+                );
+                None
             }
-        } else {
-            None
         };
         Ok(first_matching_rule(
             &self.rules,
-            identity.mac,
             access_point.as_ref().map(|access_point| access_point.bssid),
-            access_point
-                .as_ref()
-                .map(|access_point| access_point.ssid.as_str()),
         )
         .cloned())
     }
@@ -284,19 +257,19 @@ impl Proxy {
             );
             return self.tunnel(stream, &OutboundProxy::Direct).await;
         };
-        let client = rule.id.clone();
+        let ap_id = rule.id.clone();
         let result = self.handle_target(stream, rule, peer_address.ip()).await;
         if let Err(error) = &result {
             let reason = error.to_string();
             self.status.update_detail(
-                "client_failed",
-                &self.client_detail(
-                    &client,
+                "ap_failed",
+                &self.rule_detail(
+                    &ap_id,
                     peer_address.ip(),
-                    format!("rule={client} category={}", error.category()),
+                    format!("rule={ap_id} category={}", error.category()),
                 ),
                 Some(&reason),
-                |c| c.request_failed_for(&client, &reason),
+                |c| c.request_failed_for(&ap_id, &reason),
             );
         }
         result
@@ -317,7 +290,7 @@ impl Proxy {
         let outbound = rule.outbound;
         self.status.update_detail(
             "connection_accepted",
-            &self.client_detail(&client, ip, format!("rule={client}")),
+            &self.rule_detail(&client, ip, format!("rule={client}")),
             None,
             |c| c.accepted(),
         );
@@ -328,7 +301,7 @@ impl Proxy {
         let approved = sni.as_deref().is_some_and(crate::approved_host);
         self.status.update_detail(
             "client_hello",
-            &self.client_detail(
+            &self.rule_detail(
                 &client,
                 ip,
                 format!(
@@ -342,7 +315,7 @@ impl Proxy {
         if !approved {
             self.status.update_detail(
                 "sni_passthrough",
-                &self.client_detail(
+                &self.rule_detail(
                     &client,
                     ip,
                     format!("rule={client} reason=hostname_not_approved"),
@@ -362,7 +335,7 @@ impl Proxy {
         }
         self.status.update_detail(
             "tls_intercepted",
-            &self.client_detail(
+            &self.rule_detail(
                 &client,
                 ip,
                 format!("rule={client} host={hostname} alpn=h2"),
@@ -477,7 +450,7 @@ impl Proxy {
         if delivered_wloc {
             self.status.update_detail(
                     "response_delivered",
-                    &self.client_detail(
+                    &self.rule_detail(
                         client,
                         ip,
                         format!(
@@ -561,7 +534,7 @@ impl Proxy {
         let is_wloc = method == Method::POST && uri.path() == "/clls/wloc" && valid_request(&body);
         self.status.update_detail(
             "request_received",
-            &self.client_detail(
+            &self.rule_detail(
                 client,
                 ip,
                 format!(
@@ -582,7 +555,7 @@ impl Proxy {
                 .unwrap_or_else(|| "unknown".into());
             self.status.update_detail(
                 "wloc_request",
-                &self.client_detail(
+                &self.rule_detail(
                     client,
                     ip,
                     format!(
@@ -602,7 +575,7 @@ impl Proxy {
             .await?;
         self.status.update_detail(
             "upstream_response",
-            &self.client_detail(
+            &self.rule_detail(
                 client,
                 ip,
                 format!(
@@ -638,7 +611,7 @@ impl Proxy {
                                     .accuracy_after
                                     .map(|value| value.to_string())
                                     .unwrap_or_else(|| "absent".into());
-                                self.client_detail(
+                                self.rule_detail(
                                     client,
                                     ip,
                                     format!(
@@ -660,7 +633,7 @@ impl Proxy {
                     };
                     self.status.update_detail_lines(
                         "wloc_upstream_patched",
-                        &self.client_detail(
+                        &self.rule_detail(
                             client,
                             ip,
                             format!(
@@ -681,7 +654,7 @@ impl Proxy {
                     let reason = format!("protocol_{error}");
                     self.status.update_detail(
                         "wloc_passthrough",
-                        &self.client_detail(
+                        &self.rule_detail(
                             client,
                             ip,
                             format!("host={tls_sni} action=original_response"),
@@ -722,7 +695,7 @@ impl Proxy {
                 Ok(sender) => {
                     self.status.update_detail(
                         "upstream_reused",
-                        &self.client_detail(client, ip, format!("host={hostname} protocol=h2")),
+                        &self.rule_detail(client, ip, format!("host={hostname} protocol=h2")),
                         None,
                         |_| {},
                     );
@@ -738,7 +711,7 @@ impl Proxy {
 
         self.status.update_detail(
             "upstream_connect",
-            &self.client_detail(
+            &self.rule_detail(
                 client,
                 ip,
                 format!("host={hostname} port=443 outbound={}", outbound.label()),
@@ -1239,93 +1212,42 @@ impl std::error::Error for ProxyError {}
 
 #[cfg(test)]
 mod peer_identity_tests {
-    use super::{
-        dhcp_lease_identity_from, first_matching_rule, network_lookup_required, unmatched_context,
-    };
+    use super::{dhcp_lease_identity_from, first_matching_rule, unmatched_context};
     use std::net::Ipv4Addr;
 
-    use crate::config::{DeviceSelector, LocationRule, MacAddress, NetworkSelector, OutboundProxy};
+    use crate::config::{LocationRule, MacAddress, OutboundProxy};
     use crate::wloc::PatchTarget;
 
-    fn rule(id: &str, device: DeviceSelector, network: NetworkSelector) -> LocationRule {
+    fn rule(id: &str, bssid: MacAddress) -> LocationRule {
         LocationRule {
             id: id.into(),
             name: id.into(),
-            device,
-            network,
+            bssid,
             target: PatchTarget::new(1.0, 2.0).unwrap(),
             outbound: OutboundProxy::Direct,
         }
     }
 
     #[test]
-    fn first_match_wins_even_when_a_later_rule_is_more_specific() {
-        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
-        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+    fn first_matching_ap_wins() {
+        let ap1 = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+        let ap2 = MacAddress::parse("aa:bb:cc:dd:ee:02").unwrap();
         let mut rules = vec![
-            rule("all_first", DeviceSelector::All, NetworkSelector::Any),
-            rule(
-                "specific_later",
-                DeviceSelector::Mac(phone),
-                NetworkSelector::Bssid(ap),
-            ),
+            rule("ap1_first", ap1),
+            rule("ap1_duplicate", ap1),
+            rule("ap2", ap2),
         ];
         assert_eq!(
-            first_matching_rule(&rules, phone, Some(ap), None)
-                .unwrap()
-                .id,
-            "all_first"
+            first_matching_rule(&rules, Some(ap1)).unwrap().id,
+            "ap1_first"
         );
+        assert_eq!(first_matching_rule(&rules, Some(ap2)).unwrap().id, "ap2");
+        assert!(first_matching_rule(&rules, None).is_none());
         rules.reverse();
         assert_eq!(
-            first_matching_rule(&rules, phone, Some(ap), None)
-                .unwrap()
-                .id,
-            "specific_later"
+            first_matching_rule(&rules, Some(ap1)).unwrap().id,
+            "ap1_duplicate"
         );
-    }
-
-    #[test]
-    fn matches_a_configured_ssid_across_access_points() {
-        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
-        let ap = MacAddress::parse("aa:bb:cc:dd:ee:02").unwrap();
-        let rules = vec![rule(
-            "wifi_name",
-            DeviceSelector::Mac(phone),
-            NetworkSelector::Ssid("Diablo".into()),
-        )];
-        assert_eq!(
-            first_matching_rule(&rules, phone, Some(ap), Some("Diablo"))
-                .unwrap()
-                .id,
-            "wifi_name"
-        );
-        assert!(first_matching_rule(&rules, phone, Some(ap), Some("Guest")).is_none());
-    }
-
-    #[test]
-    fn hostapd_is_only_needed_before_an_any_source_match() {
-        let phone = MacAddress::parse("02:11:22:33:44:55").unwrap();
-        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
-        let any_first = vec![
-            rule("fallback", DeviceSelector::All, NetworkSelector::Any),
-            rule(
-                "ap_later",
-                DeviceSelector::Mac(phone),
-                NetworkSelector::Bssid(ap),
-            ),
-        ];
-        assert!(!network_lookup_required(&any_first, phone));
-
-        let ap_first = vec![
-            rule(
-                "ap_first",
-                DeviceSelector::Mac(phone),
-                NetworkSelector::Bssid(ap),
-            ),
-            rule("fallback", DeviceSelector::All, NetworkSelector::Any),
-        ];
-        assert!(network_lookup_required(&ap_first, phone));
     }
 
     #[test]

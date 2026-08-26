@@ -15,7 +15,7 @@ const MAX_LOG_LINE_CHARS: usize = 600;
 struct Snapshot {
     running: bool,
     armed: bool,
-    configured_clients: usize,
+    configured_aps: usize,
     ca_fingerprint: String,
     accepted_connections: u64,
     passthrough_connections: u64,
@@ -30,12 +30,12 @@ struct Snapshot {
     updated_at: u64,
     runtime_log_enabled: bool,
     runtime_log_revision: u64,
-    client_activity: Vec<ClientActivity>,
+    ap_activity: Vec<ApActivity>,
 }
 
 #[derive(Clone, Serialize)]
-struct ClientActivity {
-    client_id: String,
+struct ApActivity {
+    ap_id: String,
     latitude: f64,
     longitude: f64,
     last_location_at: u64,
@@ -86,7 +86,7 @@ impl Status {
     pub fn new(
         path: PathBuf,
         log_path: PathBuf,
-        configured_clients: usize,
+        configured_aps: usize,
         runtime_log_enabled: bool,
         fingerprint: String,
     ) -> std::io::Result<Self> {
@@ -94,13 +94,13 @@ impl Status {
         let mut logs = VecDeque::new();
         if runtime_log_enabled {
             logs.push_back(format!(
-                "[+000.000s] event=session_started configured_clients={configured_clients}"
+                "[+000.000s] event=session_started configured_aps={configured_aps}"
             ));
         }
         let initial_log_bytes = logs.iter().map(|entry| entry.len() + 1).sum();
         let snapshot = Snapshot {
             running: true,
-            configured_clients,
+            configured_aps,
             runtime_log_enabled,
             ca_fingerprint: fingerprint,
             last_event: "session_started".into(),
@@ -317,14 +317,14 @@ impl Counters<'_> {
     pub fn patched(&mut self) {
         self.snapshot.patched_responses += 1;
     }
-    pub fn delivered_for(&mut self, selector: &str, latitude: f64, longitude: f64) {
+    pub fn delivered_for(&mut self, ap_id: &str, latitude: f64, longitude: f64) {
         self.snapshot.delivered_responses += 1;
         let now = epoch_seconds();
         if let Some(activity) = self
             .snapshot
-            .client_activity
+            .ap_activity
             .iter_mut()
-            .find(|activity| activity.client_id == selector)
+            .find(|activity| activity.ap_id == ap_id)
         {
             activity.latitude = latitude;
             activity.longitude = longitude;
@@ -332,8 +332,8 @@ impl Counters<'_> {
             activity.success = true;
             activity.last_error.clear();
         } else {
-            self.snapshot.client_activity.push(ClientActivity {
-                client_id: safe_text(selector, 80),
+            self.snapshot.ap_activity.push(ApActivity {
+                ap_id: safe_text(ap_id, 80),
                 latitude,
                 longitude,
                 last_location_at: now,
@@ -343,21 +343,21 @@ impl Counters<'_> {
         }
     }
 
-    fn mark_failed(&mut self, selector: &str, error: &str) {
+    fn mark_failed(&mut self, ap_id: &str, error: &str) {
         let now = epoch_seconds();
         let error = safe_text(error, 360);
         if let Some(activity) = self
             .snapshot
-            .client_activity
+            .ap_activity
             .iter_mut()
-            .find(|activity| activity.client_id == selector)
+            .find(|activity| activity.ap_id == ap_id)
         {
             activity.last_location_at = now;
             activity.success = false;
             activity.last_error = error;
         } else {
-            self.snapshot.client_activity.push(ClientActivity {
-                client_id: safe_text(selector, 80),
+            self.snapshot.ap_activity.push(ApActivity {
+                ap_id: safe_text(ap_id, 80),
                 latitude: 0.0,
                 longitude: 0.0,
                 last_location_at: now,
@@ -367,13 +367,13 @@ impl Counters<'_> {
         }
     }
 
-    pub fn request_failed_for(&mut self, selector: &str, error: &str) {
-        self.mark_failed(selector, error);
+    pub fn request_failed_for(&mut self, ap_id: &str, error: &str) {
+        self.mark_failed(ap_id, error);
     }
 
-    pub fn patch_failed_for(&mut self, selector: &str, error: &str) {
+    pub fn patch_failed_for(&mut self, ap_id: &str, error: &str) {
         self.snapshot.patch_failures += 1;
-        self.mark_failed(selector, error);
+        self.mark_failed(ap_id, error);
     }
     pub fn armed(&mut self, value: bool) {
         self.snapshot.armed = value;
@@ -419,14 +419,14 @@ mod tests {
             "response_delivered",
             "kind=1 mode=upstream_patched bytes=42",
             &[
-                "rule=client_a source=wifi index=1".into(),
-                "rule=client_a source=wifi index=2".into(),
+                "rule=ap_a source=wifi index=1".into(),
+                "rule=ap_a source=wifi index=2".into(),
             ],
             None,
             |c| {
                 c.accepted();
                 c.patched();
-                c.delivered_for("client_a", 51.5074, -0.1277);
+                c.delivered_for("ap_a", 51.5074, -0.1277);
             },
         );
         let value = read_snapshot(&path, "response_delivered");
@@ -438,10 +438,10 @@ mod tests {
         assert_eq!(value["accepted_connections"], 1);
         assert_eq!(value["patched_responses"], 1);
         assert_eq!(value["delivered_responses"], 1);
-        assert_eq!(value["configured_clients"], 2);
-        assert_eq!(value["client_activity"][0]["client_id"], "client_a");
-        assert_eq!(value["client_activity"][0]["success"], true);
-        assert_eq!(value["client_activity"][0]["last_error"], "");
+        assert_eq!(value["configured_aps"], 2);
+        assert_eq!(value["ap_activity"][0]["ap_id"], "ap_a");
+        assert_eq!(value["ap_activity"][0]["success"], true);
+        assert_eq!(value["ap_activity"][0]["last_error"], "");
         assert!(value.get("runtime_log").is_none());
         assert!(value["runtime_log_revision"].as_u64().unwrap() >= 2);
         let _ = std::fs::remove_file(path);
@@ -474,33 +474,30 @@ mod tests {
     }
 
     #[test]
-    fn client_failure_is_visible_until_a_successful_response() {
+    fn ap_failure_is_visible_until_a_successful_response() {
         let path = std::env::temp_dir().join(format!(
-            "luci-app-wloc-status-client-failure-{}-{}.json",
+            "luci-app-wloc-status-ap-failure-{}-{}.json",
             std::process::id(),
             epoch_seconds()
         ));
         let log_path = path.with_extension("log");
         let status = Status::new(path.clone(), log_path, 1, false, "fingerprint".into()).unwrap();
         status.update_detail(
-            "client_failed",
-            "rule=client_a category=upstream",
+            "ap_failed",
+            "rule=ap_a category=upstream",
             Some("upstream: timeout"),
-            |c| c.request_failed_for("client_a", "upstream: timeout"),
+            |c| c.request_failed_for("ap_a", "upstream: timeout"),
         );
-        let failed = read_snapshot(&path, "client_failed");
-        assert_eq!(failed["client_activity"][0]["success"], false);
-        assert_eq!(
-            failed["client_activity"][0]["last_error"],
-            "upstream: timeout"
-        );
+        let failed = read_snapshot(&path, "ap_failed");
+        assert_eq!(failed["ap_activity"][0]["success"], false);
+        assert_eq!(failed["ap_activity"][0]["last_error"], "upstream: timeout");
 
-        status.update_detail("response_delivered", "rule=client_a", None, |c| {
-            c.delivered_for("client_a", 51.5074, -0.1277);
+        status.update_detail("response_delivered", "rule=ap_a", None, |c| {
+            c.delivered_for("ap_a", 51.5074, -0.1277);
         });
         let recovered = read_snapshot(&path, "response_delivered");
-        assert_eq!(recovered["client_activity"][0]["success"], true);
-        assert_eq!(recovered["client_activity"][0]["last_error"], "");
+        assert_eq!(recovered["ap_activity"][0]["success"], true);
+        assert_eq!(recovered["ap_activity"][0]["last_error"], "");
         let _ = std::fs::remove_file(path);
     }
 }

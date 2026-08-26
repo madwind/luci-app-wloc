@@ -1,5 +1,7 @@
 #!/bin/sh
 
+. /lib/functions.sh
+
 # Seed only missing values so upgrades never overwrite a configured instance.
 uci -q get wloc.main >/dev/null \
 	|| uci -q set wloc.main=wloc

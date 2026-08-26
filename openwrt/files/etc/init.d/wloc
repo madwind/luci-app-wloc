@@ -9,7 +9,6 @@ SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
 START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
-capture_selectors=''
 wifi_sections=''
 
 valid_mac() {
@@ -23,145 +22,58 @@ valid_mac() {
 	[ "$1" != '00:00:00:00:00:00' ]
 }
 
-add_capture_selector() {
-	case " $capture_selectors " in *" $1 "*) return;; esac
-	capture_selectors="$capture_selectors $1"
-}
-
 collect_wifi() {
 	wifi_sections="$wifi_sections $1"
 }
 
 validate_wifi() {
-	local section enabled name network ssid bssid
+	local section enabled name bssid latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get name "$section" name "$section"
-	config_get network "$section" network any
-	config_get ssid "$section" ssid
+	config_get name "$section" ssid "$section"
 	config_get bssid "$section" bssid
-	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
-
-	case "$network" in
-		any) ;;
-		ssid)
-			[ -n "$ssid" ] || { rule_error="missing SSID for WiFi/AP: $name"; return 0; }
-			;;
-		bssid)
-			valid_mac "$bssid" || { rule_error="invalid BSSID for WiFi/AP: $name"; return 0; }
-			;;
-		*) rule_error="invalid network source for WiFi/AP: $name"; return 0;;
-	esac
-}
-
-validate_device_for_wifi() {
-	local section parent wifi rule_enabled name wifi_enabled device mac latitude longitude proxy_type proxy_host proxy_port network ssid bssid
-	section="$1"
-	parent="$2"
-	config_get wifi "$section" wifi
-	[ "$wifi" = "$parent" ] || return 0
-	config_get_bool wifi_enabled "$parent" enabled 1
-	[ "$wifi_enabled" -eq 1 ] || return 0
-	config_get_bool rule_enabled "$section" enabled 1
-	[ "$rule_enabled" -eq 1 ] || return 0
-	config_get name "$section" name "$section"
-	config_get device "$section" device mac
-	config_get mac "$section" mac
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get network "$parent" network any
-	config_get ssid "$parent" ssid
-	config_get bssid "$parent" bssid
-	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
 	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
 
 	[ -n "$latitude" ] && [ -n "$longitude" ] || {
-		rule_error="incomplete location parameters for device condition: $name"; return 0;
+		rule_error="incomplete location parameters for AP: $name"; return 0;
 	}
-	case "$device" in
-		mac)
-			valid_mac "$mac" || { rule_error="invalid device MAC for device condition: $name"; return 0; }
-			add_capture_selector "mac:$mac"
-			;;
-		all) ;;
-		*) rule_error="invalid device selector for device condition: $name"; return 0;;
-	esac
-	case "$network" in
-		any)
-			[ "$device" != all ] || add_capture_selector 'wireless:any'
-			;;
-		bssid)
-			[ "$device" != all ] || add_capture_selector "bssid:$bssid"
-			;;
-		ssid)
-			[ "$device" != all ] || add_capture_selector 'wireless:any'
-			;;
-		*) rule_error="invalid network source for WiFi/AP: $parent"; return 0;;
-	esac
+	valid_mac "$bssid" || { rule_error="invalid BSSID for AP: $name"; return 0; }
 	case "$proxy_type" in
 		direct) ;;
 		http|socks5)
 			[ -n "$proxy_host" ] && [ -n "$proxy_port" ] || {
-				rule_error="incomplete $proxy_type proxy for device condition: $name"; return 0;
+				rule_error="incomplete $proxy_type proxy for AP: $name"; return 0;
 			}
-			case "$proxy_port" in *[!0-9]*|'') rule_error="invalid proxy port for device condition: $name"; return 0;; esac
+			case "$proxy_port" in *[!0-9]*|'') rule_error="invalid proxy port for AP: $name"; return 0;; esac
 			[ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
-			rule_error="invalid proxy port for device condition: $name"; return 0;
+			rule_error="invalid proxy port for AP: $name"; return 0;
 			}
 			;;
-		*) rule_error="invalid outbound type for device condition: $name"; return 0;;
+		*) rule_error="invalid outbound type for AP: $name"; return 0;;
 	esac
 	rule_count=$((rule_count + 1))
 }
 
-validate_orphan_device() {
-	local section enabled wifi
+append_rule_for_wifi() {
+	local section enabled name latitude longitude proxy_type proxy_host proxy_port bssid
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get wifi "$section" wifi
-	case " $wifi_sections " in
-		*" $wifi "*) ;;
-		*) rule_error="device condition $section references a missing WiFi/AP";;
-	esac
-}
-
-append_rule_for_wifi() {
-	local section parent wifi rule_enabled wifi_enabled name device mac latitude longitude proxy_type proxy_host proxy_port network ssid bssid device_arg network_arg
-	section="$1"
-	parent="$2"
-	config_get wifi "$section" wifi
-	[ "$wifi" = "$parent" ] || return 0
-	config_get_bool wifi_enabled "$parent" enabled 1
-	[ "$wifi_enabled" -eq 1 ] || return 0
-	config_get_bool rule_enabled "$section" enabled 1
-	[ "$rule_enabled" -eq 1 ] || return 0
-	config_get name "$section" name "$section"
-	config_get device "$section" device mac
-	config_get mac "$section" mac
+	config_get name "$section" ssid "$section"
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get network "$parent" network any
-	config_get ssid "$parent" ssid
-	config_get bssid "$parent" bssid
-	mac="$(printf '%s' "$mac" | tr 'A-F' 'a-f')"
+	config_get bssid "$section" bssid
 	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
-	[ "$device" = all ] && device_arg='*' || device_arg="$mac"
-	case "$network" in
-		any) network_arg='*';;
-		bssid) network_arg="$bssid";;
-		ssid) network_arg="ssid:$ssid";;
-		*) return 0;;
-	esac
-	# Parent WiFi/AP order is the primary order; child device order is secondary.
-	procd_append_param command --rule "$section" "$device_arg" "$network_arg" "$latitude" "$longitude"
+	procd_append_param command --rule "$section" "$bssid" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
@@ -187,6 +99,9 @@ start_service() {
 	mkdir -p /var/run/wloc
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
 		/var/run/wloc/package.version "$START_ERROR"
+	# Restore optional user-authored tables. They are kept separate from the
+	# runtime-owned inet/wloc table and a blank file is a valid no-op.
+	ubus -S call luci.wloc firewall_apply '{}' >/dev/null 2>&1 || true
 	config_load wloc
 
 	# Keep WiFi/AP schedules independent from the WLOC interception daemon.
@@ -215,23 +130,18 @@ start_service() {
 
 	rule_count=0
 	rule_error=''
-	capture_selectors=''
 	wifi_sections=''
 	config_foreach collect_wifi wifi
 	for wifi in $wifi_sections; do
 		validate_wifi "$wifi"
 		[ -z "$rule_error" ] || break
-		config_foreach validate_device_for_wifi device "$wifi"
-		[ -z "$rule_error" ] || break
 	done
-	[ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
-	config_foreach validate_orphan_device device
 	[ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
 	[ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules; interception remains disabled'; return $?; }
 
 	# Start with empty short-lived sets. wlocd arms them after its listener is ready.
 	"$RULES" apply "$listen_port" || {
-		startup_failure 'runtime rules could not be applied; no safe prerouting priority was found'; return $?;
+		startup_failure 'custom table inet wloc is missing or could not be initialized'; return $?;
 	}
 	mkdir -p /etc/wloc
 	chmod 0700 /etc/wloc
@@ -240,7 +150,7 @@ start_service() {
 	procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"
 	[ "$runtime_log" -eq 1 ] && procd_append_param command --runtime-log
 	for wifi in $wifi_sections; do
-		config_foreach append_rule_for_wifi device "$wifi"
+		append_rule_for_wifi "$wifi"
 	done
 	procd_set_param env WLOC_PROFILE_PATH=/www/wloc-ca.mobileconfig \
 		WLOC_STATUS_PATH=/var/run/wloc/status.json \

@@ -30,12 +30,13 @@ define Package/luci-app-wloc
 endef
 
 define Package/luci-app-wloc/description
-  Selective Apple WLOC TLS proxy with ordered device and access-point rules.
+  Selective Apple WLOC TLS proxy with one location rule per access point.
   Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 endef
 
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
+/etc/wloc/firewall.nft
 endef
 
 define Build/Prepare
@@ -60,6 +61,8 @@ define Package/luci-app-wloc/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/target/$(RUST_TARGET)/release/wlocd $(1)/usr/sbin/wlocd
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DATA) $(CURDIR)/openwrt/files/etc/config/wloc $(1)/etc/config/wloc
+	$(INSTALL_DIR) $(1)/etc/wloc
+	$(INSTALL_CONF) $(CURDIR)/openwrt/files/etc/wloc/firewall.nft $(1)/etc/wloc/firewall.nft
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/openwrt/files/etc/init.d/wloc $(1)/etc/init.d/wloc
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
@@ -79,11 +82,20 @@ define Package/luci-app-wloc/install
 	$(INSTALL_DATA) $(CURDIR)/openwrt/files/lib/upgrade/keep.d/luci-app-wloc $(1)/lib/upgrade/keep.d/luci-app-wloc
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/wloc
 	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/view/wloc/main.js $(1)/www/luci-static/resources/view/wloc/main.js
+	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/view/wloc/nftables.js $(1)/www/luci-static/resources/view/wloc/nftables.js
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/wloc
+	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/wloc/nftables.css $(1)/www/luci-static/resources/wloc/nftables.css
 endef
 
 define Package/luci-app-wloc/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
+	[ ! -x /etc/uci-defaults/luci-app-wloc ] || {
+		/etc/uci-defaults/luci-app-wloc && rm -f /etc/uci-defaults/luci-app-wloc
+	}
+	# rpcd caches executable plugin method lists. Reload it after an install or
+	# upgrade so newly added LuCI RPC methods are available immediately.
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/wloc enable
 	/etc/init.d/wloc restart || true
 }

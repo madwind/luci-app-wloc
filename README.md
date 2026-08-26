@@ -1,35 +1,30 @@
 # luci-app-wloc
 
 `luci-app-wloc` is a small OpenWrt package that assigns a virtual Apple WLOC
-location baseline to each authorized device and follows each real movement
+location baseline to each selected access point and follows each real movement
 delta from that fixed baseline. It includes a native Rust service, isolated
 nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-WiFi/AP groups are configured first. Each group can accept any wireless source
-or select one AP by BSSID, which keeps one AP interface separate from other APs
-on the same radio. Legacy UCI groups using `network=ssid` remain supported by
-the service until they are edited, but new LuCI configurations use Any or BSSID.
-Device conditions are added underneath their WiFi/AP group and can select one
-MAC or all wireless devices. Enabled conditions are evaluated by parent group
-order and then child device order; the first match wins. Requests without a
-matching condition pass through unchanged. Use this package only on
-devices you own or are authorized to test.
+Each entry selects one AP by BSSID and assigns one location and optional
+outbound proxy to every device connected through that AP. Entries are evaluated
+in configuration order; the first matching AP wins. Requests from an AP without
+a matching entry pass through unchanged. Use this package only on devices you
+own or are authorized to test.
 
-Each WiFi/AP group can also be given a daily disable window in router local
+Each AP can also be given a daily disable window in router local
 time. During the window, matching configured AP interfaces receive a temporary
 runtime `disabled` override and are reloaded; the original wireless UCI values
 are restored when the window ends and are never committed by WLOC. Equal start
 and end times mean all day, and an end time earlier than the start crosses
-midnight. An Any-AP window applies to every configured AP, while a BSSID window
-targets only the selected `wifi-iface`, resolved by its section, explicit
-BSSID/MAC, or its live AP interface. It never falls back to disabling the entire
-radio when that mapping is unavailable.
+midnight. The window targets only the selected `wifi-iface`, resolved by its
+section, explicit BSSID/MAC, or its live AP interface. It never falls back to
+disabling the entire radio when that mapping is unavailable.
 
-The nftables rules put explicitly selected devices in a MAC set and AP-wide
-rules in a hostapd interface set, then match the resolved IPv4 addresses of
-both Apple WLOC hostnames and TCP/443. They do not capture the whole LAN bridge.
+The nftables rules put selected AP interfaces in a hostapd interface set, then
+match the resolved IPv4 addresses of both Apple WLOC hostnames and TCP/443. They
+do not capture the whole LAN bridge.
 Before installing its
 REDIRECT, WLOC scans all IPv4-capable prerouting base chains and follows their
 `jump`/`goto` paths to find every reachable REDIRECT or TPROXY verdict. It then
@@ -88,17 +83,14 @@ Copy the APK for your architecture to the router and install it:
 apk add --allow-untrusted ./luci-app-wloc-*.apk
 ```
 
-Open **Services > WLOC** in LuCI, add a WiFi/AP group first, then add device
-conditions underneath it. The child device grid can be dragged into priority
-order; parent groups are evaluated in their displayed UCI order. Enter each
+Open **Services > WLOC** in LuCI, add an AP, select its BSSID, and enter its
 fixed WGS84 latitude and longitude baseline, then save and apply. On every service start,
 the first real location establishes the reference. Every later response uses
 the fixed virtual baseline plus the difference between the current and previous
 real location. The upstream accuracy is preserved unchanged. Install the
-generated CA profile on that device and explicitly enable full trust in iOS
-Certificate Trust Settings. Each device condition can use the router's direct
-connection, an HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its
-Apple WLOC traffic.
+generated CA profile on the devices and explicitly enable full trust in iOS
+Certificate Trust Settings. Each AP can use the router's direct connection, an
+HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its Apple WLOC traffic.
 
 The generated CA key and certificate are retained by OpenWrt sysupgrade so
 trusted devices do not unexpectedly lose interception after a firmware update.

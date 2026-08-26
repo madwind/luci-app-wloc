@@ -40,19 +40,12 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16, selectors: &[String]) -> Result<(), String> {
-    let mut arguments = Vec::with_capacity(selectors.len() + 1);
-    arguments.push(port.to_string());
-    arguments.extend_from_slice(selectors);
-    run_rules(helper, "reconcile", &arguments)
+fn reconcile_rules(helper: &Path, port: u16) -> Result<(), String> {
+    run_rules(helper, "reconcile", &[port.to_string()])
 }
 
-async fn reconcile_rules_async(
-    helper: PathBuf,
-    port: u16,
-    selectors: Vec<String>,
-) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &selectors))
+async fn reconcile_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
@@ -109,7 +102,6 @@ fn main() {
 
 fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::from_args().map_err(|e| format!("configuration: {e}"))?;
-    let selectors = config.capture_selectors();
     let (ca, generated) = CaBundle::load_or_generate(&config.state_dir)?;
     let ca = Arc::new(ca);
     let fingerprint = ca.fingerprint();
@@ -172,11 +164,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-        reconcile_rules_async(
-            config.rules_helper.clone(),
-            config.listen_port,
-            selectors.clone(),
-        )
+        reconcile_rules_async(config.rules_helper.clone(), config.listen_port)
         .await
         .map_err(std::io::Error::other)?;
         status.update_detail(
@@ -196,16 +184,13 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let lease_armed = Arc::clone(&armed);
         let lease_status = Arc::clone(&status);
         let lease_helper = config.rules_helper.clone();
-        let lease_selectors = selectors.clone();
         let lease_port = config.listen_port;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-                if let Err(error) =
-                    reconcile_rules_async(lease_helper.clone(), lease_port, lease_selectors.clone())
-                        .await
+                if let Err(error) = reconcile_rules_async(lease_helper.clone(), lease_port).await
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);
                     cleanup_rules_async(lease_helper.clone()).await;

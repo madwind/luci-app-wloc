@@ -8,10 +8,153 @@ STATE=/var/run/wloc/status.json
 RUNTIME_LOG=/var/run/wloc/runtime.log
 CAINFO=/etc/wloc/ca.info.json
 VERSION_CACHE=/var/run/wloc/package.version
+FIREWALL=/etc/wloc/firewall.nft
+FIREWALL_RUNTIME=/var/run/wloc/firewall.applied.nft
+
+firewall_tables() {
+	awk '
+		$1 == "table" {
+			if ($2 !~ /^(ip|ip6|inet|arp|bridge|netdev)$/ || $3 !~ /^[A-Za-z0-9_.-]+$/) exit 2
+			print $2, $3
+		}
+	' "$1"
+}
+
+firewall_response() {
+	local active family name table_count active_count table_dump
+	active=''
+	table_count=0
+	active_count=0
+	while read -r family name; do
+		[ -n "$family" ] || continue
+		table_count=$((table_count + 1))
+		if table_dump="$(nft list table "$family" "$name" 2>/dev/null)"; then
+			active_count=$((active_count + 1))
+			active="${active}${active:+
+
+}${table_dump}"
+		fi
+	done <<EOF
+$(firewall_tables "$FIREWALL" 2>/dev/null || true)
+EOF
+	json_init
+	json_add_boolean ok 1
+	json_add_string path "$FIREWALL"
+	json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
+	json_add_string active "${active:-# No custom nftables tables are active.}"
+	[ "$table_count" -eq "$active_count" ] && json_add_boolean active_found 1 || json_add_boolean active_found 0
+	json_add_int table_count "$table_count"
+	json_add_int active_table_count "$active_count"
+	json_dump
+}
+
+firewall_request_config() {
+	local request
+	request="$(cat)"
+	json_load "$request" 2>/dev/null || return 1
+	json_get_var firewall_config config
+	[ "${#firewall_config}" -le 1048576 ]
+}
+
+firewall_validate_file() {
+	local source="$1" check detail rc family name tables
+	if grep -Eq '^[[:space:]]*(flush|add|delete|destroy|insert|replace|reset|include|define|redefine|undefine)([[:space:]]|$)' "$source"; then
+		firewall_error='Only top-level table declarations are allowed.'
+		return 1
+	fi
+	tables="$(firewall_tables "$source")" || {
+		firewall_error='A table family or name is not supported by this editor.'
+		return 1
+	}
+	check="$(mktemp /var/run/wloc/firewall-check.XXXXXX)" || return 1
+	: >"$check"
+	while read -r family name; do
+		[ -n "$family" ] || continue
+		nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$check"
+	done <<EOF
+$tables
+EOF
+	cat "$source" >>"$check"
+	detail="$(nft --check --file "$check" 2>&1)" && rc=0 || rc=$?
+	rm -f "$check"
+	[ "$rc" -eq 0 ] || {
+		firewall_error="${detail:-nftables syntax check failed}"
+		return 1
+	}
+}
+
+emit_firewall_validate() {
+	local source
+	mkdir -p /var/run/wloc
+	source="$(mktemp /var/run/wloc/firewall-source.XXXXXX)" || exit 1
+	printf '%s' "$firewall_config" >"$source"
+	if firewall_validate_file "$source"; then
+		json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
+	else
+		json_init; json_add_boolean ok 0; json_add_boolean valid 0
+		json_add_string error 'nftables syntax check failed'
+		json_add_string detail "$firewall_error"; json_dump
+	fi
+	rm -f "$source"
+}
+
+emit_firewall_save() {
+	local source saved
+	mkdir -p /var/run/wloc /etc/wloc
+	source="$(mktemp /var/run/wloc/firewall-source.XXXXXX)" || exit 1
+	printf '%s' "$firewall_config" >"$source"
+	if ! firewall_validate_file "$source"; then
+		json_init; json_add_boolean ok 0; json_add_boolean valid 0
+		json_add_string error 'nftables syntax check failed'
+		json_add_string detail "$firewall_error"; json_dump
+		rm -f "$source"
+		return
+	fi
+	saved="$(mktemp /etc/wloc/firewall.nft.XXXXXX)" || { rm -f "$source"; exit 1; }
+	chmod 0600 "$saved"
+	cat "$source" >"$saved" && mv -f "$saved" "$FIREWALL"
+	rm -f "$source"
+	json_init; json_add_boolean ok 1; json_add_boolean valid 1
+	json_add_string path "$FIREWALL"; json_dump
+}
+
+emit_firewall_apply() {
+	local transaction detail rc family name tables refresh_detail runtime_tmp
+	mkdir -p /var/run/wloc
+	transaction="$(mktemp /var/run/wloc/firewall-apply.XXXXXX)" || exit 1
+	: >"$transaction"
+	tables="$( { firewall_tables "$FIREWALL_RUNTIME" 2>/dev/null || true; firewall_tables "$FIREWALL" 2>/dev/null || true; } | awk '!seen[$0]++')"
+	while read -r family name; do
+		[ -n "$family" ] || continue
+		nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$transaction"
+	done <<EOF
+$tables
+EOF
+	cat "$FIREWALL" >>"$transaction"
+	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
+	rm -f "$transaction"
+	if [ "$rc" -ne 0 ]; then
+		json_init; json_add_boolean ok 0
+		json_add_string error 'Failed to apply nftables rules.'
+		json_add_string detail "$detail"; json_dump
+		return
+	fi
+	runtime_tmp="$(mktemp /var/run/wloc/firewall-applied.XXXXXX)" || exit 1
+	cp "$FIREWALL" "$runtime_tmp"
+	chmod 0600 "$runtime_tmp"
+	mv -f "$runtime_tmp" "$FIREWALL_RUNTIME"
+	if ! refresh_detail="$("$RULES" refresh-hosts 2>&1)"; then
+		json_init; json_add_boolean ok 0
+		json_add_string error 'Custom tables were applied, but Apple WLOC addresses could not be refreshed.'
+		json_add_string detail "$refresh_detail"; json_dump
+		return
+	fi
+	firewall_response
+}
 
 load_runtime_state() {
 	armed=0
-	configured_clients=0
+	configured_aps=0
 	ca_fingerprint=''
 	accepted_connections=0
 	passthrough_connections=0
@@ -31,20 +174,20 @@ load_runtime_state() {
 
 	[ -s "$STATE" ] || return 0
 	json_load_file "$STATE" 2>/dev/null || return 0
-	json_get_vars armed:0 configured_clients:0 ca_fingerprint \
+	json_get_vars armed:0 configured_aps:0 ca_fingerprint \
 		accepted_connections:0 passthrough_connections:0 tls_intercepted:0 \
 		wloc_requests:0 patched_responses:0 delivered_responses:0 patch_failures:0 \
 		last_event last_error session_started_at:0 updated_at:0 \
 		runtime_log_enabled:0 runtime_log_revision:0
-	if json_select client_activity 2>/dev/null; then
+	if json_select ap_activity 2>/dev/null; then
 		json_get_keys activity_keys
 		for activity_index in $activity_keys; do
 			json_select "$activity_index" || continue
 			activity_error=''
-			json_get_vars client_id latitude longitude last_location_at:0 success:0
+			json_get_vars ap_id latitude longitude last_location_at:0 success:0
 			json_get_var activity_error last_error
-			case "$client_id" in ''|*[!A-Za-z0-9_-]*) client_id='';; esac
-			[ -n "$client_id" ] && activity_rows="${activity_rows}${client_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
+			case "$ap_id" in ''|*[!A-Za-z0-9_-]*) ap_id='';; esac
+			[ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
 "
 			json_select ..
 		done
@@ -69,13 +212,13 @@ emit_status() {
 	local configured enabled version table_dump rules_present attempts intercepted counters conflict order_conflict prerouting_priority detected_priorities daemon_running service_reason
 	load_runtime_state
 	configured=0
-	uci -q show wloc | grep -q '=device$' && configured=1
+	uci -q show wloc | grep -q '=wifi$' && configured=1
 	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
 	table_dump="$(nft list table inet wloc 2>/dev/null)" && rules_present=1 || rules_present=0
 	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned MAC redirect|wloc owned AP redirect/ {
+		/wloc owned AP redirect/ {
 			if (match($0, /counter packets [0-9]+/)) {
 				value = substr($0, RSTART + 16, RLENGTH - 16)
 				attempts += value
@@ -123,7 +266,7 @@ emit_status() {
 	json_add_boolean running "$daemon_running"
 	json_add_boolean rules_present "$rules_present"
 	json_add_boolean armed "$armed"
-	json_add_int configured_clients "$configured_clients"
+	json_add_int configured_aps "$configured_aps"
 	json_add_int accepted_connections "$accepted_connections"
 	json_add_int passthrough_connections "$passthrough_connections"
 	json_add_int tls_intercepted "$tls_intercepted"
@@ -147,13 +290,13 @@ emit_status() {
 	json_add_string detected_priorities "$detected_priorities"
 	json_add_string fingerprint "$ca_fingerprint"
 	json_add_string profile_url '/wloc-ca.mobileconfig'
-	json_add_array client_activity
-	while read -r client_id activity_lat activity_lon activity_at activity_success activity_error; do
-		[ -n "$client_id" ] || continue
+	json_add_array ap_activity
+	while read -r ap_id activity_lat activity_lon activity_at activity_success activity_error; do
+		[ -n "$ap_id" ] || continue
 		case "$activity_at" in ''|*[!0-9]*) activity_at=0;; esac
 		case "$activity_success" in 1|true) activity_success=1;; *) activity_success=0;; esac
 		json_add_object
-		json_add_string client_id "$client_id"
+		json_add_string ap_id "$ap_id"
 		json_add_string latitude "$activity_lat"
 		json_add_string longitude "$activity_lon"
 		json_add_int last_location_at "$activity_at"
@@ -171,7 +314,7 @@ emit_test() {
 	local table_dump attempts intercepted counters
 	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
 	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned MAC redirect|wloc owned AP redirect/ {
+		/wloc owned AP redirect/ {
 			if (match($0, /counter packets [0-9]+/)) {
 				value = substr($0, RSTART + 16, RLENGTH - 16)
 				attempts += value
@@ -256,7 +399,11 @@ emit_configured_access_points() {
 case "$1" in
 list)
 	json_init
-	for method in status access_points configured_access_points restart disable regenerate_ca cleanup test logs; do json_add_object "$method"; json_close_object; done
+	for method in status access_points configured_access_points restart disable regenerate_ca cleanup test logs firewall_read firewall_validate firewall_save firewall_apply; do
+		json_add_object "$method"
+		case "$method" in firewall_validate|firewall_save) json_add_string config '';; esac
+		json_close_object
+	done
 	json_dump
 	;;
 call)
@@ -301,6 +448,16 @@ call)
 		fi
 		json_dump
 		;;
+	firewall_read) firewall_response;;
+	firewall_validate)
+		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
+		emit_firewall_validate
+		;;
+	firewall_save)
+		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
+		emit_firewall_save
+		;;
+	firewall_apply) emit_firewall_apply;;
 	*) echo '{"error":"unknown method"}'; exit 1;;
 	esac
 	;;

@@ -9,6 +9,7 @@ ACTIVE_FILE="$STATE_DIR/wifi-schedule.active.$$"
 DESIRED_FILE="$STATE_DIR/wifi-schedule.desired.$$"
 RUNTIME_FILE="$STATE_DIR/wifi-schedule.runtime.$$"
 MATCH_FILE="$STATE_DIR/wifi-schedule.matches.$$"
+RULES=/usr/libexec/wloc/rules.sh
 
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh
@@ -120,6 +121,15 @@ runtime_ifname_for_section() {
 	done <"$RUNTIME_FILE"
 }
 
+runtime_bssid_for_ifname() {
+	local ifname="$1" status bssid
+	case "$ifname" in ''|*[!A-Za-z0-9_.-]*) return 0;; esac
+	status="$(ubus -S -t 3 call "hostapd.$ifname" get_status 2>/dev/null || true)"
+	[ -n "$status" ] || return 0
+	bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
+	printf '%s' "$bssid" | tr 'A-F' 'a-f'
+}
+
 collect_active_parent() {
 	local section="$1" enabled schedule_enabled start end network ssid bssid wireless_section wireless_ifname
 	case "$section" in ''|*[!A-Za-z0-9_-]*) return 0;; esac
@@ -141,7 +151,7 @@ collect_active_parent() {
 }
 
 collect_matching_interface() {
-	local section="$1" mode ssid bssid macaddr ifname parent network parent_ssid parent_bssid parent_section parent_ifname match
+	local section="$1" mode ssid bssid macaddr ifname live_bssid parent network parent_ssid parent_bssid parent_section parent_ifname match
 	case "$section" in ''|*[!A-Za-z0-9_-]*) return 0;; esac
 	config_get mode "$section" mode ap
 	case "$mode" in ap|ap-wds) ;; *) return 0;; esac
@@ -152,6 +162,7 @@ collect_matching_interface() {
 	[ -n "$ifname" ] || ifname="$(runtime_ifname_for_section "$section")"
 	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
 	macaddr="$(printf '%s' "$macaddr" | tr 'A-F' 'a-f')"
+	live_bssid="$(runtime_bssid_for_ifname "$ifname")"
 	while IFS="$(printf '\t')" read -r parent network parent_ssid parent_bssid parent_section parent_ifname; do
 		[ -n "$parent" ] || continue
 		match=0
@@ -161,7 +172,7 @@ collect_matching_interface() {
 			bssid)
 				[ -n "$parent_section" ] && [ "$section" = "$parent_section" ] && match=1
 				[ -n "$parent_ifname" ] && [ "$ifname" = "$parent_ifname" ] && match=1
-				[ -n "$parent_bssid" ] && { [ "$bssid" = "$parent_bssid" ] || [ "$macaddr" = "$parent_bssid" ]; } && match=1
+				[ -n "$parent_bssid" ] && { [ "$bssid" = "$parent_bssid" ] || [ "$macaddr" = "$parent_bssid" ] || [ "$live_bssid" = "$parent_bssid" ]; } && match=1
 				;;
 		esac
 		[ "$match" -eq 1 ] && {
@@ -330,6 +341,9 @@ run_loop() {
 	trap cleanup EXIT INT TERM HUP
 	while :; do
 		reconcile || true
+		# The helper internally rate-limits DNS to five minutes and discovers
+		# every custom table containing the fixed apple_wloc_v4 set.
+		"$RULES" resolve-hosts >/dev/null 2>&1 || true
 		second="$(decimal "$(date +%S)")"
 		delay=$((60 - second))
 		[ "$delay" -ge 1 ] || delay=60

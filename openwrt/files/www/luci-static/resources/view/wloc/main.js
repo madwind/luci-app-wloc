@@ -5,7 +5,6 @@
 'require rpc';
 'require ui';
 'require poll';
-'require dom';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
 var callLogs = rpc.declare({ object: 'luci.wloc', method: 'logs', expect: {} });
@@ -15,7 +14,6 @@ var callAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'access_points
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
 var callIwinfoDevices = rpc.declare({ object: 'iwinfo', method: 'devices', expect: {} });
 var callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ], expect: {} });
-var callLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: {} });
 var AP_DISCOVERY_ATTEMPTS = 6;
 var AP_DISCOVERY_RETRY_MS = 1500;
 
@@ -154,7 +152,6 @@ return view.extend({
 		return Promise.all([
 			uci.load('wloc'),
 			uci.load('wireless').catch(function() { return {}; }),
-			callLeases().catch(function() { return {}; }),
 			// rpcd may become reachable before hostapd and the wireless interfaces
 			// after a router restart. Do not freeze that transient empty result into
 			// the BSSID choices for the lifetime of this page.
@@ -166,11 +163,10 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var leases = data[2].dhcp_leases || data[2].leases || [];
-		var accessPoints = data[3].access_points || [];
-		var configuredAccessPoints = (data[4] || {}).access_points || [];
-		var initialStatus = data[5] || {};
-		var initialLogs = (data[6] || {}).logs || '';
+		var accessPoints = data[2].access_points || [];
+		var configuredAccessPoints = (data[3] || {}).access_points || [];
+		var initialStatus = data[4] || {};
+		var initialLogs = (data[5] || {}).logs || '';
 		var lastLogRevision = initialLogs
 			? String(initialStatus.session_started_at || 0) + ':' + String(initialStatus.runtime_log_revision || 0)
 			: '';
@@ -223,7 +219,7 @@ return view.extend({
 		}
 
 		var map = new form.Map('wloc', _('WLOC'),
-			_('Version %s · Assign an independent Apple WLOC location to each authorized device.').format(initialStatus.version || _('unknown')));
+			_('Version %s · Assign one Apple WLOC location to each selected AP.').format(initialStatus.version || _('unknown')));
 
 		var profileUrl = '/wloc-ca.mobileconfig';
 		var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
@@ -254,7 +250,7 @@ return view.extend({
 		option.datatype = 'port';
 		option.default = '61520';
 		option.rmempty = false;
-		option.description = _('Normally this should not be changed. Startup stops safely if the selected port is occupied; only enabled devices connecting to Apple WLOC over TCP 443 are intercepted.');
+		option.description = _('Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted.');
 		option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
 		option.default = '0';
 		option.rmempty = false;
@@ -288,59 +284,26 @@ return view.extend({
 			]);
 		};
 
-		var wifiSections = map.section(form.TypedSection, 'wifi', _('AP'),
-			_('Add an AP first, then add device conditions below it. Parent order is the primary priority; device order is secondary.'));
+		var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
+			_('Select an AP and assign one virtual location to all devices connected through it.'));
 		wifiSections.anonymous = true;
 		wifiSections.addremove = true;
+		wifiSections.sortable = true;
+		wifiSections.nodescriptions = true;
 		wifiSections.addbtntitle = _('Add AP');
 		wifiSections.sectiontitle = function(sectionId) {
-			return uci.get('wloc', sectionId, 'name') || _('Unnamed AP');
+			return uci.get('wloc', sectionId, 'ssid') ||
+				String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase() || _('Unnamed AP');
 		};
 
 		option = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
 		option.default = '1';
 		option.rmempty = false;
 
-		option = wifiSections.option(form.Value, 'name', _('Name'));
-		option.placeholder = _('Living room AP');
-		option.rmempty = true;
-		option.description = _('A management name for this AP group.');
-
-		function wifiSourceSummary(sectionId) {
-			var network = uci.get('wloc', sectionId, 'network') || 'any';
-			if (network === 'bssid') {
-				var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toUpperCase();
-				var ssid = uci.get('wloc', sectionId, 'ssid');
-				return ssid ? '%s - %s'.format(ssid, bssid) : bssid;
-			}
-			return _('Any AP');
-		}
-
-		var wifiNetworkOption = wifiSections.option(form.ListValue, 'network', _('AP source'));
-		wifiNetworkOption.value('any', _('Any AP'));
-		wifiNetworkOption.value('bssid', _('Specified AP (BSSID)'));
-		wifiNetworkOption.default = 'any';
-		wifiNetworkOption.rmempty = false;
-		wifiNetworkOption.description = _('This parent selects any AP or one exact AP by BSSID. Add device conditions below it.');
-		wifiNetworkOption.cfgvalue = function(sectionId) {
-			// Old SSID parent values are intentionally treated as Any. The UI and
-			// new configurations no longer offer SSID as a parent selector.
-			return uci.get('wloc', sectionId, 'network') === 'bssid' ? 'bssid' : 'any';
-		};
-		wifiNetworkOption.write = function(sectionId, value) {
-			value = value === 'bssid' ? 'bssid' : 'any';
-			uci.set('wloc', sectionId, 'network', value);
-			if (value !== 'bssid') {
-				uci.unset('wloc', sectionId, 'bssid');
-				uci.unset('wloc', sectionId, 'wireless_section');
-				uci.unset('wloc', sectionId, 'wireless_ifname');
-			}
-		};
-
 		var wifiBssidOption = wifiSections.option(form.ListValue, 'bssid', _('Access point (BSSID)'));
-		wifiBssidOption.depends('network', 'bssid');
+		wifiBssidOption.modalonly = true;
 		wifiBssidOption.rmempty = false;
-		wifiBssidOption.description = _('Select one AP by BSSID. Scheduled disable targets only that AP\'s wifi-iface, never the whole radio.');
+		wifiBssidOption.description = _('Select one AP by BSSID. Its location and scheduled disable apply to this AP only.');
 		if (!accessPoints.length && configuredWireless.length)
 			wifiBssidOption.description = _('Live AP data is not ready; choices are loaded from the saved wireless configuration.');
 		if (!accessPoints.length && !configuredWireless.length)
@@ -374,6 +337,7 @@ return view.extend({
 		wifiBssidOption.write = function(sectionId, value) {
 			var previousBssid = String(uci.get('wloc', sectionId, 'bssid') || '').toLowerCase();
 			value = String(value || '').toLowerCase();
+			uci.set('wloc', sectionId, 'network', 'bssid');
 			uci.set('wloc', sectionId, 'bssid', value);
 			var matches = accessPoints.concat(configuredWireless).filter(function(candidate) {
 				return String(candidate.bssid || '').toLowerCase() === value;
@@ -399,10 +363,24 @@ return view.extend({
 			return (parseInt(value.slice(0, 2), 16) & 1) === 0 && value !== '00:00:00:00:00:00'
 				? true : _('The BSSID must be an individual unicast address.');
 		};
-		wifiSections.option(form.HiddenValue, 'wireless_section');
-		wifiSections.option(form.HiddenValue, 'wireless_ifname');
+
+		var wifiStateOption = wifiSections.option(form.DummyValue, '_wifi_state', _('AP status'));
+		wifiStateOption.modalonly = false;
+		wifiStateOption.cfgvalue = wifiStateOption.textvalue = function(sectionId) {
+			var bssid = String(uci.get('wloc', sectionId, 'bssid') || '').toLowerCase();
+			var active = accessPoints.some(function(ap) {
+				return String(ap.bssid || '').toLowerCase() === bssid;
+			});
+			if (active)
+				return _('On');
+			var configured = configuredWireless.some(function(ap) {
+				return String(ap.bssid || '').toLowerCase() === bssid;
+			});
+			return configured ? _('Off') : _('Unavailable');
+		};
 
 		var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
+		scheduleEnabledOption.modalonly = true;
 		scheduleEnabledOption.default = '0';
 		scheduleEnabledOption.rmempty = false;
 		scheduleEnabledOption.description = _('Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio.');
@@ -413,6 +391,7 @@ return view.extend({
 		}
 
 		var scheduleStartOption = wifiSections.option(form.Value, 'schedule_start', _('Disable from'));
+		scheduleStartOption.modalonly = true;
 		scheduleStartOption.depends('schedule_enabled', '1');
 		scheduleStartOption.default = '22:00';
 		scheduleStartOption.rmempty = false;
@@ -420,6 +399,7 @@ return view.extend({
 		scheduleStartOption.validate = scheduleTimeValidator;
 
 		var scheduleEndOption = wifiSections.option(form.Value, 'schedule_end', _('Restore at'));
+		scheduleEndOption.modalonly = true;
 		scheduleEndOption.depends('schedule_enabled', '1');
 		scheduleEndOption.default = '06:00';
 		scheduleEndOption.rmempty = false;
@@ -427,193 +407,29 @@ return view.extend({
 		scheduleEndOption.description = _('If the end is earlier than the start, the window crosses midnight. Equal times mean all day.');
 		scheduleEndOption.validate = scheduleTimeValidator;
 
-		var devicesValue = wifiSections.option(form.SectionValue, '_devices', form.GridSection,
-			'device', _('Device conditions'), _('Add one or more device conditions under this AP.'));
-		var devices = devicesValue.subsection;
-		function setDeviceParent(sectionId) {
-			devices.parent_section_id = sectionId;
-			devicesValue.parent_section_id = sectionId;
-		}
-		function parentSectionFromEvent(event) {
-			var target = event && (event.currentTarget || event.target);
-			var sectionNode = target && target.closest
-				? target.closest('[data-section-id]') : null;
-			return sectionNode ? sectionNode.getAttribute('data-section-id') : '';
-		}
-		var devicesLoad = devicesValue.load;
-		devicesValue.load = function(sectionId) {
-			setDeviceParent(sectionId);
-			return devicesLoad.apply(this, arguments);
-		};
-		var devicesParse = devicesValue.parse;
-		devicesValue.parse = function(sectionId) {
-			setDeviceParent(sectionId);
-			return devicesParse.apply(this, arguments);
-		};
-		var devicesRenderWidget = devicesValue.renderWidget;
-		devicesValue.renderWidget = function(sectionId) {
-			setDeviceParent(sectionId);
-			return devicesRenderWidget.apply(this, arguments);
-		};
-		devices.filter = function(sectionId) {
-			return String(uci.get('wloc', sectionId, 'wifi') || '') === String(this.parent_section_id || '');
-		};
-		devices.anonymous = true;
-		devices.addremove = true;
-		devices.sortable = true;
-		devices.nodescriptions = true;
-		devices.addbtntitle = _('Add device');
-		devices.sectiontitle = function(sectionId) {
-			return uci.get('wloc', sectionId, 'name') || _('Unnamed device condition');
-		};
-		devices.handleAdd = function(event, name) {
-			var parentId = parentSectionFromEvent(event);
-			if (!parentId)
-				return;
-			var configName = this.uciconfig || this.map.config;
-			var sectionId = this.map.data.add(configName, this.sectiontype, name);
-			this.map.data.set(configName, sectionId, 'wifi', parentId);
-			var mapNode = this.getPreviousModalMap ? this.getPreviousModalMap() : null;
-			var previousMap = mapNode ? dom.findClassInstance(mapNode) : this.map;
-			previousMap.addedSection = sectionId;
-			return this.renderMoreOptionsModal(sectionId);
-		};
-		var wifiHandleRemove = wifiSections.handleRemove;
-		wifiSections.handleRemove = function(sectionId) {
-			var configName = this.uciconfig || this.map.config;
-			uci.sections(configName, 'device').forEach(function(device) {
-				if (String(device.wifi || '') === String(sectionId))
-					this.map.data.remove(configName, device['.name']);
-			}, this);
-			return wifiHandleRemove.apply(this, arguments);
+		var locationGroup = wifiSections.option(form.DummyValue, '_location_group', null);
+		locationGroup.modalonly = true;
+		locationGroup.rmempty = true;
+		locationGroup.cfgvalue = function() { return ''; };
+		locationGroup.renderWidget = function() {
+			return E('div', { 'class': 'wloc-modal-group wloc-modal-group-location' }, [
+				E('strong', { 'class': 'wloc-modal-group-title' }, _('Location and outbound')),
+				E('span', { 'class': 'wloc-modal-group-description' }, _('Set the virtual location and optional proxy for this AP.'))
+			]);
 		};
 
-		option = devices.option(form.Flag, 'enabled', _('Enabled'));
-		option.default = '1';
-		option.rmempty = false;
-
-		option = devices.option(form.Value, 'name', _('Name'));
-		option.placeholder = _('iPhone at living room AP');
-		option.rmempty = false;
-
-		function modalGroup(optionName, title, description, tone) {
-			var group = devices.option(form.DummyValue, optionName, null);
-			group.modalonly = true;
-			group.rmempty = true;
-			group.cfgvalue = function() { return ''; };
-			group.renderWidget = function() {
-				return E('div', { 'class': 'wloc-modal-group wloc-modal-group-' + tone }, [
-					E('strong', { 'class': 'wloc-modal-group-title' }, title),
-					E('span', { 'class': 'wloc-modal-group-description' }, description)
-				]);
-			};
-			return group;
-		}
-
-		var parentSummary = devices.option(form.DummyValue, '_wifi_parent', _('AP'));
-		parentSummary.modalonly = true;
-		parentSummary.cfgvalue = parentSummary.textvalue = function(sectionId) {
-			var parentId = uci.get('wloc', sectionId, 'wifi');
-			var parentName = parentId ? uci.get('wloc', parentId, 'name') : '';
-			return parentName ? '%s - %s'.format(parentName, wifiSourceSummary(parentId)) : _('AP not set');
-		};
-
-		modalGroup('_device_group', _('Device'),
-			_('Choose which client this device condition applies to.'), 'device');
-
-		var deviceSummary = devices.option(form.DummyValue, '_device_summary', _('Device'));
-		deviceSummary.cfgvalue = deviceSummary.textvalue = function(sectionId) {
-			return uci.get('wloc', sectionId, 'device') === 'all'
-				? _('All devices') : String(uci.get('wloc', sectionId, 'mac') || _('MAC not set')).toUpperCase();
-		};
-
-		var deviceOption = devices.option(form.ListValue, 'device', _('Device match'));
-		deviceOption.modalonly = true;
-		deviceOption.value('mac', _('Specified MAC'));
-		deviceOption.value('all', _('All devices'));
-		deviceOption.default = 'mac';
-		deviceOption.rmempty = false;
-
-		var macOption = devices.option(form.Value, 'mac', _('Device MAC'));
-		macOption.modalonly = true;
-		macOption.depends('device', 'mac');
-		macOption.rmempty = false;
-		macOption.placeholder = 'aa:bb:cc:dd:ee:ff';
-		macOption.description = _('Select a current DHCP device or enter its MAC address. Private Wi-Fi addresses are distinct devices.');
-		leases.forEach(function(lease) {
-			var mac = (lease.macaddr || lease.mac || '').toUpperCase();
-			var ip = lease.ipaddr || lease.ip || '';
-			if (mac)
-				macOption.value(mac, '%s - %s%s'.format(lease.hostname || _('Unnamed device'), mac, ip ? ' - ' + ip : ''));
-		});
-		macOption.renderWidget = function(sectionId, optionIndex, cfgvalue) {
-			var widget = form.Value.prototype.renderWidget.apply(this, arguments);
-			var select = widget && widget.nodeName === 'SELECT' ? widget
-				: (widget && widget.querySelector ? widget.querySelector('select') : null);
-			if (!select)
-				return widget;
-
-			var macPattern = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
-			var expandOptions = function() {
-				Array.prototype.forEach.call(select.options, function(option) {
-					var fullLabel = option.getAttribute('data-wloc-full-label');
-					if (!fullLabel) {
-						fullLabel = option.textContent;
-						option.setAttribute('data-wloc-full-label', fullLabel);
-					}
-					if (macPattern.test(option.value))
-						option.textContent = fullLabel;
-				});
-			};
-			var compactSelected = function() {
-				var selected = select.options[select.selectedIndex];
-				if (selected && macPattern.test(selected.value))
-					selected.textContent = selected.value.toUpperCase();
-			};
-
-			select.addEventListener('mousedown', expandOptions);
-			select.addEventListener('keydown', function(event) {
-				if ([ 'ArrowDown', 'ArrowUp', 'Home', 'End', ' ', 'Enter' ].indexOf(event.key) >= 0)
-					expandOptions();
-			});
-			select.addEventListener('change', compactSelected);
-			select.addEventListener('blur', compactSelected);
-			expandOptions();
-			compactSelected();
-			return widget;
-		};
-		macOption.cfgvalue = function(sectionId) {
-			return String(uci.get('wloc', sectionId, 'mac') || '').toUpperCase();
-		};
-		macOption.validate = function(sectionId, value) {
-			value = String(value || '').toLowerCase();
-			if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(value))
-				return _('Enter a valid MAC address.');
-			if ((parseInt(value.slice(0, 2), 16) & 1) !== 0 || value === '00:00:00:00:00:00')
-				return _('The MAC address must be an individual unicast address.');
-			return true;
-		};
-
-		modalGroup('_location_group', _('Location and outbound'),
-			_('Set the virtual location and the optional proxy for this device condition.'), 'location');
-
-		var locationSummary = devices.option(form.DummyValue, '_location_summary', _('Location'));
-		locationSummary.cfgvalue = locationSummary.textvalue = function(sectionId) {
-			return '%s, %s'.format(uci.get('wloc', sectionId, 'latitude') || '—', uci.get('wloc', sectionId, 'longitude') || '—');
-		};
-
-		var latitudeOption = devices.option(form.Value, 'latitude', _('Latitude'));
+		var latitudeOption = wifiSections.option(form.Value, 'latitude', _('Latitude'));
 		latitudeOption.modalonly = true;
 		latitudeOption.rmempty = false;
-		latitudeOption.description = _('Fixed virtual baseline. Each later response adds only the movement since the previous real location; the baseline itself never changes.');
+		latitudeOption.description = _('Fixed virtual baseline for every device connected through this AP.');
 		latitudeOption.validate = coordinateValidator(-90, 90);
 
-		var longitudeOption = devices.option(form.Value, 'longitude', _('Longitude'));
+		var longitudeOption = wifiSections.option(form.Value, 'longitude', _('Longitude'));
 		longitudeOption.modalonly = true;
 		longitudeOption.rmempty = false;
 		longitudeOption.validate = coordinateValidator(-180, 180);
 
-		var proxyTypeOption = devices.option(form.ListValue, 'proxy_type', _('Outbound'));
+		var proxyTypeOption = wifiSections.option(form.ListValue, 'proxy_type', _('Outbound'));
 		proxyTypeOption.modalonly = true;
 		proxyTypeOption.value('direct', _('Direct'));
 		proxyTypeOption.value('http', _('HTTP proxy'));
@@ -621,7 +437,7 @@ return view.extend({
 		proxyTypeOption.default = 'direct';
 		proxyTypeOption.rmempty = false;
 
-		var proxyHostOption = devices.option(form.Value, 'proxy_host', _('Proxy host'));
+		var proxyHostOption = wifiSections.option(form.Value, 'proxy_host', _('Proxy host'));
 		proxyHostOption.modalonly = true;
 		proxyHostOption.rmempty = false;
 		proxyHostOption.placeholder = '192.0.2.10';
@@ -633,7 +449,7 @@ return view.extend({
 				? true : _('Enter a valid proxy hostname or IP address.');
 		};
 
-		var proxyPortOption = devices.option(form.Value, 'proxy_port', _('Proxy port'));
+		var proxyPortOption = wifiSections.option(form.Value, 'proxy_port', _('Proxy port'));
 		proxyPortOption.modalonly = true;
 		proxyPortOption.rmempty = false;
 		proxyPortOption.datatype = 'port';
@@ -642,66 +458,52 @@ return view.extend({
 		proxyPortOption.depends('proxy_type', 'socks5');
 		proxyPortOption.description = _('HTTP CONNECT and SOCKS5 proxies without authentication are supported.');
 
-		var lastUpdatedOption = devices.option(form.DummyValue, '_last_updated', _('Last updated'));
+		var lastUpdatedOption = wifiSections.option(form.DummyValue, '_last_updated', _('Last updated'));
+		lastUpdatedOption.modalonly = false;
 		lastUpdatedOption.rmempty = true;
-		lastUpdatedOption.textvalue = function(sectionId) {
-			var activity = clientActivity(sectionId, initialStatus);
-			return activity && Number(activity.last_location_at)
-				? relativeTime(activity.last_location_at) : _('Never');
-		};
-		lastUpdatedOption.renderWidget = function(sectionId) {
-			var node = E('span', {}, lastUpdatedOption.textvalue(sectionId));
+		lastUpdatedOption.cfgvalue = lastUpdatedOption.textvalue = function(sectionId) {
+			var activity = apActivity(sectionId, initialStatus);
+			var node = E('span', {});
 			rememberNode(lastUpdatedNodes, sectionId, node);
-			var activity = clientActivity(sectionId, initialStatus);
 			updateRelativeTime(node, activity && activity.last_location_at);
 			return node;
 		};
 
-		var lastResultOption = devices.option(form.DummyValue, '_last_result', _('Last result'));
-		lastResultOption.rmempty = true;
-		function renderClientResult(node, activity) {
+		function renderApResult(node, activity) {
 			var hasActivity = !!activity;
 			var success = hasActivity && truthy(activity.success);
 			var error = hasActivity && !success ? String(activity.last_error || '') : '';
 			node.className = hasActivity ? (success ? 'is-ok' : 'is-idle') : '';
-			node.replaceChildren(E('span', {}, hasActivity ? (success ? _('Success') : _('Failed')) : _('Never')));
-			if (error)
-				node.appendChild(E('span', { 'class': 'wloc-result-error' }, error));
-			if (error)
-				node.title = error;
-			else
-				node.removeAttribute('title');
+			node.textContent = hasActivity
+				? (success ? _('Success') : (error ? _('Failed: %s').format(error) : _('Failed')))
+				: _('Never');
+			node.title = error;
 		}
-		lastResultOption.textvalue = function(sectionId) {
-			var activity = clientActivity(sectionId, initialStatus);
-			return activity ? (truthy(activity.success) ? _('Success') : _('Failed')) : _('Never');
-		};
-		lastResultOption.renderWidget = function(sectionId) {
-			var activity = clientActivity(sectionId, initialStatus);
+
+		var lastResultOption = wifiSections.option(form.DummyValue, '_last_result', _('Last result'));
+		lastResultOption.modalonly = false;
+		lastResultOption.rmempty = true;
+		lastResultOption.cfgvalue = lastResultOption.textvalue = function(sectionId) {
 			var node = E('span', {});
-			renderClientResult(node, activity);
+			renderApResult(node, apActivity(sectionId, initialStatus));
 			rememberNode(lastResultNodes, sectionId, node);
 			return node;
 		};
 
-		var ipOption = devices.option(form.Value, 'ip', _('IP address'));
+		var ipOption = wifiSections.option(form.Value, 'ip', _('IP address'));
 		ipOption.modalonly = true;
 		ipOption.rmempty = true;
 		ipOption.placeholder = '8.8.8.8';
-		ipOption.description = _('The browser sends this address directly to ipinfo.io. It is saved with this device condition; lookup results stay on this page.');
+		ipOption.description = _('Use ipinfo.io in this browser to fill the AP location coordinates.');
 
-		var lookupButton = devices.option(form.Button, '_lookup_action', _('IP location'));
+		var lookupButton = wifiSections.option(form.Button, '_lookup_action', _('IP location'));
 		lookupButton.modalonly = true;
 		lookupButton.rmempty = true;
 		lookupButton.inputtitle = _('Fill from IP location');
 		lookupButton.inputstyle = 'action';
-		lookupButton.onclick = function(first, second) {
-			var event = first && first.currentTarget ? first : (second && second.currentTarget ? second : null);
-			var sectionId = typeof first === 'string' ? first : (typeof second === 'string' ? second : null);
-			var modal = event && event.currentTarget ? event.currentTarget.closest('.modal') : null;
-			var inputNode = modal ? modal.querySelector('input[id$=".ip"], [id$=".ip"] input, input[placeholder="8.8.8.8"]') : null;
-			var ip = String(inputNode ? inputNode.value : (sectionId ? ipOption.formvalue(sectionId) : '') || '').trim();
-			var resultNode = lookupResultNodes[sectionId] || (modal ? modal.querySelector('.wloc-inline-result') : null);
+		lookupButton.onclick = function(sectionId) {
+			var ip = String(ipOption.formvalue(sectionId) || '').trim();
+			var resultNode = lookupResultNodes[sectionId];
 			if (!ip) {
 				if (resultNode)
 					resultNode.textContent = _('Enter an IPv4 or IPv6 address first.');
@@ -710,26 +512,8 @@ return view.extend({
 			if (resultNode)
 				resultNode.replaceChildren(E('em', {}, _('Looking up with ipinfo.io…')));
 			return lookupIpInfo(ip).then(function(result) {
-				var latitudeWidget = latitudeOption.getUIElement(sectionId);
-				var longitudeWidget = longitudeOption.getUIElement(sectionId);
-				var latitudeInput = modal ? modal.querySelector('input[id$=".latitude"], [id$=".latitude"] input') : null;
-				var longitudeInput = modal ? modal.querySelector('input[id$=".longitude"], [id$=".longitude"] input') : null;
-				if (latitudeWidget)
-					latitudeWidget.setValue(result.latitude);
-				else if (latitudeInput) {
-					latitudeInput.value = result.latitude;
-					latitudeInput.dispatchEvent(new Event('input', { bubbles: true }));
-					latitudeInput.dispatchEvent(new Event('change', { bubbles: true }));
-				}
-				if (longitudeWidget)
-					longitudeWidget.setValue(result.longitude);
-				else if (longitudeInput) {
-					longitudeInput.value = result.longitude;
-					longitudeInput.dispatchEvent(new Event('input', { bubbles: true }));
-					longitudeInput.dispatchEvent(new Event('change', { bubbles: true }));
-				}
-				if (!latitudeWidget && !latitudeInput || !longitudeWidget && !longitudeInput)
-					throw new Error(_('The coordinate fields are unavailable'));
+				latitudeOption.getUIElement(sectionId).setValue(result.latitude);
+				longitudeOption.getUIElement(sectionId).setValue(result.longitude);
 				if (resultNode) {
 					resultNode.replaceChildren(
 						E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
@@ -743,7 +527,7 @@ return view.extend({
 			});
 		};
 
-		var lookupResultOption = devices.option(form.DummyValue, '_lookup_result', _('Lookup result'));
+		var lookupResultOption = wifiSections.option(form.DummyValue, '_lookup_result', _('Lookup result'));
 		lookupResultOption.modalonly = true;
 		lookupResultOption.rmempty = true;
 		lookupResultOption.renderWidget = function(sectionId) {
@@ -751,6 +535,7 @@ return view.extend({
 			lookupResultNodes[sectionId] = node;
 			return node;
 		};
+
 		var statusNode = E('div', { 'class': 'wloc-status' });
 		var fingerprintNode = E('div', { 'class': 'wloc-fingerprint' });
 		var logNode = E('pre', { 'class': 'wloc-log', 'tabindex': '0' }, initialLogs || _('No events in this session yet.'));
@@ -799,22 +584,22 @@ return view.extend({
 			);
 		}
 
-		function clientActivity(sectionId, status) {
-			return (status.client_activity || []).find(function(activity) {
-				return String(activity.client_id || '') === sectionId;
+		function apActivity(sectionId, status) {
+			return (status.ap_activity || []).find(function(activity) {
+				return String(activity.ap_id || '') === sectionId;
 			});
 		}
 
-		function renderClientActivity(status) {
+		function renderApActivity(status) {
 			initialStatus = status;
-			uci.sections('wloc', 'device').forEach(function(device) {
-				var sectionId = device['.name'];
-				var activity = clientActivity(sectionId, status);
+			uci.sections('wloc', 'wifi').forEach(function(wifi) {
+				var sectionId = wifi['.name'];
+				var activity = apActivity(sectionId, status);
 				updateNodes(lastUpdatedNodes, sectionId, function(node) {
 					updateRelativeTime(node, activity && activity.last_location_at);
 				});
 				updateNodes(lastResultNodes, sectionId, function(node) {
-					renderClientResult(node, activity);
+					renderApResult(node, activity);
 				});
 			});
 		}
@@ -846,7 +631,7 @@ return view.extend({
 			return callStatus().then(function(status) {
 				status = status || {};
 				renderStatus(status);
-				renderClientActivity(status);
+				renderApActivity(status);
 				return refreshRuntimeLog(status, false);
 			}).catch(function() {
 				// Keep the last known state visible when a single poll request fails.
@@ -872,16 +657,16 @@ return view.extend({
 		window.addEventListener('focus', refresh);
 
 		return map.render().then(function(formNode) {
-			renderClientActivity(initialStatus);
+			renderApActivity(initialStatus);
 			scrollRuntimeLogToBottom();
 			poll.add(refresh, 10);
 			refresh();
 			return E('div', { 'class': 'wloc-console' }, [
 				E('style', {}, '.wloc-console #cbi-wloc-wifi>.cbi-section-node{margin:1rem 0;padding:1rem;border:1px solid var(--wloc-border);background:var(--wloc-surface);border-radius:.25rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node>.cbi-section-remove{margin-bottom:.5rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node .cbi-section{margin-top:.8rem;padding-top:.7rem;border-top:1px solid var(--wloc-border)}'),
-				E('style', {}, '.wloc-console .cbi-section-table-row[draggable="true"]{transition:box-shadow .14s ease,transform .14s ease}.wloc-console .cbi-section-table-row[draggable="true"]:hover{box-shadow:inset 3px 0 0 var(--wloc-accent)}.wloc-console .cbi-section-table-row.drag-over{box-shadow:inset 0 2px 0 var(--wloc-accent)}@media(prefers-reduced-motion:reduce){.wloc-console .cbi-section-table-row[draggable="true"]{transition:none}}'),
+				E('style', {}, '.cbi-modal{--wloc-muted:rgba(127,127,127,.85);--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35)}.cbi-modal .cbi-value[data-name="_location_group"]{display:block;margin:1.15rem 0 .35rem}.wloc-modal-group{display:flex;align-items:baseline;gap:.75rem;width:100%;padding:.7rem .85rem;border:1px solid var(--wloc-border);border-left:3px solid #16803c;background:var(--wloc-surface)}.wloc-modal-group-title{font-size:1rem;letter-spacing:.01em}.wloc-modal-group-description{color:var(--wloc-muted);font-size:.85em}@media(prefers-color-scheme:dark){.cbi-modal{--wloc-muted:rgba(255,255,255,.68);--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18)}.wloc-modal-group{border-left-color:#4ade80}}@media(max-width:560px){.wloc-modal-group{display:grid;gap:.2rem}}'),
 				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}.wloc-result-error{display:block;margin-top:.2rem;max-width:16rem;overflow-wrap:anywhere;font-size:.85em;font-weight:400}'),
+				E('style', {}, '.wloc-console td[data-name="_last_result"]{max-width:22rem;overflow-wrap:anywhere}'),
 				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
-				E('style', {}, '.cbi-modal{--wloc-muted:rgba(127,127,127,.85);--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35)}.cbi-modal .cbi-value[data-name="_device_group"],.cbi-modal .cbi-value[data-name="_location_group"]{display:block;margin:1.15rem 0 .35rem}.wloc-modal-group{display:flex;align-items:baseline;gap:.75rem;width:100%;padding:.7rem .85rem;border:1px solid var(--wloc-border);border-left:3px solid;background:var(--wloc-surface)}.wloc-modal-group-device{border-left-color:#8b5cf6}.wloc-modal-group-location{border-left-color:#16803c}.wloc-modal-group-title{font-size:1rem;letter-spacing:.01em}.wloc-modal-group-description{color:var(--wloc-muted);font-size:.85em}@media(prefers-color-scheme:dark){.cbi-modal{--wloc-muted:rgba(255,255,255,.68);--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18)}.wloc-modal-group-device{border-left-color:#a78bfa}.wloc-modal-group-location{border-left-color:#4ade80}}@media(max-width:560px){.wloc-modal-group{display:grid;gap:.2rem}}'),
 				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
 				formNode,
 				E('section', { 'class': 'wloc-card' }, [

@@ -21,11 +21,12 @@ else
 fi
 if command -v node >/dev/null 2>&1; then
 	node --check openwrt/files/www/luci-static/resources/view/wloc/main.js
+	node --check openwrt/files/www/luci-static/resources/view/wloc/nftables.js
 	node tests/ap-discovery.test.js
 fi
 
 grep -q '^TABLE=wloc$' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q '^CLIENT_MAC_SET=target_clients_mac$' openwrt/files/usr/libexec/wloc/rules.sh
+! grep -q 'CLIENT_MAC_SET\|target_clients_mac\|wloc owned MAC redirect' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^AP_INTERFACE_SET=target_ap_interfaces$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_SET=apple_wloc_v4$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DEFAULT_PRIORITY=-105$' openwrt/files/usr/libexec/wloc/rules.sh
@@ -33,10 +34,16 @@ grep -q '^MIN_SAFE_PRIORITY=-199$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^HOST_TIMEOUT=15m$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DNS_SAMPLES=1$' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^DNS_REFRESH_SECONDS=300$' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^host_set_targets()' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^host_set_available()' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '^refresh_hosts()' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'resolve-hosts) resolve_hosts' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'refresh-hosts) refresh_hosts' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q '"\$RULES" refresh-hosts' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q '"\$RULES" resolve-hosts' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
 ! grep -q 'timeout .*nslookup' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^ORDER_CHECK_SECONDS=60$' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'iifname @\$AP_INTERFACE_SET.*redirect to :\$port comment "wloc owned AP redirect"' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'priority \$priority' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'index(\$0, "iifname @" ap_interface_set)' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^analyze_prerouting_proxies()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^choose_wloc_priority()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'edge_target.*key(family_name, table_name' openwrt/files/usr/libexec/wloc/rules.sh
@@ -45,12 +52,12 @@ grep -q 'nft -a list ruleset' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'order-conflict' openwrt/files/usr/libexec/wloc/rules.sh openwrt/files/usr/libexec/rpcd/luci.wloc
 ! grep -q 'hook output' openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'tproxy ip to\|meta mark set\|ip -4 rule add\|ip -4 route add' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'ether saddr @\$CLIENT_MAC_SET' openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'nft flush set inet "\$TABLE" "\$HOST_SET"' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'nft get element inet "\$TABLE" "\$HOST_SET"' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'nft get element "\$family" "\$table_name" "\$HOST_SET"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^rules_healthy()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^reconcile()' openwrt/files/usr/libexec/wloc/rules.sh
-grep -q 'rules_healthy "\$port" || apply_rules "\$port"' openwrt/files/usr/libexec/wloc/rules.sh
+grep -q 'table inet wloc is not loaded; save and apply it in the nftables editor' openwrt/files/usr/libexec/wloc/rules.sh
+! grep -q 'nft delete table inet "\$TABLE"' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q '^table_healthy()' openwrt/files/usr/libexec/wloc/rules.sh
 grep -q 'reconcile_rules_async(' src/main.rs
 grep -q 'interception_rearmed' src/main.rs
@@ -137,6 +144,19 @@ parsed_counter="$(printf '%s\n' "$nft_fixture" \
 	|| { echo 'nftables diagnostic counter parser failed' >&2; exit 1; }
 rules_script=openwrt/files/usr/libexec/wloc/rules.sh
 eval "$(sed '/^case /,$d' "$rules_script")"
+custom_firewall_fixture="$(mktemp)"
+printf '%s\n' \
+	'table inet custom_one { set apple_wloc_v4 { type ipv4_addr; flags timeout; } }' \
+	'table ip custom_two {' \
+	'  set apple_wloc_v4 {' \
+	'    type ipv4_addr' \
+	'    flags timeout' \
+	'  }' \
+	'}' >"$custom_firewall_fixture"
+CUSTOM_FIREWALL="$custom_firewall_fixture"
+[ "$(host_set_targets)" = "$(printf 'inet wloc\ninet custom_one\nip custom_two')" ] \
+	|| { echo 'custom apple_wloc_v4 table discovery failed' >&2; exit 1; }
+rm -f "$custom_firewall_fixture"
 valid_mac 'a6:88:db:2b:1f:bf' \
 	|| { echo 'shell MAC validator rejected a valid unicast address' >&2; exit 1; }
 valid_mac '02:11:22:33:44:55' \
@@ -146,10 +166,6 @@ valid_mac '02:11:22:33:44:55' \
 ! valid_mac '00:00:00:00:00:00' \
 	|| { echo 'shell MAC validator accepted the zero address' >&2; exit 1; }
 healthy_table_fixture='table inet wloc {
-	set target_clients_mac {
-		type ether_addr
-		flags timeout
-	}
 	set target_ap_interfaces {
 		type ifname
 		flags timeout
@@ -161,7 +177,6 @@ healthy_table_fixture='table inet wloc {
 	}
 	chain redirect_prerouting {
 		type nat hook prerouting priority -105; policy accept;
-		ether saddr @target_clients_mac ip daddr @apple_wloc_v4 meta l4proto tcp tcp dport 443 counter redirect to :61520 comment "wloc owned MAC redirect"
 		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 meta l4proto tcp tcp dport 443 counter redirect to :61520 comment "wloc owned AP redirect"
 	}
 }'
@@ -171,8 +186,8 @@ printf '%s\n' "$healthy_table_fixture" | sed '/elements =/d' | table_healthy 615
 	&& { echo 'consolidated nftables health parser accepted an empty host set' >&2; exit 1; }
 printf '%s\n' "$healthy_table_fixture" | sed '/flags timeout/d' | table_healthy 61520 \
 	&& { echo 'consolidated nftables health parser accepted non-expiring selector sets' >&2; exit 1; }
-printf '%s\n' "$healthy_table_fixture" | sed '/wloc owned MAC redirect/d' | table_healthy 61520 \
-	&& { echo 'consolidated nftables health parser accepted a missing MAC redirect' >&2; exit 1; }
+printf '%s\n' "$healthy_table_fixture" | sed '/wloc owned AP redirect/d' | table_healthy 61520 \
+	&& { echo 'consolidated nftables health parser accepted a missing AP redirect' >&2; exit 1; }
 printf '%s\n' "$healthy_table_fixture" | table_healthy 61521 \
 	&& { echo 'consolidated nftables health parser accepted the wrong redirect port' >&2; exit 1; }
 
@@ -278,7 +293,7 @@ ORDER_CHECK_STAMP="$order_check_stamp"
 check_prerouting_order 2>"$order_log"
 [ "$(cat "$order_state")" = 0 ] \
 	|| { echo 'nftables order checker rejected a verified WLOC-first order' >&2; exit 1; }
-grep -q 'ORDER: WLOC table=wloc chain=redirect_prerouting numeric=-152 verdict=REDIRECT stage=first' "$order_log" \
+grep -q 'ORDER: WLOC table=wloc chain=mark_prerouting numeric=-152 stage=first' "$order_log" \
 	|| { echo 'nftables order checker did not record WLOC priority' >&2; exit 1; }
 grep -q 'ORDER: PROXY family=inet table=routed_proxy chain=ingress priority=mangle - 1 numeric=-151 verdict=TPROXY via=jump relation=after_wloc' "$order_log" \
 	|| { echo 'nftables order checker did not record complete indirect proxy order' >&2; exit 1; }
@@ -290,29 +305,29 @@ order_fixture="$(printf '%s\n' "$order_fixture" | sed 's/priority mangle - 1/pri
 [ "$(cat "$order_state")" = 1 ] \
 	|| { echo 'nftables order checker did not persist its ordering conflict' >&2; exit 1; }
 rm -f "$order_state" "$order_log" "$order_check_stamp"
-grep -q "flush set inet \$TABLE \$CLIENT_MAC_SET" openwrt/files/usr/libexec/wloc/rules.sh
-grep -q "flush set inet \$TABLE \$AP_INTERFACE_SET" openwrt/files/usr/libexec/wloc/rules.sh
 ! grep -q 'ip_lookup\|uclient-fetch' openwrt/files/usr/libexec/rpcd/luci.wloc Makefile
-grep -q "form.TypedSection, 'wifi'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.GridSection, 'wifi'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "uci.load('wireless')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "uci.sections('wireless', 'wifi-iface')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q '"uci": \[ "wloc", "wireless" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
 ! grep -q "form.GridSection, 'rule'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "form.SectionValue, '_devices', form.GridSection" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "wifiNetworkOption.value('bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "wifiNetworkOption.default = 'any'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "wifiNetworkOption.value('any', _('Any AP'))" openwrt/files/www/luci-static/resources/view/wloc/main.js
-! grep -q "wifiNetworkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-! grep -q "networkOption.value('ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-! grep -q "devices.option(form.Value, 'ssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "form.SectionValue, '_devices'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "'device', _('Device conditions')" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "form.HiddenValue, 'network'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "wifiNetworkOption" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "form.ListValue, 'bssid'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'devices.sortable = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'devices.handleAdd' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'event.currentTarget' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "closest('\[data-section-id\]')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'config_foreach validate_device_for_wifi device' openwrt/files/etc/init.d/wloc
-grep -q 'config_foreach append_rule_for_wifi device' openwrt/files/etc/init.d/wloc
+grep -q 'wifiBssidOption.modalonly = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "form.DummyValue, '_wifi_state'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'wifiStateOption.modalonly = false' openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "wifiSections.option(form.Value, 'name'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiSections.option(form.Value, 'latitude'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiSections.option(form.Value, 'longitude'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q "wifiSections.option(form.ListValue, 'proxy_type'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'latitudeOption.modalonly = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'scheduleEnabledOption.modalonly = true' openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q 'validate_device_for_wifi\|validate_orphan_device' openwrt/files/etc/init.d/wloc
+grep -q 'append_rule_for_wifi "\$wifi"' openwrt/files/etc/init.d/wloc
+grep -Fq 'procd_append_param command --rule "$section" "$bssid"' openwrt/files/etc/init.d/wloc
 grep -q 'procd_set_param command "\$SCHEDULE" run' openwrt/files/etc/init.d/wloc
 grep -q 'wifi-schedule.sh' openwrt/files/etc/init.d/wloc Makefile
 grep -q 'window_active()' openwrt/files/usr/libexec/wloc/wifi-schedule.sh
@@ -334,16 +349,11 @@ grep -q 'emit_configured_access_points' openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q 'configured_access_points' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json openwrt/files/usr/libexec/rpcd/luci.wloc
 grep -q '"iwinfo": \[ "devices", "info" \]' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json
 grep -q '+rpcd-mod-iwinfo' Makefile
-grep -q "macOption.renderWidget" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "parentSummary.cfgvalue = parentSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "deviceSummary.cfgvalue = deviceSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "locationSummary.cfgvalue = locationSummary.textvalue" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "macOption\|deviceSummary\|parentSummary" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'schedule_enabled'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'schedule_start'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "'schedule_end'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "form.HiddenValue, 'wireless_section'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q "data-wloc-full-label" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -Fq "'%s - %s%s'" openwrt/files/www/luci-static/resources/view/wloc/main.js
+! grep -q "form.HiddenValue, 'wireless_section'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q "form.Value, 'accuracy'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 ! grep -q 'config_get accuracy' openwrt/files/etc/init.d/wloc
 grep -q 'preserved=accuracy,all_other_fields' src/proxy.rs
@@ -352,7 +362,7 @@ grep -q "form.Value, 'ip'" openwrt/files/www/luci-static/resources/view/wloc/mai
 grep -q "form.ListValue, 'proxy_type'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "proxyTypeOption.value('http'" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "proxyTypeOption.value('socks5'" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'relativeTime(activity.last_location_at)' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'updateRelativeTime(node, activity && activity.last_location_at)' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q -- '--rule-proxy' openwrt/files/etc/init.d/wloc
 grep -q 'connect_outbound(outbound' src/proxy.rs
 grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wloc/main.js
@@ -360,18 +370,20 @@ grep -q 'Fill from IP location' openwrt/files/www/luci-static/resources/view/wlo
 ! grep -q 'wloc-hero\|wloc-scope' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last updated')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'wloc-result-error' openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'macOption.cfgvalue' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q 'toUpperCase' openwrt/files/www/luci-static/resources/view/wloc/main.js src/config.rs src/proxy.rs
 ! grep -q 'var countryOption' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Country: %s')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "_('Last result')" openwrt/files/www/luci-static/resources/view/wloc/main.js
-grep -q 'client_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
-grep -q 'client_id' openwrt/files/usr/libexec/rpcd/luci.wloc
-grep -q "grep -q '=device\$'" openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q 'lastUpdatedOption.modalonly = false' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'lastResultOption.modalonly = false' openwrt/files/www/luci-static/resources/view/wloc/main.js
+grep -q 'ap_activity' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q 'ap_id' openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q "grep -q '=wifi\$'" openwrt/files/usr/libexec/rpcd/luci.wloc
+! grep -q 'migrate_device_to_ap\|remove_legacy_device' openwrt/files/etc/uci-defaults/luci-app-wloc
 grep -q 'last_error' openwrt/files/usr/libexec/rpcd/luci.wloc src/status.rs
 grep -q -- '--rule-name' openwrt/files/etc/init.d/wloc src/config.rs
 ! grep -q -- '--rule-ssid' openwrt/files/etc/init.d/wloc src/config.rs
-grep -q 'rule_name=\\"{}\\" device={} network={}' src/config.rs
+grep -q 'rule_name=\\"{}\\" ap_bssid={}' src/config.rs
 grep -q 'rule_configured' src/main.rs
 grep -q 'first_matching_rule' src/proxy.rs
 grep -q ' ip=' src/proxy.rs
@@ -383,6 +395,13 @@ grep -q 'dhcp_lease_identity_from' src/proxy.rs
 grep -q '"admin/services/wloc"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"title": "WLOC"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"path": "wloc/main"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
+grep -q '"path": "wloc/nftables"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
+grep -q '"title": "Firewall"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
+grep -q 'firewall_read' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json openwrt/files/usr/libexec/rpcd/luci.wloc
+grep -q "method: 'firewall_apply'" openwrt/files/www/luci-static/resources/view/wloc/nftables.js
+grep -q "call luci.wloc firewall_apply" openwrt/files/etc/init.d/wloc
+[ ! -s openwrt/files/etc/wloc/firewall.nft ] \
+	|| { echo 'default custom nftables file is not empty' >&2; exit 1; }
 grep -q 'wloc-service-list' openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "new form.Map('wloc', _('WLOC')" openwrt/files/www/luci-static/resources/view/wloc/main.js
 grep -q "method: 'restart'" openwrt/files/www/luci-static/resources/view/wloc/main.js

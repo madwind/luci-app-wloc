@@ -3,7 +3,7 @@
     "description": "Manage wloc",
     "read": {
       "ubus": {
-        "luci.wloc": [ "status", "access_points", "configured_access_points", "test", "logs" ],
+        "luci.wloc": [ "status", "access_points", "configured_access_points", "test", "logs", "firewall_read", "firewall_validate" ],
         "luci-rpc": [ "getDHCPLeases" ],
         "iwinfo": [ "devices", "info" ]
       },
@@ -11,7 +11,7 @@
     },
     "write": {
       "ubus": {
-        "luci.wloc": [ "restart", "disable", "regenerate_ca", "cleanup" ]
+        "luci.wloc": [ "restart", "disable", "regenerate_ca", "cleanup", "firewall_save", "firewall_apply" ]
       },
       "uci": [ "wloc" ]
     }
