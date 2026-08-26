@@ -82,9 +82,7 @@ define Package/luci-app-wloc/install
 	$(INSTALL_DATA) $(CURDIR)/openwrt/files/lib/upgrade/keep.d/luci-app-wloc $(1)/lib/upgrade/keep.d/luci-app-wloc
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/wloc
 	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/view/wloc/main.js $(1)/www/luci-static/resources/view/wloc/main.js
-	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/view/wloc/nftables.js $(1)/www/luci-static/resources/view/wloc/nftables.js
-	$(INSTALL_DIR) $(1)/www/luci-static/resources/wloc
-	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/wloc/nftables.css $(1)/www/luci-static/resources/wloc/nftables.css
+	$(INSTALL_DATA) $(CURDIR)/openwrt/files/www/luci-static/resources/view/wloc/firewall.js $(1)/www/luci-static/resources/view/wloc/firewall.js
 endef
 
 define Package/luci-app-wloc/postinst

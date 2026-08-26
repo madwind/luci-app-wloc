@@ -21,7 +21,7 @@ else
 fi
 if command -v node >/dev/null 2>&1; then
 	node --check openwrt/files/www/luci-static/resources/view/wloc/main.js
-	node --check openwrt/files/www/luci-static/resources/view/wloc/nftables.js
+	node --check openwrt/files/www/luci-static/resources/view/wloc/firewall.js
 	node tests/ap-discovery.test.js
 fi
 
@@ -395,10 +395,10 @@ grep -q 'dhcp_lease_identity_from' src/proxy.rs
 grep -q '"admin/services/wloc"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"title": "WLOC"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"path": "wloc/main"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
-grep -q '"path": "wloc/nftables"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
+grep -q '"path": "wloc/firewall"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q '"title": "Firewall"' openwrt/files/usr/share/luci/menu.d/luci-app-wloc.json
 grep -q 'firewall_read' openwrt/files/usr/share/rpcd/acl.d/luci-app-wloc.json openwrt/files/usr/libexec/rpcd/luci.wloc
-grep -q "method: 'firewall_apply'" openwrt/files/www/luci-static/resources/view/wloc/nftables.js
+grep -q "method: 'firewall_apply'" openwrt/files/www/luci-static/resources/view/wloc/firewall.js
 grep -q "call luci.wloc firewall_apply" openwrt/files/etc/init.d/wloc
 [ ! -s openwrt/files/etc/wloc/firewall.nft ] \
 	|| { echo 'default custom nftables file is not empty' >&2; exit 1; }

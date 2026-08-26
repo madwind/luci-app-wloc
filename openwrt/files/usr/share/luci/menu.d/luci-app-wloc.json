@@ -10,9 +10,9 @@
     "order": 1,
     "action": { "type": "view", "path": "wloc/main" }
   },
-  "admin/services/wloc/nftables": {
+  "admin/services/wloc/firewall": {
     "title": "Firewall",
     "order": 2,
-    "action": { "type": "view", "path": "wloc/nftables" }
+    "action": { "type": "view", "path": "wloc/firewall" }
   }
 }

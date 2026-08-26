@@ -231,7 +231,7 @@ return view.extend({
 		serviceStatusOption.rmempty = true;
 		serviceStatusOption.cfgvalue = function() { return 'status'; };
 		serviceStatusOption.renderWidget = function() {
-			return E('div', { 'class': 'wloc-status-control' }, [
+			return E('div', {}, [
 				statusNode,
 				actionButton.call(this, _('Restart'), 'cbi-button-action', function() {
 					return notifyAction(callRestart(), function(status) {
@@ -272,9 +272,9 @@ return view.extend({
 		caOption.rmempty = true;
 		caOption.cfgvalue = function() { return 'certificate'; };
 		caOption.renderWidget = function() {
-			return E('div', { 'class': 'wloc-ca-control' }, [
-				E('p', {}, _('After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings.')),
-				E('div', { 'class': 'wloc-actions' }, [
+			return E('div', {}, [
+				E('div', { 'class': 'cbi-section-descr' }, _('After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings.')),
+				E('div', { 'class': 'cbi-page-actions' }, [
 					E('a', { 'class': 'cbi-button cbi-button-action', 'href': profileUrl }, _('Download CA profile')),
 					actionButton.call(this, _('Regenerate CA'), 'cbi-button-negative', function() {
 						return notifyAction(callRegenerate(), _('The Root CA was regenerated. Reinstall and trust it on the iPhone.'));
@@ -407,17 +407,6 @@ return view.extend({
 		scheduleEndOption.description = _('If the end is earlier than the start, the window crosses midnight. Equal times mean all day.');
 		scheduleEndOption.validate = scheduleTimeValidator;
 
-		var locationGroup = wifiSections.option(form.DummyValue, '_location_group', null);
-		locationGroup.modalonly = true;
-		locationGroup.rmempty = true;
-		locationGroup.cfgvalue = function() { return ''; };
-		locationGroup.renderWidget = function() {
-			return E('div', { 'class': 'wloc-modal-group wloc-modal-group-location' }, [
-				E('strong', { 'class': 'wloc-modal-group-title' }, _('Location and outbound')),
-				E('span', { 'class': 'wloc-modal-group-description' }, _('Set the virtual location and optional proxy for this AP.'))
-			]);
-		};
-
 		var latitudeOption = wifiSections.option(form.Value, 'latitude', _('Latitude'));
 		latitudeOption.modalonly = true;
 		latitudeOption.rmempty = false;
@@ -473,7 +462,7 @@ return view.extend({
 			var hasActivity = !!activity;
 			var success = hasActivity && truthy(activity.success);
 			var error = hasActivity && !success ? String(activity.last_error || '') : '';
-			node.className = hasActivity ? (success ? 'is-ok' : 'is-idle') : '';
+			node.className = hasActivity ? (success ? 'success' : 'warning') : '';
 			node.textContent = hasActivity
 				? (success ? _('Success') : (error ? _('Failed: %s').format(error) : _('Failed')))
 				: _('Never');
@@ -531,14 +520,21 @@ return view.extend({
 		lookupResultOption.modalonly = true;
 		lookupResultOption.rmempty = true;
 		lookupResultOption.renderWidget = function(sectionId) {
-			var node = E('div', { 'class': 'wloc-inline-result' }, _('No lookup performed.'));
+			var node = E('div', { 'class': 'cbi-section-descr' }, _('No lookup performed.'));
 			lookupResultNodes[sectionId] = node;
 			return node;
 		};
 
-		var statusNode = E('div', { 'class': 'wloc-status' });
-		var fingerprintNode = E('div', { 'class': 'wloc-fingerprint' });
-		var logNode = E('pre', { 'class': 'wloc-log', 'tabindex': '0' }, initialLogs || _('No events in this session yet.'));
+		var statusNode = E('div', { 'class': 'cbi-section-descr' });
+		var fingerprintNode = E('div', { 'class': 'cbi-section-descr' });
+		var logNode = E('textarea', {
+			'class': 'cbi-input-text',
+			'style': 'display: block; width: 100%; min-height: 18em; box-sizing: border-box;',
+			'wrap': 'off',
+			'rows': '18',
+			'readonly': true,
+			'aria-label': _('Current-session in-memory log')
+		}, initialLogs || _('No events in this session yet.'));
 		var followRuntimeLog = true;
 
 		function runtimeLogAtBottom() {
@@ -575,12 +571,12 @@ return view.extend({
 			var state = running ? (healthy ? _('Running') : _('Running, interception unavailable'))
 				: (truthy(status.enabled) ? _('Stopped') : _('Disabled'));
 			var reason = serviceReason(status, running, healthy);
-			statusNode.replaceChildren(E('span', { 'class': healthy ? 'is-ok' : 'is-idle' }, state));
+			statusNode.replaceChildren(E('span', { 'class': healthy ? 'success' : 'warning' }, state));
 			if (reason)
-				statusNode.appendChild(E('span', { 'class': 'wloc-status-reason' }, reason));
+				statusNode.appendChild(E('div', { 'class': 'alert-message warning' }, _('Reason: %s').format(reason)));
 			fingerprintNode.replaceChildren(
-				E('span', {}, _('Root CA SHA-256')),
-				E('code', {}, status.fingerprint || _('Generated on first start'))
+				E('strong', {}, _('Root CA SHA-256: ')),
+				E('span', {}, status.fingerprint || _('Generated on first start'))
 			);
 		}
 
@@ -606,8 +602,7 @@ return view.extend({
 
 		function renderRuntimeLog(status, logs) {
 			var enabled = truthy(status.runtime_log_enabled);
-			logNode.classList.toggle('is-disabled', !enabled);
-			logNode.textContent = enabled ? (logs || _('No events in this session yet.'))
+			logNode.value = enabled ? (logs || _('No events in this session yet.'))
 				: _('Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log.');
 			scrollRuntimeLogToBottom();
 		}
@@ -661,17 +656,11 @@ return view.extend({
 			scrollRuntimeLogToBottom();
 			poll.add(refresh, 10);
 			refresh();
-			return E('div', { 'class': 'wloc-console' }, [
-				E('style', {}, '.wloc-console #cbi-wloc-wifi>.cbi-section-node{margin:1rem 0;padding:1rem;border:1px solid var(--wloc-border);background:var(--wloc-surface);border-radius:.25rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node>.cbi-section-remove{margin-bottom:.5rem}.wloc-console #cbi-wloc-wifi>.cbi-section-node .cbi-section{margin-top:.8rem;padding-top:.7rem;border-top:1px solid var(--wloc-border)}'),
-				E('style', {}, '.cbi-modal{--wloc-muted:rgba(127,127,127,.85);--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35)}.cbi-modal .cbi-value[data-name="_location_group"]{display:block;margin:1.15rem 0 .35rem}.wloc-modal-group{display:flex;align-items:baseline;gap:.75rem;width:100%;padding:.7rem .85rem;border:1px solid var(--wloc-border);border-left:3px solid #16803c;background:var(--wloc-surface)}.wloc-modal-group-title{font-size:1rem;letter-spacing:.01em}.wloc-modal-group-description{color:var(--wloc-muted);font-size:.85em}@media(prefers-color-scheme:dark){.cbi-modal{--wloc-muted:rgba(255,255,255,.68);--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18)}.wloc-modal-group{border-left-color:#4ade80}}@media(max-width:560px){.wloc-modal-group{display:grid;gap:.2rem}}'),
-				E('style', {}, '.wloc-status-reason{display:block;margin-top:.3rem;color:var(--wloc-warn);overflow-wrap:anywhere}.wloc-status-reason:before{content:"Reason: ";font-weight:600}.wloc-result-error{display:block;margin-top:.2rem;max-width:16rem;overflow-wrap:anywhere;font-size:.85em;font-weight:400}'),
-				E('style', {}, '.wloc-console td[data-name="_last_result"]{max-width:22rem;overflow-wrap:anywhere}'),
-				E('style', {}, '.wloc-status-control{display:flex;align-items:flex-start;gap:.8rem;flex-wrap:wrap}.wloc-status-control>.cbi-button{margin:0}'),
-				E('style', {}, '.wloc-console{--wloc-accent:#0e7490;--wloc-safe:#16803c;--wloc-warn:#b45309;--wloc-surface:rgba(127,127,127,.08);--wloc-border:rgba(127,127,127,.35);--wloc-log-bg:#f1f5f9;--wloc-log-fg:#172033;color:inherit}.wloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.wloc-card{border:1px solid var(--wloc-border);padding:1rem;background:var(--wloc-surface);margin:1rem 0}.wloc-status,.wloc-fingerprint,.wloc-inline-result{display:grid;gap:.4rem}.wloc-inline-result{min-height:2.8rem;padding:.7rem;background:var(--wloc-surface);border:1px solid var(--wloc-border)}.is-ok{color:var(--wloc-safe)}.is-idle{color:var(--wloc-warn)}.wloc-service-list{display:grid;margin:.5rem 0 0}.wloc-service-list div{display:grid;grid-template-columns:minmax(9rem,.45fr) 1fr;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--wloc-border)}.wloc-service-list div:last-child{border-bottom:0}.wloc-service-list dt{font-weight:600}.wloc-service-list dd{margin:0;overflow-wrap:anywhere}.wloc-fingerprint{margin:1rem 0}.wloc-fingerprint code{overflow-wrap:anywhere;padding:.6rem;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border)}.wloc-actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}.wloc-actions>.cbi-button{margin:0}.wloc-log{min-height:14rem;max-height:28rem;overflow:auto;background:var(--wloc-log-bg);color:var(--wloc-log-fg);border:1px solid var(--wloc-border);padding:.8rem;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.wloc-log.is-disabled{min-height:0;white-space:normal;font-family:inherit;font-size:inherit}.wloc-danger{border-top:3px solid var(--wloc-warn)}@media(prefers-color-scheme:dark){.wloc-console{--wloc-accent:#38bdf8;--wloc-safe:#4ade80;--wloc-warn:#fbbf24;--wloc-surface:rgba(255,255,255,.055);--wloc-border:rgba(255,255,255,.18);--wloc-log-bg:#0f172a;--wloc-log-fg:#dbeafe}}@media(max-width:800px){.wloc-grid{grid-template-columns:1fr}.wloc-service-list div{grid-template-columns:1fr}}'),
+			return E('div', {}, [
 				formNode,
-				E('section', { 'class': 'wloc-card' }, [
-					E('h3', {}, _('Current-session in-memory log')),
-					E('p', {}, _('Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start.')),
+				E('div', { 'class': 'cbi-section' }, [
+					E('h3', { 'class': 'cbi-section-title' }, _('Current-session in-memory log')),
+					E('div', { 'class': 'cbi-section-descr' }, _('Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start.')),
 					logNode
 				])
 			]);
