@@ -1,0 +1,479 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: luci-app-wloc\n"
+"POT-Creation-Date: 2026-08-26\n"
+"PO-Revision-Date: 2026-08-26\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "# No custom nftables tables are active."
+msgstr ""
+
+msgid "%d days ago"
+msgstr ""
+
+msgid "%d hr ago"
+msgstr ""
+
+msgid "%d min ago"
+msgstr ""
+
+msgid "%d/%d table(s) active"
+msgstr ""
+
+msgid "1 day ago"
+msgstr ""
+
+msgid "1 hr ago"
+msgstr ""
+
+msgid "1 min ago"
+msgstr ""
+
+msgid "Access point (BSSID)"
+msgstr ""
+
+msgid "Action failed: %s"
+msgstr ""
+
+msgid "active nftables configuration"
+msgstr ""
+
+msgid "Active nftables rules"
+msgstr ""
+
+msgid "Active state"
+msgstr ""
+
+msgid "Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio."
+msgstr ""
+
+msgid "Add AP"
+msgstr ""
+
+msgid "After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings."
+msgstr ""
+
+msgid "AP discovery"
+msgstr ""
+
+msgid "AP location"
+msgstr ""
+
+msgid "AP status"
+msgstr ""
+
+msgid "B"
+msgstr ""
+
+msgid "Check syntax"
+msgstr ""
+
+msgid "Checking the editor contents with nft --check..."
+msgstr ""
+
+msgid "Configured AP"
+msgstr ""
+
+msgid "configured in wireless"
+msgstr ""
+
+msgid "Country: %s"
+msgstr ""
+
+msgid "Current-session in-memory log"
+msgstr ""
+
+msgid "Direct"
+msgstr ""
+
+msgid "Disable from"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "Download CA profile"
+msgstr ""
+
+msgid "Edit the complete WLOC nftables ruleset. An empty file means that no interception rules are loaded."
+msgstr ""
+
+msgid "Editor state"
+msgstr ""
+
+msgid "Enable location interception"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Enter a number from %s to %s."
+msgstr ""
+
+msgid "Enter a time in HH:MM format."
+msgstr ""
+
+msgid "Enter a valid proxy hostname or IP address."
+msgstr ""
+
+msgid "Enter an IPv4 or IPv6 address first."
+msgstr ""
+
+msgid "File"
+msgstr ""
+
+msgid "Fill from IP location"
+msgstr ""
+
+msgid "Firewall"
+msgstr ""
+
+msgid "Firewall file"
+msgstr ""
+
+msgid "Fixed virtual baseline for every device connected through this AP."
+msgstr ""
+
+msgid "Format"
+msgstr ""
+
+msgid "Generated on first start"
+msgstr ""
+
+msgid "Hidden SSID"
+msgstr ""
+
+msgid "Hostname or IP address of the outbound proxy. DNS for the Apple destination is resolved by the proxy."
+msgstr ""
+
+msgid "HTTP CONNECT and SOCKS5 proxies without authentication are supported."
+msgstr ""
+
+msgid "HTTP proxy"
+msgstr ""
+
+msgid "If the end is earlier than the start, the window crosses midnight. Equal times mean all day."
+msgstr ""
+
+msgid "Enable runtime log"
+msgstr ""
+
+msgid "Failed"
+msgstr ""
+
+msgid "Failed: %s"
+msgstr ""
+
+msgid "iPhone root certificate"
+msgstr ""
+
+msgid "interception is not ready"
+msgstr ""
+
+msgid "Interception is unavailable. Check the runtime log."
+msgstr ""
+
+msgid "IP address"
+msgstr ""
+
+msgid "ipinfo.io returned HTTP %s"
+msgstr ""
+
+msgid "ipinfo.io returned no valid coordinates"
+msgstr ""
+
+msgid "IP location"
+msgstr ""
+
+msgid "Just now"
+msgstr ""
+
+msgid "Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates."
+msgstr ""
+
+msgid "Last result"
+msgstr ""
+
+msgid "Last updated"
+msgstr ""
+
+msgid "Latitude"
+msgstr ""
+
+msgid "Live AP data is not ready; choices are loaded from the saved wireless configuration."
+msgstr ""
+
+msgid "Loaded"
+msgstr ""
+
+msgid "Loading"
+msgstr ""
+
+msgid "Local listen port"
+msgstr ""
+
+msgid "Location details unavailable"
+msgstr ""
+
+msgid "Longitude"
+msgstr ""
+
+msgid "Looking up with ipinfo.io…"
+msgstr ""
+
+msgid "Lookup failed: %s"
+msgstr ""
+
+msgid "Lookup result"
+msgstr ""
+
+msgid "Never"
+msgstr ""
+
+msgid "nftables configuration"
+msgstr ""
+
+msgid "nftables ruleset"
+msgstr ""
+
+msgid "No active AP BSSID was found. WiFi may still be starting; try again shortly."
+msgstr ""
+
+msgid "No AP is currently visible. Existing saved BSSID values remain selectable, but a new BSSID needs the wireless interface to be available."
+msgstr ""
+
+msgid "No events in this session yet."
+msgstr ""
+
+msgid "No lookup performed."
+msgstr ""
+
+msgid "no safe prerouting priority was found"
+msgstr ""
+
+msgid "none"
+msgstr ""
+
+msgid "Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted."
+msgstr ""
+
+msgid "not currently active"
+msgstr ""
+
+msgid "Not loaded"
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "On"
+msgstr ""
+
+msgid "Outbound"
+msgstr ""
+
+msgid "Proxy host"
+msgstr ""
+
+msgid "Proxy port"
+msgstr ""
+
+msgid "Reason: %s"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Refresh AP list"
+msgstr ""
+
+msgid "Regenerate CA"
+msgstr ""
+
+msgid "Restart"
+msgstr ""
+
+msgid "Restart failed: %s"
+msgstr ""
+
+msgid "Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s"
+msgstr ""
+
+msgid "Restore at"
+msgstr ""
+
+msgid "Retry AP discovery after WiFi or the router has restarted. The page reloads only after at least one BSSID is found."
+msgstr ""
+
+msgid "Root CA SHA-256: "
+msgstr ""
+
+msgid "Rules formatted. Review the changes before saving."
+msgstr ""
+
+msgid "Rules saved and applied."
+msgstr ""
+
+msgid "Rules saved but not applied."
+msgstr ""
+
+msgid "Running"
+msgstr ""
+
+msgid "Running, interception unavailable"
+msgstr ""
+
+msgid "Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log."
+msgstr ""
+
+msgid "Save"
+msgstr ""
+
+msgid "Save & apply"
+msgstr ""
+
+msgid "Save & apply validates and loads the configured nftables tables."
+msgstr ""
+
+msgid "Saved"
+msgstr ""
+
+msgid "Saving and applying rules..."
+msgstr ""
+
+msgid "Saving rules..."
+msgstr ""
+
+msgid "Scheduled disable"
+msgstr ""
+
+msgid "Select a valid access point BSSID."
+msgstr ""
+
+msgid "Select an AP and assign one virtual location to all devices connected through it."
+msgstr ""
+
+msgid "Select one AP by BSSID. Its location and scheduled disable apply to this AP only."
+msgstr ""
+
+msgid "Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s."
+msgstr ""
+
+msgid "Service settings"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start."
+msgstr ""
+
+msgid "Size"
+msgstr ""
+
+msgid "SOCKS5 proxy"
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Stopped"
+msgstr ""
+
+msgid "Success"
+msgstr ""
+
+msgid "Syntax check failed."
+msgstr ""
+
+msgid "The BSSID must be an individual unicast address."
+msgstr ""
+
+msgid "The configured tables currently loaded in the kernel."
+msgstr ""
+
+msgid "The dynamic IP set name is apple_wloc_v4 and it must use type ipv4_addr with the timeout flag. WLOC refreshes it immediately when rules are applied and every five minutes afterward."
+msgstr ""
+
+msgid "The nftables syntax check passed."
+msgstr ""
+
+msgid "The Root CA was regenerated. Reinstall and trust it on the iPhone."
+msgstr ""
+
+msgid "The service is not running. Check the system log for the startup error."
+msgstr ""
+
+msgid "Unable to apply nftables rules."
+msgstr ""
+
+msgid "Unable to read nftables rules."
+msgstr ""
+
+msgid "Unable to save nftables rules."
+msgstr ""
+
+msgid "Unavailable"
+msgstr ""
+
+msgid "Unavailable AP"
+msgstr ""
+
+msgid "unknown"
+msgstr ""
+
+msgid "Unknown"
+msgstr ""
+
+msgid "unknown interface"
+msgstr ""
+
+msgid "Unnamed AP"
+msgstr ""
+
+msgid "Unsaved changes"
+msgstr ""
+
+msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
+msgstr ""
+
+msgid "Version %s · Assign one Apple WLOC location to each selected AP."
+msgstr ""
+
+msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."
+msgstr ""
+
+msgid "Failed to apply nftables rules."
+msgstr ""
+
+msgid "invalid request"
+msgstr ""
+
+msgid "nftables syntax check failed"
+msgstr ""
+
+msgid "Only top-level table declarations are allowed."
+msgstr ""
+
+msgid "runtime interception rules are missing"
+msgstr ""
+
+msgid "runtime rule refresh failed; interception is disabled"
+msgstr ""
+
+msgid "service is not running; check the system log"
+msgstr ""
+
+msgid "transparent-proxy rule order conflict; see the runtime log"
+msgstr ""
+
+msgid "unknown method"
+msgstr ""
+
+msgid "WLOC"
+msgstr ""

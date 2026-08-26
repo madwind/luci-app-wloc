@@ -117,8 +117,9 @@ PACKAGE_DST="$SDK_DIR/package/luci-app-wloc"
 case "$PACKAGE_DST" in "$SDK_DIR/package/"*) ;; *) echo 'unsafe package destination' >&2; exit 1;; esac
 rm -rf "$PACKAGE_DST"
 mkdir -p "$PACKAGE_DST"
-cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/Cargo.toml" "$PROJECT/Cargo.lock" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
-cp -a "$PROJECT/src" "$PROJECT/openwrt" "$PACKAGE_DST/"
+cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
+cp -a "$PROJECT/src" "$PROJECT/htdocs" "$PROJECT/root" "$PACKAGE_DST/"
+[ -d "$PROJECT/po" ] && cp -a "$PROJECT/po" "$PACKAGE_DST/"
 
 echo 'Installing LuCI package definitions'
 (

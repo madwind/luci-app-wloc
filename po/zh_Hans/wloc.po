@@ -1,0 +1,480 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: luci-app-wloc\n"
+"POT-Creation-Date: 2026-08-26\n"
+"PO-Revision-Date: 2026-08-26\n"
+"Last-Translator: luci-app-wloc maintainers\n"
+"Language-Team: none\n"
+"Language: zh_Hans\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "# No custom nftables tables are active."
+msgstr "# 当前没有活动的自定义 nftables 表。"
+
+msgid "%d days ago"
+msgstr "%d 天前"
+
+msgid "%d hr ago"
+msgstr "%d 小时前"
+
+msgid "%d min ago"
+msgstr "%d 分钟前"
+
+msgid "%d/%d table(s) active"
+msgstr "已激活 %d/%d 个表"
+
+msgid "1 day ago"
+msgstr "1 天前"
+
+msgid "1 hr ago"
+msgstr "1 小时前"
+
+msgid "1 min ago"
+msgstr "1 分钟前"
+
+msgid "Access point (BSSID)"
+msgstr "接入点（BSSID）"
+
+msgid "Action failed: %s"
+msgstr "操作失败：%s"
+
+msgid "active nftables configuration"
+msgstr "活动 nftables 配置"
+
+msgid "Active nftables rules"
+msgstr "活动 nftables 规则"
+
+msgid "Active state"
+msgstr "活动状态"
+
+msgid "Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio."
+msgstr "在此期间通过临时应用 wireless disabled=1 并重新加载 WiFi 来实际禁用匹配的 OpenWrt AP。不会提交任何配置，之后将恢复原值。BSSID 模式需要精确的 AP 接口或 wifi-iface 映射，不会回退到整个无线电台。"
+
+msgid "Add AP"
+msgstr "添加 AP"
+
+msgid "After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings."
+msgstr "安装描述文件后，请在 iOS 证书信任设置中显式启用完全信任。"
+
+msgid "AP discovery"
+msgstr "AP 发现"
+
+msgid "AP location"
+msgstr "AP 位置"
+
+msgid "AP status"
+msgstr "AP 状态"
+
+msgid "B"
+msgstr "B"
+
+msgid "Check syntax"
+msgstr "检查语法"
+
+msgid "Checking the editor contents with nft --check..."
+msgstr "正在使用 nft --check 检查编辑器内容..."
+
+msgid "Configured AP"
+msgstr "已配置的 AP"
+
+msgid "configured in wireless"
+msgstr "在 wireless 中配置"
+
+msgid "Country: %s"
+msgstr "国家/地区：%s"
+
+msgid "Current-session in-memory log"
+msgstr "当前会话内存日志"
+
+msgid "Direct"
+msgstr "直连"
+
+msgid "Disable from"
+msgstr "禁用开始"
+
+msgid "Disabled"
+msgstr "已禁用"
+
+msgid "Download CA profile"
+msgstr "下载 CA 描述文件"
+
+msgid "Edit the complete WLOC nftables ruleset. An empty file means that no interception rules are loaded."
+msgstr "编辑完整的 WLOC nftables 规则集。空文件表示未加载任何拦截规则。"
+
+msgid "Editor state"
+msgstr "编辑器状态"
+
+msgid "Enable location interception"
+msgstr "启用位置拦截"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Enter a number from %s to %s."
+msgstr "请输入 %s 到 %s 之间的数字。"
+
+msgid "Enter a time in HH:MM format."
+msgstr "请以 HH:MM 格式输入时间。"
+
+msgid "Enter a valid proxy hostname or IP address."
+msgstr "请输入有效的代理主机名或 IP 地址。"
+
+msgid "Enter an IPv4 or IPv6 address first."
+msgstr "请先输入 IPv4 或 IPv6 地址。"
+
+msgid "File"
+msgstr "文件"
+
+msgid "Fill from IP location"
+msgstr "从 IP 位置填充"
+
+msgid "Firewall"
+msgstr "防火墙"
+
+msgid "Firewall file"
+msgstr "防火墙文件"
+
+msgid "Fixed virtual baseline for every device connected through this AP."
+msgstr "通过此 AP 连接的每个设备的固定虚拟基线位置。"
+
+msgid "Format"
+msgstr "格式化"
+
+msgid "Generated on first start"
+msgstr "首次启动时生成"
+
+msgid "Hidden SSID"
+msgstr "隐藏 SSID"
+
+msgid "Hostname or IP address of the outbound proxy. DNS for the Apple destination is resolved by the proxy."
+msgstr "出站代理的主机名或 IP 地址。Apple 目的地的 DNS 由代理解析。"
+
+msgid "HTTP CONNECT and SOCKS5 proxies without authentication are supported."
+msgstr "支持无需认证的 HTTP CONNECT 和 SOCKS5 代理。"
+
+msgid "HTTP proxy"
+msgstr "HTTP 代理"
+
+msgid "If the end is earlier than the start, the window crosses midnight. Equal times mean all day."
+msgstr "如果结束时间早于开始时间，则时间窗口跨越午夜。开始和结束相同表示全天。"
+
+msgid "Enable runtime log"
+msgstr "启用运行时日志"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Failed: %s"
+msgstr "失败：%s"
+
+msgid "iPhone root certificate"
+msgstr "iPhone 根证书"
+
+msgid "interception is not ready"
+msgstr "拦截未就绪"
+
+msgid "Interception is unavailable. Check the runtime log."
+msgstr "拦截不可用。请查看运行时日志。"
+
+msgid "IP address"
+msgstr "IP 地址"
+
+msgid "ipinfo.io returned HTTP %s"
+msgstr "ipinfo.io 返回 HTTP %s"
+
+msgid "ipinfo.io returned no valid coordinates"
+msgstr "ipinfo.io 未返回有效坐标"
+
+msgid "IP location"
+msgstr "IP 位置"
+
+msgid "Just now"
+msgstr "刚刚"
+
+msgid "Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates."
+msgstr "将详细的请求和坐标事件保存在内存中，直到服务重启。保持禁用可避免持续的日志分配和更新。"
+
+msgid "Last result"
+msgstr "上次结果"
+
+msgid "Last updated"
+msgstr "上次更新"
+
+msgid "Latitude"
+msgstr "纬度"
+
+msgid "Live AP data is not ready; choices are loaded from the saved wireless configuration."
+msgstr "实时 AP 数据未就绪；选项从已保存的 wireless 配置加载。"
+
+msgid "Loaded"
+msgstr "已加载"
+
+msgid "Loading"
+msgstr "加载中"
+
+msgid "Local listen port"
+msgstr "本地监听端口"
+
+msgid "Location details unavailable"
+msgstr "位置详情不可用"
+
+msgid "Longitude"
+msgstr "经度"
+
+msgid "Looking up with ipinfo.io…"
+msgstr "正在通过 ipinfo.io 查询…"
+
+msgid "Lookup failed: %s"
+msgstr "查询失败：%s"
+
+msgid "Lookup result"
+msgstr "查询结果"
+
+msgid "Never"
+msgstr "从未"
+
+msgid "nftables configuration"
+msgstr "nftables 配置"
+
+msgid "nftables ruleset"
+msgstr "nftables 规则集"
+
+msgid "No active AP BSSID was found. WiFi may still be starting; try again shortly."
+msgstr "未找到活动的 AP BSSID。WiFi 可能仍在启动，请稍后再试。"
+
+msgid "No AP is currently visible. Existing saved BSSID values remain selectable, but a new BSSID needs the wireless interface to be available."
+msgstr "当前没有可见的 AP。已保存的 BSSID 仍可被选择，但新的 BSSID 需要无线接口可用。"
+
+msgid "No events in this session yet."
+msgstr "本会话尚无事件。"
+
+msgid "No lookup performed."
+msgstr "尚未执行查询。"
+
+msgid "no safe prerouting priority was found"
+msgstr "未找到安全的 prerouting 优先级"
+
+msgid "none"
+msgstr "无"
+
+msgid "Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted."
+msgstr "通常无需更改。如果所选端口被占用，启动会安全退出；只有通过已启用 AP 经 TCP 443 连接 Apple WLOC 的设备才会被拦截。"
+
+msgid "not currently active"
+msgstr "当前未活动"
+
+msgid "Not loaded"
+msgstr "未加载"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "On"
+msgstr "开启"
+
+msgid "Outbound"
+msgstr "出站方式"
+
+msgid "Proxy host"
+msgstr "代理主机"
+
+msgid "Proxy port"
+msgstr "代理端口"
+
+msgid "Reason: %s"
+msgstr "原因：%s"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Refresh AP list"
+msgstr "刷新 AP 列表"
+
+msgid "Regenerate CA"
+msgstr "重新生成 CA"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Restart failed: %s"
+msgstr "重启失败：%s"
+
+msgid "Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s"
+msgstr "重启未完成。WLOC prerouting 优先级：%s。发现代理优先级：%s。原因：%s"
+
+msgid "Restore at"
+msgstr "恢复时间"
+
+msgid "Retry AP discovery after WiFi or the router has restarted. The page reloads only after at least one BSSID is found."
+msgstr "在 WiFi 或路由器重启后重试 AP 发现。仅在找到至少一个 BSSID 后才会重新加载页面。"
+
+msgid "Root CA SHA-256: "
+msgstr "根证书 SHA-256："
+
+msgid "Rules formatted. Review the changes before saving."
+msgstr "规则已格式化。保存前请复查更改。"
+
+msgid "Rules saved and applied."
+msgstr "规则已保存并应用。"
+
+msgid "Rules saved but not applied."
+msgstr "规则已保存但未应用。"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Running, interception unavailable"
+msgstr "运行中，拦截不可用"
+
+msgid "Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log."
+msgstr "运行时日志已禁用。请在服务设置中启用并点击保存并应用，以开始新的内存日志。"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Save & apply"
+msgstr "保存并应用"
+
+msgid "Save & apply validates and loads the configured nftables tables."
+msgstr "保存并应用会校验并加载已配置的 nftables 表。"
+
+msgid "Saved"
+msgstr "已保存"
+
+msgid "Saving and applying rules..."
+msgstr "正在保存并应用规则..."
+
+msgid "Saving rules..."
+msgstr "正在保存规则..."
+
+msgid "Scheduled disable"
+msgstr "定时禁用"
+
+msgid "Select a valid access point BSSID."
+msgstr "请选择有效的接入点 BSSID。"
+
+msgid "Select an AP and assign one virtual location to all devices connected through it."
+msgstr "选择一个 AP，并为通过它连接的所有设备分配一个虚拟位置。"
+
+msgid "Select one AP by BSSID. Its location and scheduled disable apply to this AP only."
+msgstr "按 BSSID 选择一个 AP。其位置和定时禁用设置仅适用于该 AP。"
+
+msgid "Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s."
+msgstr "服务已重启。WLOC prerouting 优先级：%s。发现代理优先级：%s。"
+
+msgid "Service settings"
+msgstr "服务设置"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start."
+msgstr "显示收到的请求、上游响应以及修补前后的坐标。仅存储在 /var/run 中，每次服务启动时清除。"
+
+msgid "Size"
+msgstr "大小"
+
+msgid "SOCKS5 proxy"
+msgstr "SOCKS5 代理"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Success"
+msgstr "成功"
+
+msgid "Syntax check failed."
+msgstr "语法检查失败。"
+
+msgid "The BSSID must be an individual unicast address."
+msgstr "BSSID 必须是独立的单播地址。"
+
+msgid "The configured tables currently loaded in the kernel."
+msgstr "当前加载到内核中的已配置表。"
+
+msgid "The dynamic IP set name is apple_wloc_v4 and it must use type ipv4_addr with the timeout flag. WLOC refreshes it immediately when rules are applied and every five minutes afterward."
+msgstr "动态 IP 集合名称为 apple_wloc_v4，必须使用带 timeout 标志的 ipv4_addr 类型。WLOC 在规则应用时立即刷新，之后每五分钟刷新一次。"
+
+msgid "The nftables syntax check passed."
+msgstr "nftables 语法检查通过。"
+
+msgid "The Root CA was regenerated. Reinstall and trust it on the iPhone."
+msgstr "根证书已重新生成。请在 iPhone 上重新安装并信任。"
+
+msgid "The service is not running. Check the system log for the startup error."
+msgstr "服务未运行。请在系统日志中查看启动错误。"
+
+msgid "Unable to apply nftables rules."
+msgstr "无法应用 nftables 规则。"
+
+msgid "Unable to read nftables rules."
+msgstr "无法读取 nftables 规则。"
+
+msgid "Unable to save nftables rules."
+msgstr "无法保存 nftables 规则。"
+
+msgid "Unavailable"
+msgstr "不可用"
+
+msgid "Unavailable AP"
+msgstr "不可用的 AP"
+
+msgid "unknown"
+msgstr "未知"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "unknown interface"
+msgstr "未知接口"
+
+msgid "Unnamed AP"
+msgstr "未命名 AP"
+
+msgid "Unsaved changes"
+msgstr "未保存的更改"
+
+msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
+msgstr "在此浏览器中使用 ipinfo.io 填写 AP 位置坐标。"
+
+msgid "Version %s · Assign one Apple WLOC location to each selected AP."
+msgstr "版本 %s · 为每个选定的 AP 分配一个 Apple WLOC 位置。"
+
+msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."
+msgstr "自定义表已应用，但无法刷新 Apple WLOC 地址。"
+
+msgid "Failed to apply nftables rules."
+msgstr "应用 nftables 规则失败。"
+
+msgid "invalid request"
+msgstr "请求无效"
+
+msgid "nftables syntax check failed"
+msgstr "nftables 语法检查失败"
+
+msgid "Only top-level table declarations are allowed."
+msgstr "仅允许顶层 table 声明。"
+
+msgid "runtime interception rules are missing"
+msgstr "运行时拦截规则缺失"
+
+msgid "runtime rule refresh failed; interception is disabled"
+msgstr "运行时规则刷新失败；拦截已禁用"
+
+msgid "service is not running; check the system log"
+msgstr "服务未运行；请查看系统日志"
+
+msgid "transparent-proxy rule order conflict; see the runtime log"
+msgstr "透明代理规则顺序冲突；请查看运行时日志"
+
+msgid "unknown method"
+msgstr "未知方法"
+
+msgid "WLOC"
+msgstr "WLOC"
