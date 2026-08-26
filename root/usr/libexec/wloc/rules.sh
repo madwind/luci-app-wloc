@@ -126,7 +126,9 @@ resolve_hosts() {
 		while [ "$sample" -lt "$DNS_SAMPLES" ]; do
 			# BusyBox nslookup prints the DNS server as an Address before the
 			# answer Name. Parse only Address lines in the answer section.
-			for resolved_ip in $(nslookup "$host" 2>/dev/null \
+			# Use the local resolver explicitly because some resolv.conf files
+			# contain inline comments that break BusyBox nslookup's server parsing.
+			for resolved_ip in $(nslookup "$host" 127.0.0.1 2>/dev/null \
 				| sed -n '/^Name:[[:space:]]/,$ s/^Address[^:]*:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p'); do
 				valid_ipv4 "$resolved_ip" || continue
 				case " $addresses " in
