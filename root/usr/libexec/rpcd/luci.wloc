@@ -310,30 +310,6 @@ EOF
 	json_dump
 }
 
-emit_test() {
-	local table_dump attempts intercepted counters
-	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
-	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned AP redirect/ {
-			if (match($0, /counter packets [0-9]+/)) {
-				value = substr($0, RSTART + 16, RLENGTH - 16)
-				attempts += value
-				intercepted += value
-			}
-		}
-		END { print attempts + 0, intercepted + 0 }')"
-	attempts="${counters%% *}"
-	intercepted="${counters#* }"
-	json_init
-	pidof wlocd >/dev/null 2>&1 && json_add_boolean daemon 1 || json_add_boolean daemon 0
-	[ -n "$table_dump" ] && json_add_boolean nftables 1 || json_add_boolean nftables 0
-	printf '%s\n' "$table_dump" | grep -q 'elements = {' && json_add_boolean lease 1 || json_add_boolean lease 0
-	[ -s /www/wloc-ca.mobileconfig ] && json_add_boolean mobileconfig 1 || json_add_boolean mobileconfig 0
-	json_add_int interception_attempts "${attempts:-0}"
-	json_add_int intercepted_packets "${intercepted:-0}"
-	json_dump
-}
-
 emit_access_points() {
 	local object status ssid bssid interface
 	json_init
@@ -399,7 +375,7 @@ emit_configured_access_points() {
 case "$1" in
 list)
 	json_init
-	for method in status access_points configured_access_points restart disable regenerate_ca cleanup test logs firewall_read firewall_validate firewall_save firewall_apply; do
+	for method in status access_points configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
 		json_add_object "$method"
 		case "$method" in firewall_validate|firewall_save) json_add_string config '';; esac
 		json_close_object
@@ -437,7 +413,6 @@ call)
 		"$RULES" cleanup
 		emit_status
 		;;
-	test) emit_test;;
 	logs)
 		load_runtime_state
 		json_init

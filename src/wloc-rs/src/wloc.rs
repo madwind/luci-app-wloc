@@ -579,7 +579,8 @@ where
     })
 }
 
-pub fn patch_response(body: &[u8], target: PatchTarget) -> Result<PatchedResponse, WlocError> {
+#[cfg(test)]
+fn patch_response(body: &[u8], target: PatchTarget) -> Result<PatchedResponse, WlocError> {
     patch_response_with(body, &mut |_| target)
 }
 

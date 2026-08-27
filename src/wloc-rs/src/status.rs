@@ -151,10 +151,6 @@ impl Status {
             .runtime_log_enabled
     }
 
-    pub fn update(&self, event: &str, error: Option<&str>, mutate: impl FnOnce(&mut Counters<'_>)) {
-        self.update_detail(event, "", error, mutate);
-    }
-
     pub fn update_detail(
         &self,
         event: &str,

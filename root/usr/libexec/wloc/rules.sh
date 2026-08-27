@@ -192,7 +192,6 @@ table_healthy() {
 		-v port="$1" '
 		$1 == "set" {
 			current_set = $2
-			in_host = ($2 == host_set)
 			if ($2 == ap_interface_set) ap_interface = 1
 			if ($2 == host_set) host = 1
 		}
@@ -200,10 +199,8 @@ table_healthy() {
 		current_set == host_set && $1 == "type" && $2 == "ipv4_addr" { host_type = 1 }
 		current_set == ap_interface_set && $1 == "flags" && $2 == "timeout" { ap_timeout = 1 }
 		current_set == host_set && $1 == "flags" && $2 == "timeout" { host_timeout = 1 }
-		in_host && $1 == "elements" && $2 == "=" && $3 == "{" { host_elements = 1 }
 		$1 == "chain" {
 			current_set = ""
-			in_host = 0
 			in_redirect = ($2 == "redirect_prerouting")
 			if (in_redirect) redirect_chain = 1
 		}
@@ -356,39 +353,6 @@ analyze_prerouting_proxies() {
 	' | sort -t '|' -k2,2n -k3,3 -k4,4 -k5,5
 }
 
-choose_wloc_priority() {
-	local analysis numeric family table_name chain priority_text verdict via earliest selected unknown
-	analysis="$(analyze_prerouting_proxies)" || {
-		echo 'wloc: unable to inspect nftables prerouting order' >&2
-		return 1
-	}
-	earliest=''
-	unknown=0
-	while IFS='|' read -r record numeric family table_name chain priority_text verdict via; do
-		[ "$record" = PROXY ] || continue
-		if [ "$numeric" = unknown ]; then
-			unknown=1
-			continue
-		fi
-		[ -n "$earliest" ] && [ "$numeric" -ge "$earliest" ] || earliest="$numeric"
-	done <<EOF
-$analysis
-EOF
-	[ "$unknown" -eq 0 ] || {
-		echo 'wloc: a transparent-proxy prerouting priority could not be parsed' >&2
-		return 1
-	}
-	selected="$DEFAULT_PRIORITY"
-	if [ -n "$earliest" ] && [ "$earliest" -le "$selected" ]; then
-		selected=$((earliest - 1))
-	fi
-	[ "$selected" -ge "$MIN_SAFE_PRIORITY" ] || {
-		echo "wloc: earliest transparent-proxy priority $earliest leaves no safe post-conntrack priority" >&2
-		return 1
-	}
-	printf '%s' "$selected"
-}
-
 write_priority_details() {
 	local analysis
 	analysis="$(analyze_prerouting_proxies)" || return 1
@@ -434,21 +398,6 @@ read_wloc_priority() {
 read_wloc_chain() {
 	nft list chain inet "$TABLE" mark_prerouting >/dev/null 2>&1 \
 		&& printf '%s' mark_prerouting || printf '%s' redirect_prerouting
-}
-
-order_healthy() {
-	local own_priority analysis record numeric family table_name chain priority_text verdict via
-	own_priority="$(read_wloc_priority)"
-	case "$own_priority" in ''|*[!0-9-]*) return 1;; esac
-	analysis="$(analyze_prerouting_proxies)" || return 1
-	while IFS='|' read -r record numeric family table_name chain priority_text verdict via; do
-		[ "$record" = PROXY ] || continue
-		case "$numeric" in unknown|''|*[!0-9-]*) return 1;; esac
-		[ "$own_priority" -lt "$numeric" ] || return 1
-	done <<EOF
-$analysis
-EOF
-	return 0
 }
 
 order_check_due() {
@@ -529,15 +478,6 @@ EOF
 	fi
 	mark_order_checked
 	return 0
-}
-
-rules_healthy() {
-	local port="$1" table_dump
-	table_dump="$(nft list table inet "$TABLE" 2>/dev/null)" || return 1
-	printf '%s\n' "$table_dump" | table_healthy "$port" || return 1
-	order_check_due || return 0
-	order_healthy || return 1
-	mark_order_checked
 }
 
 apply_rules() {
