@@ -254,14 +254,11 @@ msgstr "本会话尚无事件。"
 msgid "No lookup performed."
 msgstr "尚未执行查询。"
 
-msgid "no safe prerouting priority was found"
-msgstr "未找到安全的 prerouting 优先级"
-
 msgid "none"
 msgstr "无"
 
-msgid "Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted."
-msgstr "通常无需更改。如果所选端口被占用，启动会安全退出；只有通过已启用 AP 经 TCP 443 连接 Apple WLOC 的设备才会被拦截。"
+msgid "Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Startup stops safely if the selected port is occupied or the redirect port does not match."
+msgstr "通常无需更改。如果更改，nftables 编辑器中的 WLOC 重定向规则必须使用相同端口。如果所选端口被占用或重定向端口不匹配，启动将安全停止。"
 
 msgid "not currently active"
 msgstr "当前未活动"

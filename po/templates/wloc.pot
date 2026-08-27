@@ -253,13 +253,10 @@ msgstr ""
 msgid "No lookup performed."
 msgstr ""
 
-msgid "no safe prerouting priority was found"
-msgstr ""
-
 msgid "none"
 msgstr ""
 
-msgid "Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted."
+msgid "Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Startup stops safely if the selected port is occupied or the redirect port does not match."
 msgstr ""
 
 msgid "not currently active"
