@@ -173,7 +173,7 @@ APK="$DIST_DIR/$(basename "$APK")"
 READELF="$(find "$SDK_DIR/staging_dir" -type f -name "$READELF_NAME" -print -quit)"
 [ -x "$READELF" ] || READELF=readelf
 APK_TOOL="$(find "$SDK_DIR/staging_dir/host"* -type f -path '*/bin/apk' -print -quit)"
-BIN="$(find "$SDK_DIR/build_dir" -path "*/luci-app-wloc-${PACKAGE_VERSION}/.pkgdir/luci-app-wloc/usr/sbin/wlocd" -type f -print -quit)"
+BIN="$(find "$SDK_DIR/build_dir" -path '*/.pkgdir/luci-app-wloc/usr/sbin/wlocd' -type f -print -quit)"
 [ -n "$BIN" ] && [ -f "$BIN" ] || { echo 'built wlocd was not found' >&2; exit 1; }
 
 echo 'Verifying ELF and package metadata'
