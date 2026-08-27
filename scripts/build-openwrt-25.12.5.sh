@@ -111,7 +111,7 @@ fi
 rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
 rustup target add --toolchain "$RUST_TOOLCHAIN" "$RUST_TARGET"
 export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
-(cd "$PROJECT" && cargo fetch --locked)
+(cd "$PROJECT/src/wloc-rs" && cargo fetch --locked)
 
 PACKAGE_DST="$SDK_DIR/package/luci-app-wloc"
 case "$PACKAGE_DST" in "$SDK_DIR/package/"*) ;; *) echo 'unsafe package destination' >&2; exit 1;; esac

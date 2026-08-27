@@ -4,7 +4,7 @@ RUST_TARGET ?= $(error RUST_TARGET is not set)
 
 # luci.mk copies src/ to PKG_BUILD_DIR/src and runs make from there, but the
 # Cargo.toml that should drive the build is at the top of PKG_BUILD_DIR.
-CARGO_BUILD_DIR := $(CURDIR)
+CARGO_BUILD_DIR := $(CURDIR)/wloc-rs
 ifneq ($(wildcard $(CURDIR)/../Cargo.toml),)
   CARGO_BUILD_DIR := $(CURDIR)/..
 endif
