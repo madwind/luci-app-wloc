@@ -107,10 +107,7 @@ struct H2Entry {
     sender: h2::client::SendRequest<Bytes>,
 }
 
-fn first_matching_rule<'a>(
-    rules: &'a [LocationRule],
-    bssid: Option<MacAddress>,
-) -> Option<&'a LocationRule> {
+fn first_matching_rule(rules: &[LocationRule], bssid: Option<MacAddress>) -> Option<&LocationRule> {
     bssid.and_then(|bssid| rules.iter().find(|rule| rule.bssid == bssid))
 }
 
