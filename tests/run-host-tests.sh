@@ -8,6 +8,7 @@ HTDOCS="$ROOT/htdocs"
 RULES="$ROOTFS/usr/libexec/wloc/rules.sh"
 SCHEDULE="$ROOTFS/usr/libexec/wloc/wifi-schedule.sh"
 AP_TEST="$ROOT/tests/wireless-section-discovery.test.js"
+AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 
 fail() {
 	echo "host tests: FAIL: $*" >&2
@@ -27,6 +28,7 @@ done
 [ -d "$HTDOCS" ] || fail "htdocs directory not found"
 [ -f "$RULES" ] || fail "rules.sh not found"
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
+[ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
 
 
 echo '==> Shell syntax'
@@ -68,6 +70,11 @@ done < <(
 echo '==> JavaScript behavior'
 
 node "$AP_TEST"
+
+
+echo '==> AP resolver behavior'
+
+sh "$AP_RESOLVER_TEST"
 
 
 echo '==> WLOC shell behavior'
