@@ -9,10 +9,6 @@ HOST_SET=apple_wloc_v4
 # The RPC apply transaction updates this snapshot only after nft succeeds, so
 # DNS maintenance follows the active configuration rather than unsaved state.
 CUSTOM_FIREWALL=/var/run/wloc/firewall.applied.nft
-DEFAULT_PRIORITY=-105
-# REDIRECT needs conntrack/NAT state. Stay strictly after conntrack (-200),
-# while moving ahead of the earliest detected transparent-proxy base chain.
-MIN_SAFE_PRIORITY=-199
 STAMP=/var/run/wloc/hosts.refreshed
 DNS_ATTEMPT_STAMP=/var/run/wloc/hosts.attempted
 ORDER_STATE=/var/run/wloc/order-conflict
@@ -210,7 +206,7 @@ table_healthy() {
 			&& index($0, "comment \"wloc owned AP redirect\"") { ap_redirect = 1 }
 		END {
 			exit !(ap_interface && ap_type && ap_timeout \
-				&& host && host_type && host_timeout && host_elements && redirect_chain \
+				&& host && host_type && host_timeout && redirect_chain \
 				&& redirect_hook && ap_redirect)
 		}
 	'
@@ -460,6 +456,10 @@ check_prerouting_order() {
 			return 1
 			;;
 	esac
+
+	printf '%s\n' "$own_priority" >"$PRIORITY_STATE"
+  write_priority_details || true
+
 	logger -t wlocd "ORDER: WLOC table=$TABLE chain=$own_chain numeric=$own_priority stage=first" 2>/dev/null || true
 	echo "wloc: ORDER: WLOC table=$TABLE chain=$own_chain numeric=$own_priority stage=first" >&2
 	order_conflict=0

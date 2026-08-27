@@ -7,11 +7,10 @@ table inet wloc {
 	set apple_wloc_v4 {
 		type ipv4_addr
 		flags timeout
-		elements = { 127.0.0.1 timeout 1s }
 	}
 
 	chain redirect_prerouting {
-		type nat hook prerouting priority -105; policy accept;
+		type nat hook prerouting priority mangle - 2; policy accept;
 		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
 	}
 }

@@ -122,37 +122,30 @@ fi
 
 echo '  -> nftables table health'
 
-healthy_table_fixture='table inet wloc {
-	set target_ap_interfaces {
-		type ifname
-		flags timeout
-	}
+empty_host_set_fixture='table inet wloc {
+    set target_ap_interfaces {
+        type ifname
+        flags timeout
+    }
 
-	set apple_wloc_v4 {
-		type ipv4_addr
-		flags timeout
-		elements = { 17.0.0.1 timeout 14m }
-	}
+    set apple_wloc_v4 {
+        type ipv4_addr
+        flags timeout
+    }
 
-	chain redirect_prerouting {
-		type nat hook prerouting priority -105; policy accept;
-		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 meta l4proto tcp tcp dport 443 counter redirect to :61520 comment "wloc owned AP redirect"
-	}
+    chain redirect_prerouting {
+        type nat hook prerouting priority -105; policy accept;
+        iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
+    }
 }'
 
-printf '%s\n' "$healthy_table_fixture" \
-	| table_healthy 61520 \
-	|| fail 'table_healthy rejected a healthy WLOC table'
+printf '%s\n' "$empty_host_set_fixture" \
+    | table_healthy 61520 \
+    || fail 'table_healthy rejected a valid table with an empty host set'
 
 if printf '%s\n' "$healthy_table_fixture" \
 	| table_healthy 61521; then
 	fail 'table_healthy accepted the wrong redirect port'
-fi
-
-if printf '%s\n' "$healthy_table_fixture" \
-	| sed '/elements =/d' \
-	| table_healthy 61520; then
-	fail 'table_healthy accepted an empty host set'
 fi
 
 if printf '%s\n' "$healthy_table_fixture" \
