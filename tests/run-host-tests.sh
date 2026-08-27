@@ -135,7 +135,7 @@ empty_host_set_fixture='table inet wloc {
 
 	chain redirect_prerouting {
 		type nat hook prerouting priority mangle - 2; policy accept;
-		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
+		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned AP redirect"
 	}
 }'
 
@@ -149,6 +149,12 @@ if printf '%s\n' "$empty_host_set_fixture" \
 fi
 
 if printf '%s\n' "$empty_host_set_fixture" \
+	| sed 's/ counter / /' \
+	| table_healthy 61520; then
+	fail 'table_healthy accepted a redirect rule without counter'
+fi
+
+if printf '%s\n' "$empty_host_set_fixture" \
 	| sed '/flags timeout/d' \
 	| table_healthy 61520; then
 	fail 'table_healthy accepted sets without timeout'
@@ -158,6 +164,44 @@ if printf '%s\n' "$empty_host_set_fixture" \
 	| sed '/wloc owned AP redirect/d' \
 	| table_healthy 61520; then
 	fail 'table_healthy accepted a missing redirect rule'
+fi
+
+
+echo '  -> AP interface synchronization'
+
+hostapd_interfaces() {
+	case "$1" in
+		aa:bb:cc:dd:ee:01) printf '%s\n' wlan0;;
+		aa:bb:cc:dd:ee:02) printf '%s\n' wlan0-1;;
+		aa:bb:cc:dd:ee:03) printf '%s\n' wlan0;;
+		*) return 0;;
+	esac
+}
+
+nft() {
+	[ "${1:-}" = '-f' ] && [ "${2:-}" = '-' ] || fail "unexpected nft invocation: $*"
+	cat
+}
+
+expected_ap_batch='flush set inet wloc target_ap_interfaces
+add element inet wloc target_ap_interfaces { "wlan0" timeout 30s }
+add element inet wloc target_ap_interfaces { "wlan0-1" timeout 30s }'
+[ "$(sync_ap_interfaces \
+	'aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')" = "$expected_ap_batch" ] \
+	|| fail 'sync_ap_interfaces generated an unexpected AP set batch'
+
+expected_duplicate_batch='flush set inet wloc target_ap_interfaces
+add element inet wloc target_ap_interfaces { "wlan0" timeout 30s }'
+[ "$(sync_ap_interfaces \
+	'aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:03')" = "$expected_duplicate_batch" ] \
+	|| fail 'sync_ap_interfaces did not deduplicate interfaces'
+
+expected_empty_batch='flush set inet wloc target_ap_interfaces'
+[ "$(sync_ap_interfaces 'aa:bb:cc:dd:ee:04')" = "$expected_empty_batch" ] \
+	|| fail 'sync_ap_interfaces did not fail open for an unavailable AP'
+
+if sync_ap_interfaces 'not-a-bssid'; then
+	fail 'sync_ap_interfaces accepted an invalid BSSID'
 fi
 
 

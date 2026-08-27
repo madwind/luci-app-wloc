@@ -21,8 +21,17 @@ DNS_SAMPLES=1
 DNS_REFRESH_SECONDS=300
 DNS_RETRY_SECONDS=60
 ORDER_CHECK_SECONDS=60
+AP_INTERFACE_TIMEOUT=30s
+
+clear_ap_interfaces() {
+	nft list set inet "$TABLE" "$AP_INTERFACE_SET" >/dev/null 2>&1 ||
+		return 0
+	nft flush set inet "$TABLE" "$AP_INTERFACE_SET" >/dev/null 2>&1 ||
+		return 1
+}
 
 cleanup() {
+	clear_ap_interfaces || true
 	rm -f "$STAMP" "$DNS_ATTEMPT_STAMP" "$ORDER_STATE" "$ORDER_CHECK_STAMP" \
 		"$PRIORITY_STATE" "$PRIORITY_DETAILS"
 }
@@ -202,6 +211,7 @@ table_healthy() {
 		in_redirect && index($0, "iifname @" ap_interface_set) \
 			&& index($0, "ip daddr @" host_set) \
 			&& index($0, "tcp dport 443") \
+			&& index($0, "counter") \
 			&& index($0, "redirect to :" port) \
 			&& index($0, "comment \"wloc owned AP redirect\"") { ap_redirect = 1 }
 		END {
@@ -210,6 +220,21 @@ table_healthy() {
 				&& redirect_hook && ap_redirect)
 		}
 	'
+}
+
+ensure_table_healthy() {
+	local port table_dump
+
+	port="$1"
+	table_dump="$(nft list table inet "$TABLE" 2>/dev/null)" || {
+		echo "wloc: table inet $TABLE is not loaded" >&2
+		return 1
+	}
+
+	printf '%s\n' "$table_dump" | table_healthy "$port" || {
+		echo "wloc: table inet $TABLE does not match the required WLOC layout or redirect port $port" >&2
+		return 1
+	}
 }
 
 analyze_prerouting_proxies() {
@@ -518,12 +543,9 @@ rules_healthy() {
 apply_rules() {
 	local port
 	port="$1"
-	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; exit 1; }
-	nft list table inet "$TABLE" >/dev/null 2>&1 || {
-		echo 'wloc: table inet wloc is not loaded; save and apply it in the nftables editor' >&2
-		return 1
-	}
-	refresh_hosts
+	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
+	ensure_table_healthy "$port" || return 1
+	refresh_hosts || return 1
 	check_prerouting_order || true
 }
 
@@ -538,14 +560,15 @@ normalize_mac() {
 
 hostapd_interfaces() {
 	local wanted object status bssid interface
-	wanted="$1"
+	wanted="$(normalize_mac "$1")"
+	valid_mac "$wanted" || return 1
 	for object in $(ubus -S -t 3 list 'hostapd.*' 2>/dev/null || true); do
 		case "$object" in hostapd.*) :;; *) continue;; esac
 		status="$(ubus -S -t 3 call "$object" get_status '{}' 2>/dev/null || true)"
 		[ -n "$status" ] || continue
 		bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
 		bssid="$(normalize_mac "$bssid")"
-		[ "$wanted" = any ] || [ "$bssid" = "$wanted" ] || continue
+		[ "$bssid" = "$wanted" ] || continue
 		interface="$(printf '%s\n' "$status" | jsonfilter -e '@.interface' 2>/dev/null || true)"
 		[ -n "$interface" ] || interface="$(printf '%s\n' "$status" | jsonfilter -e '@.ifname' 2>/dev/null || true)"
 		[ -n "$interface" ] || interface="${object#hostapd.}"
@@ -561,10 +584,42 @@ reconcile() {
 	local port
 	port="$1"
 	shift
-	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; exit 1; }
-	nft list table inet "$TABLE" >/dev/null 2>&1 || return 1
-	resolve_hosts
+	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
+	ensure_table_healthy "$port" || return 1
+	resolve_hosts || return 1
 	if order_check_due; then check_prerouting_order || true; fi
+	sync_ap_interfaces "$@"
+}
+
+sync_ap_interfaces() {
+	local bssid interface interfaces
+
+	interfaces=''
+	for bssid in "$@"; do
+		valid_mac "$bssid" || {
+			echo "wloc: invalid AP BSSID: $bssid" >&2
+			return 1
+		}
+
+		while IFS= read -r interface; do
+			[ -n "$interface" ] || continue
+			case " $interfaces " in
+				*" $interface "*) ;;
+				*) interfaces="$interfaces $interface" ;;
+			esac
+		done <<EOF
+$(hostapd_interfaces "$bssid")
+EOF
+	done
+
+	{
+		printf 'flush set inet %s %s\n' \
+			"$TABLE" "$AP_INTERFACE_SET"
+		for interface in $interfaces; do
+			printf 'add element inet %s %s { "%s" timeout %s }\n' \
+				"$TABLE" "$AP_INTERFACE_SET" "$interface" "$AP_INTERFACE_TIMEOUT"
+		done
+	} | nft -f -
 }
 
 case "${1:-}" in

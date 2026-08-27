@@ -11,6 +11,6 @@ table inet wloc {
 
 	chain redirect_prerouting {
 		type nat hook prerouting priority mangle - 2; policy accept;
-		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
+		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned AP redirect"
 	}
 }
