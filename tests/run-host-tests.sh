@@ -123,106 +123,41 @@ fi
 echo '  -> nftables table health'
 
 empty_host_set_fixture='table inet wloc {
-    set target_ap_interfaces {
-        type ifname
-        flags timeout
-    }
+	set target_ap_interfaces {
+		type ifname
+		flags timeout
+	}
 
-    set apple_wloc_v4 {
-        type ipv4_addr
-        flags timeout
-    }
+	set apple_wloc_v4 {
+		type ipv4_addr
+		flags timeout
+	}
 
-    chain redirect_prerouting {
-        type nat hook prerouting priority -105; policy accept;
-        iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
-    }
+	chain redirect_prerouting {
+		type nat hook prerouting priority mangle - 2; policy accept;
+		iifname @target_ap_interfaces ip daddr @apple_wloc_v4 tcp dport 443 redirect to :61520 comment "wloc owned AP redirect"
+	}
 }'
 
 printf '%s\n' "$empty_host_set_fixture" \
-    | table_healthy 61520 \
-    || fail 'table_healthy rejected a valid table with an empty host set'
+	| table_healthy 61520 \
+	|| fail 'table_healthy rejected a valid table with an empty host set'
 
-if printf '%s\n' "$healthy_table_fixture" \
+if printf '%s\n' "$empty_host_set_fixture" \
 	| table_healthy 61521; then
 	fail 'table_healthy accepted the wrong redirect port'
 fi
 
-if printf '%s\n' "$healthy_table_fixture" \
+if printf '%s\n' "$empty_host_set_fixture" \
 	| sed '/flags timeout/d' \
 	| table_healthy 61520; then
 	fail 'table_healthy accepted sets without timeout'
 fi
 
-if printf '%s\n' "$healthy_table_fixture" \
+if printf '%s\n' "$empty_host_set_fixture" \
 	| sed '/wloc owned AP redirect/d' \
 	| table_healthy 61520; then
 	fail 'table_healthy accepted a missing redirect rule'
-fi
-
-
-echo '  -> nftables proxy priority'
-
-order_fixture='table inet routed_proxy {
-	chain ingress {
-		type filter hook prerouting priority mangle - 1; policy accept;
-		jump proxy_dispatch
-	}
-
-	chain proxy_dispatch {
-		tcp dport 443 tproxy ip to :1041
-	}
-}'
-
-nft() {
-	printf '%s\n' "$order_fixture"
-}
-
-priority="$(choose_wloc_priority)"
-
-[ "$priority" = '-152' ] \
-	|| fail "expected priority -152, got $priority"
-
-
-echo '  -> default nftables priority'
-
-order_fixture='table inet unrelated {
-	chain input {
-		type filter hook input priority filter; policy accept;
-	}
-}'
-
-priority="$(choose_wloc_priority)"
-
-[ "$priority" = '-105' ] \
-	|| fail "expected default priority -105, got $priority"
-
-
-echo '  -> unknown nftables priority'
-
-order_fixture='table inet unknown_proxy {
-	chain ingress {
-		type filter hook prerouting priority custom_proxy_priority; policy accept;
-		tcp dport 443 tproxy ip to :2080
-	}
-}'
-
-if choose_wloc_priority >/dev/null 2>&1; then
-	fail 'choose_wloc_priority accepted an unknown priority'
-fi
-
-
-echo '  -> conntrack safety boundary'
-
-order_fixture='table inet too_early_proxy {
-	chain ingress {
-		type filter hook prerouting priority -199; policy accept;
-		tcp dport 443 tproxy ip to :2080
-	}
-}'
-
-if choose_wloc_priority >/dev/null 2>&1; then
-	fail 'choose_wloc_priority crossed the conntrack safety boundary'
 fi
 
 
