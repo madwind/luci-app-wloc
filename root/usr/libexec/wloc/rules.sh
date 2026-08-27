@@ -16,6 +16,7 @@ ORDER_STATE=/var/run/wloc/order-conflict
 ORDER_CHECK_STAMP=/var/run/wloc/order-checked
 PRIORITY_STATE=/var/run/wloc/prerouting.priority
 PRIORITY_DETAILS=/var/run/wloc/prerouting.details
+AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
 HOST_TIMEOUT=15m
 DNS_SAMPLES=1
@@ -522,15 +523,19 @@ valid_ifname() {
 	[ "${#1}" -le 15 ]
 }
 
+load_ap_lib() {
+	[ "${WLOC_AP_LIB_LOADED:-0}" -eq 1 ] || . "$AP_LIB"
+}
+
 reconcile() {
 	local port
 	port="$1"
-	shift
 	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
 	ensure_table_healthy "$port" || return 1
 	resolve_hosts || return 1
 	if order_check_due; then check_prerouting_order || true; fi
-	sync_ingress_interfaces "$@"
+	load_ap_lib || { echo 'wloc: AP resolver is unavailable' >&2; return 1; }
+	sync_ingress_interfaces
 }
 
 resolve_ingress_interfaces() {
@@ -546,26 +551,50 @@ resolve_ingress_interfaces() {
 	done
 }
 
-sync_ingress_interfaces() {
-	local bridge interface interfaces set
-
-	interfaces=''
-	for bridge in "$@"; do
-		valid_ifname "$bridge" || {
-			echo "wloc: invalid network bridge: $bridge" >&2
-			return 1
-		}
-
-		while IFS= read -r interface; do
-			[ -n "$interface" ] || continue
-			case " $interfaces " in
-				*" $interface "*) ;;
-				*) interfaces="$interfaces $interface" ;;
-			esac
-			done <<EOF
-$(resolve_ingress_interfaces "$bridge")
+collect_wloc_ingress() {
+	local section enabled ssid wireless_section network device interface
+	section="$1"
+	config_get_bool enabled "$section" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+	config_get ssid "$section" ssid ''
+	[ -n "$ssid" ] || {
+		WLOC_RESOLVE_ERROR="SSID is missing from enabled rule $section"
+		return 0
+	}
+	if ! wireless_section="$(wloc_ap_find_section_by_ssid "$ssid")"; then
+		WLOC_RESOLVE_ERROR="cannot resolve configured SSID \"$ssid\""
+		return 0
+	fi
+	if ! network="$(wloc_ap_get_network "$wireless_section")"; then
+		WLOC_RESOLVE_ERROR="SSID \"$ssid\" has no valid network mapping"
+		return 0
+	fi
+	if ! device="$(wloc_ap_get_network_device "$network")"; then
+		WLOC_RESOLVE_ERROR="SSID \"$ssid\" network \"$network\" has no valid device"
+		return 0
+	fi
+	while IFS= read -r interface; do
+		[ -n "$interface" ] || continue
+		case " $WLOC_INGRESS_INTERFACES " in
+			*" $interface "*) ;;
+			*) WLOC_INGRESS_INTERFACES="$WLOC_INGRESS_INTERFACES $interface" ;;
+		esac
+	done <<EOF
+$(resolve_ingress_interfaces "$device")
 EOF
-	done
+}
+
+sync_ingress_interfaces() {
+	local interface interfaces set
+	WLOC_RESOLVE_ERROR=''
+	WLOC_INGRESS_INTERFACES=''
+	config_load wloc || return 1
+	config_foreach collect_wloc_ingress wifi
+	[ -z "$WLOC_RESOLVE_ERROR" ] || {
+		echo "wloc: $WLOC_RESOLVE_ERROR" >&2
+		return 1
+	}
+	interfaces="$WLOC_INGRESS_INTERFACES"
 	set="$(active_ingress_set)" || {
 		echo "wloc: no compatible ingress interface set is loaded" >&2
 		return 1
