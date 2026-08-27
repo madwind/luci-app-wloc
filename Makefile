@@ -70,3 +70,5 @@ define Package/luci-app-wloc/prerm
 }
 exit 0
 endef
+
+# call BuildPackage - OpenWrt buildroot signature
