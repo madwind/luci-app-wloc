@@ -81,15 +81,6 @@ append_rule_for_wifi() {
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
 }
 
-listen_port_in_use() {
-	local port
-	port="$1"
-	ss -H -ltn 2>/dev/null | awk -v port="$port" '
-		$4 ~ (":" port "$") { found = 1; exit }
-		END { exit !found }
-	'
-}
-
 startup_failure() {
 	local reason="$1"
 	printf '%s\n' "$reason" >"$START_ERROR"
@@ -126,10 +117,6 @@ start_service() {
 	[ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
 		startup_failure 'invalid local listen port; interception remains disabled'; return $?;
 	}
-	if listen_port_in_use "$listen_port"; then
-		startup_failure "local listen port $listen_port is already in use; interception remains disabled"; return $?;
-	fi
-
 	rule_count=0
 	rule_error=''
 	wifi_sections=''

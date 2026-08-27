@@ -2,6 +2,18 @@
 
 . /usr/share/libubox/jshn.sh
 
+json_value() (
+	local data="$1"
+	local key="$2"
+	local value
+
+	[ -n "$data" ] || return 1
+	json_load "$data" 2>/dev/null || return 1
+	json_get_var value "$key"
+
+	printf '%s' "$value"
+)
+
 INIT=/etc/init.d/wloc
 RULES=/usr/libexec/wloc/rules.sh
 STATE=/var/run/wloc/status.json
@@ -310,33 +322,6 @@ EOF
 	json_dump
 }
 
-emit_access_points() {
-	local object status ssid bssid interface
-	json_init
-	json_add_array access_points
-	for object in $(ubus -S -t 3 list 'hostapd.*' 2>/dev/null || true); do
-		case "$object" in hostapd.*) :;; *) continue;; esac
-		status="$(ubus -S -t 3 call "$object" get_status '{}' 2>/dev/null || true)"
-		[ -n "$status" ] || continue
-		ssid="$(printf '%s\n' "$status" | jsonfilter -e '@.ssid' 2>/dev/null || true)"
-		bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
-		interface="$(printf '%s\n' "$status" | jsonfilter -e '@.interface' 2>/dev/null || true)"
-		[ -n "$interface" ] || interface="$(printf '%s\n' "$status" | jsonfilter -e '@.ifname' 2>/dev/null || true)"
-		[ -n "$interface" ] || interface="${object#hostapd.}"
-		case "$bssid" in
-			[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
-			*) continue;;
-		esac
-		json_add_object
-		json_add_string ssid "$ssid"
-		json_add_string bssid "$bssid"
-		json_add_string interface "$interface"
-		json_close_object
-	done
-	json_close_array
-	json_dump
-}
-
 valid_ifname() {
 	case "$1" in
 		''|*[!A-Za-z0-9_.-]*) return 1;;
@@ -351,8 +336,8 @@ network_bridge() {
 		*[!A-Za-z0-9_.-]*) return 1;;
 	esac
 	status="$(ubus -S -t 3 call "network.interface.$network" status 2>/dev/null || true)"
-	bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.device' 2>/dev/null || true)"
-	[ -n "$bridge" ] || bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.l3_device' 2>/dev/null || true)"
+	bridge="$(json_value "$status" device || true)"
+	[ -n "$bridge" ] || bridge="$(json_value "$status" l3_device || true)"
 	valid_ifname "$bridge" && { printf '%s\n' "$bridge"; return 0; }
 	bridge="$(uci -q get "network.$network.device" 2>/dev/null || true)"
 	[ -n "$bridge" ] || bridge="$(uci -q get "network.$network.ifname" 2>/dev/null || true)"
@@ -386,8 +371,8 @@ load_wireless_runtime() {
 				*)
 					hostapd_status="$(ubus -S -t 3 call "hostapd.$ifname" get_status '{}' 2>/dev/null || true)"
 					[ -n "$hostapd_status" ] || { json_select ..; continue; }
-					bssid="$(printf '%s\n' "$hostapd_status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
-					ssid="$(printf '%s\n' "$hostapd_status" | jsonfilter -e '@.ssid' 2>/dev/null || true)"
+					bssid="$(json_value "$hostapd_status" bssid || true)"
+					ssid="$(json_value "$hostapd_status" ssid || true)"
 					printf '%s|%s|%s|%s\n' "$section" "$ifname" "$bssid" "$ssid" >>"$WIRELESS_RUNTIME"
 					;;
 			esac
@@ -473,7 +458,7 @@ emit_configured_access_points() {
 case "$1" in
 list)
 	json_init
-	for method in status access_points configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
+	for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
 		json_add_object "$method"
 		case "$method" in firewall_validate|firewall_save) json_add_string config '';; esac
 		json_close_object
@@ -483,7 +468,6 @@ list)
 call)
 	case "$2" in
 	status) emit_status;;
-	access_points) emit_access_points;;
 	configured_access_points) emit_configured_access_points;;
 	restart)
 		"$INIT" restart >/dev/null 2>&1

@@ -3,7 +3,7 @@
     "description": "Manage wloc",
     "read": {
       "ubus": {
-        "luci.wloc": [ "status", "access_points", "configured_access_points", "logs", "firewall_read", "firewall_validate" ]
+        "luci.wloc": [ "status", "configured_access_points", "logs", "firewall_read", "firewall_validate" ]
       },
       "uci": [ "wloc", "wireless" ]
     },

@@ -1,6 +1,19 @@
 #!/bin/sh
 
 . /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+json_value() (
+	local data="$1"
+	local key="$2"
+	local value
+
+	[ -n "$data" ] || return 1
+	json_load "$data" 2>/dev/null || return 1
+	json_get_var value "$key"
+
+	printf '%s' "$value"
+)
 
 valid_ifname() {
 	case "$1" in
@@ -22,8 +35,8 @@ network_bridge() {
 	esac
 
 	status="$(ubus -S -t 3 call "network.interface.$network" status 2>/dev/null || true)"
-	bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.device' 2>/dev/null || true)"
-	[ -n "$bridge" ] || bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.l3_device' 2>/dev/null || true)"
+	bridge="$(json_value "$status" device || true)"
+	[ -n "$bridge" ] || bridge="$(json_value "$status" l3_device || true)"
 	valid_ifname "$bridge" && { printf '%s\n' "$bridge"; return 0; }
 
 	bridge="$(uci -q get "network.$network.device" 2>/dev/null || true)"

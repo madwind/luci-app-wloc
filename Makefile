@@ -10,7 +10,7 @@ PKG_LICENSE_FILES:=LICENSE NOTICE
 PKG_MAINTAINER:=luci-app-wloc maintainers
 
 LUCI_TITLE:=Apple WLOC movement-following location proxy for OpenWrt
-LUCI_DEPENDS:=+luci-base +libc +libgcc +nftables +ip-full +jsonfilter +rpcd +uhttpd
+LUCI_DEPENDS:=+luci-base +nftables +ip-full +jshn
 LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per configured ingress bridge. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc

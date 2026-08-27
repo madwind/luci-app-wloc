@@ -257,8 +257,8 @@ msgstr "尚未执行查询。"
 msgid "none"
 msgstr "无"
 
-msgid "Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Startup stops safely if the selected port is occupied or the redirect port does not match."
-msgstr "通常无需更改。如果更改，nftables 编辑器中的 WLOC 重定向规则必须使用相同端口。如果所选端口被占用或重定向端口不匹配，启动将安全停止。"
+msgid "Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Interception remains disabled if the daemon cannot bind the selected port or the redirect port does not match."
+msgstr "通常无需更改。如果更改，nftables 编辑器中的 WLOC 重定向规则必须使用相同端口。如果守护进程无法绑定所选端口或重定向端口不匹配，拦截将保持禁用。"
 
 msgid "not currently active"
 msgstr "当前未活动"
