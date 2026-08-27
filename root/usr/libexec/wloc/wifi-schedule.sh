@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Temporarily disables the exact wireless UCI sections selected by WLOC.
+# Temporarily disables the wireless UCI section resolved from each WLOC SSID.
 # Changes are kept in UCI's runtime delta and are never committed to wireless.
 
 STATE_DIR="${WLOC_SCHEDULE_STATE_DIR:-/var/run/wloc}"
@@ -9,6 +9,11 @@ ACTIVE_FILE="$STATE_DIR/wifi-schedule.active.$$"
 DESIRED_FILE="$STATE_DIR/wifi-schedule.desired.$$"
 
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
+AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
+
+load_ap_lib() {
+	[ "${WLOC_AP_LIB_LOADED:-0}" -eq 1 ] || . "$AP_LIB"
+}
 
 decimal() {
 	local value="$1"
@@ -22,12 +27,6 @@ valid_time() {
 		[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0;;
 		*) return 1;;
 	esac
-}
-
-valid_section() {
-	case "$1" in
-		''|*[!A-Za-z0-9_-]*) return 1;;
-		esac
 }
 
 time_minutes() {
@@ -69,12 +68,12 @@ reload_wifi() {
 	wifi reload >/dev/null 2>&1 || logger -t wloc-schedule 'wifi reload failed; scheduled AP state may be delayed'
 }
 
-warn_missing_section() {
-	logger -t wloc-schedule "wireless section $1 is unavailable; scheduled state was not changed" 2>/dev/null || true
+warn_unresolved_ssid() {
+	logger -t wloc-schedule "SSID \"$1\" is unavailable; scheduled state was not changed" 2>/dev/null || true
 }
 
 collect_active_wifi() {
-	local section="$1" enabled schedule_enabled start end wireless_section
+	local section="$1" enabled schedule_enabled start end ssid wireless_section
 	case "$section" in ''|*[!A-Za-z0-9_-]*) return 0;; esac
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
@@ -84,13 +83,15 @@ collect_active_wifi() {
 	config_get end "$section" schedule_end ''
 	valid_time "$start" && valid_time "$end" || return 0
 	window_active "$start" "$end" || return 0
-	config_get wireless_section "$section" wireless_section ''
-	valid_section "$wireless_section" || {
-		warn_missing_section "${wireless_section:-<empty>}"
+	config_get ssid "$section" ssid ''
+	[ -n "$ssid" ] || {
+		warn_unresolved_ssid '<empty>'
 		return 0
 	}
-	uci -q get "wireless.$wireless_section" >/dev/null 2>&1 || {
-		warn_missing_section "$wireless_section"
+	load_ap_lib
+	wireless_section="$(wloc_ap_find_section_by_ssid "$ssid" 2>/dev/null || true)"
+	[ -n "$wireless_section" ] || {
+		warn_unresolved_ssid "$ssid"
 		return 0
 	}
 	desired_add "$wireless_section"
@@ -205,5 +206,5 @@ case "${1:-}" in
 	run) run_loop;;
 	reconcile) reconcile; rm -f "$ACTIVE_FILE" "$DESIRED_FILE";;
 	stop|restore) restore_state; rm -f "$ACTIVE_FILE" "$DESIRED_FILE";;
-	*) echo "usage: $0 {run|reconcile|stop}" >&2; exit 2;;
+*) echo "usage: $0 {run|reconcile|stop}" >&2; exit 2;;
 esac
