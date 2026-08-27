@@ -52,7 +52,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-downloads-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-downloads-${{ runner.os }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
           restore-keys: cargo-downloads-${{ runner.os }}-
 
       - name: Build ${{ matrix.target }} APK

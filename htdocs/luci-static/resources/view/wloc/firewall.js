@@ -76,7 +76,7 @@ function tableRow(label, value) {
 
 return view.extend({
 	render: function() {
-		document.title = 'OpenWrt | Firewall';
+		document.title = 'OpenWrt | ' + _('Firewall');
 
 		var editor = E('textarea', {
 			'id': 'wloc-firewall-editor',
@@ -93,7 +93,7 @@ return view.extend({
 			'aria-label': _('active nftables configuration')
 		});
 		var path = E('span', {}, '/etc/wloc/firewall.nft');
-		var bytes = E('span', {}, '0 B');
+		var bytes = E('span', {}, '%s %s'.format(0, _('B')));
 		var dirty = E('span', {}, _('Not loaded'));
 		var activeStatus = E('span', {}, _('Loading'));
 		var feedback = E('div', { 'class': 'alert-message', 'aria-live': 'polite', hidden: true });
@@ -106,7 +106,7 @@ return view.extend({
 		var loaded = false;
 
 		function updateBytes() {
-			bytes.textContent = new Blob([ editor.value ]).size + ' B';
+			bytes.textContent = '%s %s'.format(new Blob([ editor.value ]).size, _('B'));
 		}
 
 		function markChanged() {
@@ -119,7 +119,7 @@ return view.extend({
 			setState(feedback, '', _('Checking the editor contents with nft --check...'));
 			return callValidate(editor.value).then(function(result) {
 				if (!result || result.valid !== true)
-					throw new Error([ result && result.error, result && result.detail ].filter(Boolean).join(': ') || _('Syntax check failed.'));
+					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Syntax check failed.'));
 				setState(feedback, 'ok', _('The nftables syntax check passed.'));
 				return true;
 			}).catch(function(error) {
@@ -142,8 +142,8 @@ return view.extend({
 		function refreshActive() {
 			setBusy(buttons, true);
 			return callRead().then(function(result) {
-				if (!result || result.ok !== true) throw new Error((result && result.error) || _('Unable to read nftables rules.'));
-				active.value = result.active || _('# No custom nftables tables are active.\n');
+				if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
+				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
 				updateActiveState(activeStatus, result);
 				return result;
 			}).catch(function(error) {
@@ -157,7 +157,7 @@ return view.extend({
 			setState(feedback, '', apply ? _('Saving and applying rules...') : _('Saving rules...'));
 			return callSave(editor.value).then(function(result) {
 				if (!result || result.ok !== true)
-					throw new Error([ result && result.error, result && result.detail ].filter(Boolean).join(': ') || _('Unable to save nftables rules.'));
+					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to save nftables rules.'));
 				loaded = true;
 				dirty.textContent = _('Saved');
 				if (!apply) {
@@ -166,8 +166,8 @@ return view.extend({
 				}
 				return callApply().then(function(applied) {
 					if (!applied || applied.ok !== true)
-						throw new Error([ applied && applied.error, applied && applied.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
-					active.value = applied.active || _('# No custom nftables tables are active.\n');
+						throw new Error([ applied && applied.error && _(applied.error), applied && applied.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
+					active.value = applied.active || _('# No custom nftables tables are active.') + '\n';
 					updateActiveState(activeStatus, applied);
 					setState(feedback, 'ok', _('Rules saved and applied.'));
 					return applied;
@@ -228,7 +228,7 @@ return view.extend({
 		]);
 
 		callRead().then(function(result) {
-			if (!result || result.ok !== true) throw new Error((result && result.error) || _('Unable to read nftables rules.'));
+			if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
 			path.textContent = result.path || '/etc/wloc/firewall.nft';
 			editor.value = result.config || '';
 			active.value = result.active || '';

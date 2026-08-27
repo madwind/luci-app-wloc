@@ -553,13 +553,23 @@ return view.extend({
 				requestAnimationFrame(function() { logNode.scrollTop = logNode.scrollHeight; });
 		}
 
+		function translateReason(reason) {
+			if (!reason)
+				return reason;
+			var sep = reason.indexOf(': ');
+			var key = sep >= 0 ? reason.slice(0, sep) : reason;
+			var rest = sep >= 0 ? reason.slice(sep) : '';
+			var translated = _(key);
+			return translated !== key ? translated + rest : reason;
+		}
+
 		function serviceReason(status, running, healthy) {
 			if (status.service_reason)
-				return status.service_reason;
+				return translateReason(status.service_reason);
 			if (!running && truthy(status.enabled))
 				return _('The service is not running. Check the system log for the startup error.');
 			if (running && !healthy)
-				return status.last_error || _('Interception is unavailable. Check the runtime log.');
+				return translateReason(status.last_error) || _('Interception is unavailable. Check the runtime log.');
 			return '';
 		}
 

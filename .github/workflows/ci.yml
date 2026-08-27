@@ -9,9 +9,11 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+
   pull_request:
     branches:
       - master
+
   workflow_dispatch:
   workflow_call:
 
@@ -27,23 +29,41 @@ jobs:
     name: Rust quality and host tests
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: src/wloc-rs
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: clippy,rustfmt
-      - name: Cache Cargo build
+
+      - name: Cache Cargo
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-ci-${{ runner.os }}-
+            src/wloc-rs/target
+          key: cargo-ci-${{ runner.os }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
+          restore-keys: |
+            cargo-ci-${{ runner.os }}-
+
       - name: Rust formatting
         run: cargo fmt --all -- --check
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --all-targets
+
       - name: Host tests
-        run: bash ./tests/run-host-tests.sh
+        working-directory: .
+        run: bash tests/run-host-tests.sh
