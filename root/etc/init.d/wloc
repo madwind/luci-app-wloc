@@ -6,32 +6,23 @@ STOP=10
 
 RULES=/usr/libexec/wloc/rules.sh
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
+AP_LIB=/usr/libexec/wloc/ap-lib.sh
 START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
 wifi_sections=''
-
-valid_ifname() {
-	case "$1" in
-		''|*[!A-Za-z0-9_.-]*)
-			return 1
-			;;
-	esac
-	[ "${#1}" -le 15 ]
-}
 
 collect_wifi() {
 	wifi_sections="$wifi_sections $1"
 }
 
 validate_wifi() {
-	local section enabled name bridge wireless_section schedule_enabled latitude longitude proxy_type proxy_host proxy_port
+	local section enabled name ssid schedule_enabled latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get name "$section" ssid "$section"
-	config_get bridge "$section" bridge
-	config_get wireless_section "$section" wireless_section
+	config_get ssid "$section" ssid ''
+	name="$ssid"
 	config_get_bool schedule_enabled "$section" schedule_enabled 0
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
@@ -41,11 +32,10 @@ validate_wifi() {
 	[ -n "$latitude" ] && [ -n "$longitude" ] || {
 		rule_error="incomplete location parameters for AP: $name"; return 0;
 	}
-	valid_ifname "$bridge" || { rule_error="invalid network bridge for AP: $name"; return 0; }
-	if [ "$schedule_enabled" -eq 1 ]; then
-		case "$wireless_section" in
-			''|*[!A-Za-z0-9_-]*) rule_error="invalid wireless section for AP: $name"; return 0;;
-		esac
+	[ -n "$ssid" ] || { rule_error='SSID is required for every enabled WLOC rule'; return 0; }
+	. "$AP_LIB"
+	if ! wloc_ap_find_section_by_ssid "$ssid" >/dev/null; then
+		rule_error="SSID \"$ssid\" cannot be resolved"; return 0
 	fi
 	case "$proxy_type" in
 		direct) ;;
@@ -64,18 +54,18 @@ validate_wifi() {
 }
 
 append_rule_for_wifi() {
-	local section enabled name bridge latitude longitude proxy_type proxy_host proxy_port
+	local section enabled name ssid latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get name "$section" ssid "$section"
+	config_get ssid "$section" ssid ''
+	name="$ssid"
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get bridge "$section" bridge
-	procd_append_param command --rule "$section" "$bridge" "$latitude" "$longitude"
+	procd_append_param command --rule "$section" "$ssid" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
