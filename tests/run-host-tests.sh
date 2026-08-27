@@ -7,7 +7,7 @@ HTDOCS="$ROOT/htdocs"
 
 RULES="$ROOTFS/usr/libexec/wloc/rules.sh"
 SCHEDULE="$ROOTFS/usr/libexec/wloc/wifi-schedule.sh"
-AP_TEST="$ROOT/tests/wireless-section-discovery.test.js"
+AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 
 fail() {

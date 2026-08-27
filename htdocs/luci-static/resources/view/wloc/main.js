@@ -135,9 +135,9 @@ return view.extend({
 		function addConfiguredWireless(source) {
 			var ssid = String(source && source.ssid || '');
 			var bssid = String(source && source.bssid || '').toUpperCase();
-			var section = String(source && (source.section || source.wireless_section) || '');
-			var interfaceName = String(source && (source.interface || source.ifname) || '');
-			var bridge = String(source && source.bridge || '');
+			var section = String(source && source.section || '');
+			var interfaceName = String(source && (source.ifname || source.interface) || '');
+			var device = String(source && source.device || '');
 			var key = section;
 			if (!section || configuredWirelessKeys[key])
 				return;
@@ -146,19 +146,22 @@ return view.extend({
 				ssid: ssid,
 				bssid: bssid,
 				section: section,
+				radio: String(source && source.radio || ''),
 				network: String(source && source.network || ''),
-				bridge: bridge,
+				device: device,
 				mappingError: String(source && source.mapping_error || ''),
 				interface: interfaceName,
 				disabled: truthy(source && source.disabled),
-				active: truthy(source && source.active)
+				active: truthy(source && (source.active || source.up)),
+				unique: source && source.unique !== undefined ? truthy(source.unique) : true,
+				ambiguous: truthy(source && source.ambiguous),
+				missing: truthy(source && source.missing)
 			});
 		}
 
 		accessPoints.forEach(addConfiguredWireless);
-		// Keep a local fallback visible if rpcd is temporarily unavailable. It is
-		// deliberately not treated as a valid selection until rpcd resolves its
-		// network bridge.
+		// Keep a local fallback visible if rpcd is temporarily unavailable. The
+		// SSID remains the only value that can be saved.
 		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
 			var mode = String(wifi.mode || 'ap');
 			if ([ 'ap', 'ap-wds' ].indexOf(mode) < 0 || configuredWirelessKeys[wifi['.name']])
@@ -167,10 +170,10 @@ return view.extend({
 				section: wifi['.name'],
 				ssid: wifi.ssid,
 				network: wifi.network,
-				bridge: '',
-				mapping_error: _('Network bridge mapping is unavailable.'),
+				device: '',
 				disabled: wifi.disabled,
-				active: false
+				active: false,
+				unique: true
 			});
 		});
 
@@ -185,7 +188,7 @@ return view.extend({
 		}
 
 		var map = new form.Map('wloc', _('WLOC'),
-			_('Version %s · Assign one Apple WLOC location to each selected network bridge.').format(initialStatus.version || _('unknown')));
+			_('Version %s · Bind each Apple WLOC location to one unique configured SSID.').format(initialStatus.version || _('unknown')));
 
 		var profileUrl = '/wloc-ca.mobileconfig';
 		var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
@@ -251,120 +254,138 @@ return view.extend({
 		};
 
 	var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
-		_('Select an AP and assign one virtual location to all devices connected through its network bridge.'));
+		_('Select an exact configured SSID and assign one virtual location to clients connected through that AP.'));
 		wifiSections.anonymous = true;
 		wifiSections.addremove = true;
 		wifiSections.sortable = true;
 		wifiSections.nodescriptions = true;
 	wifiSections.addbtntitle = _('Add AP');
 	wifiSections.sectiontitle = function(sectionId) {
-		return uci.get('wloc', sectionId, 'ssid') ||
-			uci.get('wloc', sectionId, 'wireless_section') || _('Unnamed AP');
+		return uci.get('wloc', sectionId, 'ssid') || _('Unnamed AP');
 	};
 
 		option = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
 		option.default = '1';
 		option.rmempty = false;
 
-	var wirelessSectionOption = wifiSections.option(form.ListValue, 'wireless_section', _('Access point'));
-	wirelessSectionOption.modalonly = true;
-	wirelessSectionOption.rmempty = false;
-	wirelessSectionOption.description = _('Select a configured AP. Its bridge handles location matching and its wireless section controls scheduled disable.');
+	var ssidOption = wifiSections.option(form.ListValue, 'ssid', _('Access Point / SSID'));
+	ssidOption.modalonly = true;
+	ssidOption.rmempty = false;
+	ssidOption.description = _('Select the exact, case-sensitive SSID configured in wireless. Runtime interfaces, BSSIDs and devices are discovered automatically.');
 	if (!accessPoints.length && configuredWireless.length)
-		wirelessSectionOption.description = _('Live AP status is not ready; configured AP entries remain selectable.');
+		ssidOption.description = _('Live AP status is not ready; configured SSIDs remain selectable.');
 	if (!configuredWireless.length)
-		wirelessSectionOption.description = _('No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule.');
-	var knownSections = [];
-	function addSectionChoice(ap) {
-		var section = String(ap && ap.section || '');
-		if (!section || knownSections.indexOf(section) >= 0)
-			return;
-		knownSections.push(section);
-		var label = '%s — %s — %s'.format(
-			ap.ssid || _('Unnamed AP'),
-			section,
-			ap.bridge || ap.mappingError || _('Network bridge mapping is unavailable.')
-		);
-		if (ap.bssid)
-			label += ' (%s %s)'.format(_('Live BSSID'), ap.bssid.toUpperCase());
-		wirelessSectionOption.value(section, label);
-	}
-	configuredWireless.forEach(addSectionChoice);
-	uci.sections('wloc', 'wifi').forEach(function(wifi) {
-		var section = String(wifi.wireless_section || '');
-		if (section && knownSections.indexOf(section) < 0)
-			addSectionChoice({ section: section, ssid: wifi.ssid, bridge: wifi.bridge, mappingError: _('Network bridge mapping is unavailable.') });
+		ssidOption.description = _('No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule.');
+	var knownSsids = [];
+	var ssidCounts = {};
+	configuredWireless.forEach(function(ap) {
+		if (ap.ssid)
+			ssidCounts[ap.ssid] = (ssidCounts[ap.ssid] || 0) + 1;
 	});
-	wirelessSectionOption.cfgvalue = function(sectionId) {
-		return String(uci.get('wloc', sectionId, 'wireless_section') || '');
+	function addSsidChoice(ap) {
+		var ssid = String(ap && ap.ssid || '');
+		if (!ssid || knownSsids.indexOf(ssid) >= 0)
+			return;
+		knownSsids.push(ssid);
+		var label = ssid;
+		if (ap.missing)
+			label += ' (' + _('not found') + ')';
+		else if (ssidCounts[ssid] > 1 || ap.ambiguous)
+			label += ' — ' + _('duplicate; cannot be selected');
+		else if (!ap.active)
+			label += ' (' + _('offline') + ')';
+		ssidOption.value(ssid, label);
+	}
+	configuredWireless.forEach(addSsidChoice);
+	uci.sections('wloc', 'wifi').forEach(function(wifi) {
+		var ssid = String(wifi.ssid || '');
+		if (ssid && knownSsids.indexOf(ssid) < 0)
+			addSsidChoice({ ssid: ssid, active: false, unique: false, missing: true });
+	});
+	ssidOption.cfgvalue = function(sectionId) {
+		return String(uci.get('wloc', sectionId, 'ssid') || '');
 	};
-	wirelessSectionOption.write = function(sectionId, value) {
-		var previousSection = String(uci.get('wloc', sectionId, 'wireless_section') || '');
+	ssidOption.write = function(sectionId, value) {
 		value = String(value || '');
-		var ap = configuredWireless.find(function(candidate) {
-			return candidate.section === value;
-		});
-		uci.set('wloc', sectionId, 'wireless_section', value);
-		if (ap && ap.bridge)
-			uci.set('wloc', sectionId, 'bridge', ap.bridge);
-		if (ap && ap.ssid)
-			uci.set('wloc', sectionId, 'ssid', ap.ssid);
-		else if (previousSection !== value)
-			uci.unset('wloc', sectionId, 'ssid');
+		uci.set('wloc', sectionId, 'ssid', value);
+		uci.unset('wloc', sectionId, 'bridge');
 		uci.unset('wloc', sectionId, 'network');
+		uci.unset('wloc', sectionId, 'wireless_section');
 		uci.unset('wloc', sectionId, 'bssid');
 		uci.unset('wloc', sectionId, 'wireless_ifname');
 		uci.unset('wloc', sectionId, 'migration_pending');
 	};
-	wirelessSectionOption.validate = function(sectionId, value) {
+	ssidOption.validate = function(sectionId, value) {
 		value = String(value || '');
-		var ap = configuredWireless.find(function(candidate) {
-			return candidate.section === value;
-		});
-		if (!ap)
-			return _('Select a configured wireless section.');
-		return ap.bridge && !ap.mappingError ? true : _('The selected AP has no unambiguous network bridge.');
+		var matches = configuredWireless.filter(function(candidate) { return candidate.ssid === value; });
+		if (!matches.length || matches.some(function(candidate) { return candidate.missing; }))
+			return _('Configured SSID "%s" was not found.').format(value);
+		if (matches.length > 1 || matches.some(function(candidate) { return candidate.ambiguous || candidate.unique === false; }))
+			return _('SSID "%s" is used by multiple APs and cannot be selected by WLOC.').format(value);
+		return true;
 	};
+
+	function accessPointForRule(sectionId) {
+		var ssid = String(uci.get('wloc', sectionId, 'ssid') || '');
+		return configuredWireless.find(function(candidate) { return candidate.ssid === ssid; });
+	}
 
 	var wifiStateOption = wifiSections.option(form.DummyValue, '_wifi_state', _('AP status'));
 	wifiStateOption.modalonly = false;
 	wifiStateOption.cfgvalue = wifiStateOption.textvalue = function(sectionId) {
-		var section = String(uci.get('wloc', sectionId, 'wireless_section') || '');
-		var ap = configuredWireless.find(function(candidate) { return candidate.section === section; });
-		if (ap && ap.active && !ap.disabled)
+		var ssid = String(uci.get('wloc', sectionId, 'ssid') || '');
+		var ap = accessPointForRule(sectionId);
+		if (!ap)
+			return ssid ? _('Configured SSID "%s" was not found.').format(ssid) : _('Unavailable');
+		if (ap.ambiguous)
+			return _('Ambiguous');
+		if (ap.active && !ap.disabled)
 			return _('On');
 		if (ap && ap.disabled)
 			return _('Off');
-		return _('Unavailable');
+		return _('Offline');
 	};
 
-	var bridgeStatusOption = wifiSections.option(form.DummyValue, '_network_bridge', _('Network bridge'));
-	bridgeStatusOption.modalonly = false;
-	bridgeStatusOption.cfgvalue = bridgeStatusOption.textvalue = function(sectionId) {
-		return String(uci.get('wloc', sectionId, 'bridge') || _('Unavailable'));
+	var radioStatusOption = wifiSections.option(form.DummyValue, '_radio', _('Radio'));
+	radioStatusOption.modalonly = false;
+	radioStatusOption.cfgvalue = radioStatusOption.textvalue = function(sectionId) {
+		var ap = accessPointForRule(sectionId);
+		return ap && ap.radio ? ap.radio : _('Unavailable');
+	};
+
+	var interfaceStatusOption = wifiSections.option(form.DummyValue, '_runtime_interface', _('Runtime interface'));
+	interfaceStatusOption.modalonly = false;
+	interfaceStatusOption.cfgvalue = interfaceStatusOption.textvalue = function(sectionId) {
+		var ap = accessPointForRule(sectionId);
+		return ap && ap.interface ? ap.interface : _('Unavailable');
+	};
+
+	var networkStatusOption = wifiSections.option(form.DummyValue, '_network', _('Network'));
+	networkStatusOption.modalonly = false;
+	networkStatusOption.cfgvalue = networkStatusOption.textvalue = function(sectionId) {
+		var ap = accessPointForRule(sectionId);
+		return ap && ap.network ? ap.network : _('Unavailable');
+	};
+
+	var deviceStatusOption = wifiSections.option(form.DummyValue, '_device', _('Device'));
+	deviceStatusOption.modalonly = false;
+	deviceStatusOption.cfgvalue = deviceStatusOption.textvalue = function(sectionId) {
+		var ap = accessPointForRule(sectionId);
+		return ap && ap.device ? ap.device : _('Unavailable');
 	};
 
 	var liveBssidOption = wifiSections.option(form.DummyValue, '_live_bssid', _('Live BSSID'));
 	liveBssidOption.modalonly = false;
 	liveBssidOption.cfgvalue = liveBssidOption.textvalue = function(sectionId) {
-		var section = String(uci.get('wloc', sectionId, 'wireless_section') || '');
-		var ap = configuredWireless.find(function(candidate) { return candidate.section === section; });
+		var ap = accessPointForRule(sectionId);
 		return ap && ap.bssid ? ap.bssid.toUpperCase() : _('Unavailable');
-	};
-
-	var runtimeInterfaceOption = wifiSections.option(form.DummyValue, '_runtime_interface', _('Runtime interface'));
-	runtimeInterfaceOption.modalonly = false;
-	runtimeInterfaceOption.cfgvalue = runtimeInterfaceOption.textvalue = function(sectionId) {
-		var section = String(uci.get('wloc', sectionId, 'wireless_section') || '');
-		var ap = configuredWireless.find(function(candidate) { return candidate.section === section; });
-		return ap && ap.interface ? ap.interface : _('Unavailable');
 	};
 
 		var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
 		scheduleEnabledOption.modalonly = true;
 		scheduleEnabledOption.default = '0';
 		scheduleEnabledOption.rmempty = false;
-	scheduleEnabledOption.description = _('Actually disable the selected wireless section during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing section never falls back to another AP or the whole radio.');
+	scheduleEnabledOption.description = _('Actually disable the selected SSID during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing SSID never falls back to another AP or the whole radio.');
 
 		function scheduleTimeValidator(sectionId, value) {
 			return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))

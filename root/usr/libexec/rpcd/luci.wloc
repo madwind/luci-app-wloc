@@ -22,6 +22,7 @@ CAINFO=/etc/wloc/ca.info.json
 VERSION_CACHE=/var/run/wloc/package.version
 FIREWALL=/etc/wloc/firewall.nft
 FIREWALL_RUNTIME=/var/run/wloc/firewall.applied.nft
+AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 
 firewall_tables() {
 	awk '
@@ -322,28 +323,6 @@ EOF
 	json_dump
 }
 
-valid_ifname() {
-	case "$1" in
-		''|*[!A-Za-z0-9_.-]*) return 1;;
-		esac
-	[ "${#1}" -le 15 ]
-}
-
-network_bridge() {
-	local network="$1" status bridge
-	case "$network" in
-		'') return 1;;
-		*[!A-Za-z0-9_.-]*) return 1;;
-	esac
-	status="$(ubus -S -t 3 call "network.interface.$network" status 2>/dev/null || true)"
-	bridge="$(json_value "$status" device || true)"
-	[ -n "$bridge" ] || bridge="$(json_value "$status" l3_device || true)"
-	valid_ifname "$bridge" && { printf '%s\n' "$bridge"; return 0; }
-	bridge="$(uci -q get "network.$network.device" 2>/dev/null || true)"
-	[ -n "$bridge" ] || bridge="$(uci -q get "network.$network.ifname" 2>/dev/null || true)"
-	valid_ifname "$bridge" && printf '%s\n' "$bridge"
-}
-
 WIRELESS_RUNTIME=/var/run/wloc/rpc-wireless-runtime.$$
 
 load_wireless_runtime() {
@@ -373,7 +352,7 @@ load_wireless_runtime() {
 					[ -n "$hostapd_status" ] || { json_select ..; continue; }
 					bssid="$(json_value "$hostapd_status" bssid || true)"
 					ssid="$(json_value "$hostapd_status" ssid || true)"
-					printf '%s|%s|%s|%s\n' "$section" "$ifname" "$bssid" "$ssid" >>"$WIRELESS_RUNTIME"
+					printf '%s|%s|%s|%s|%s\n' "$section" "$radio" "$ifname" "$bssid" "$ssid" >>"$WIRELESS_RUNTIME"
 					;;
 			esac
 			json_select ..
@@ -384,21 +363,41 @@ load_wireless_runtime() {
 }
 
 runtime_for_section() {
-	local wanted="$1" runtime_section runtime_ifname runtime_bssid runtime_ssid
+	local wanted="$1" runtime_section runtime_radio runtime_ifname runtime_bssid runtime_ssid
+	runtime_radio=''
 	runtime_ifname=''
 	runtime_bssid=''
 	runtime_ssid=''
-	while IFS='|' read -r runtime_section runtime_ifname runtime_bssid runtime_ssid; do
+	while IFS='|' read -r runtime_section runtime_radio runtime_ifname runtime_bssid runtime_ssid; do
 		[ "$runtime_section" = "$wanted" ] || continue
-		printf '%s|%s|%s\n' "$runtime_ifname" "$runtime_bssid" "$runtime_ssid"
+		printf '%s|%s|%s|%s\n' "$runtime_radio" "$runtime_ifname" "$runtime_bssid" "$runtime_ssid"
 		return 0
 	done <"$WIRELESS_RUNTIME"
 }
 
 emit_configured_access_points() {
-	local section mode ssid network bridge mapping_error disabled runtime active interface bssid runtime_ssid
+	local section mode ssid network device mapping_error disabled runtime active radio ifname bssid runtime_ssid
+	local unique ambiguous
 	. /lib/functions.sh
+	. "$AP_LIB"
 	load_wireless_runtime
+	SSID_INVENTORY=/var/run/wloc/rpc-wireless-ssids.$$
+	: >"$SSID_INVENTORY"
+	collect_configured_ssid() {
+		local candidate_mode candidate_ssid
+		candidate_mode=''
+		candidate_ssid=''
+		config_get candidate_mode "$1" mode ap
+		case "$candidate_mode" in
+			ap|ap-wds) ;;
+			*) return 0;;
+		esac
+		config_get candidate_ssid "$1" ssid ''
+		[ -n "$candidate_ssid" ] && printf '%s\n' "$candidate_ssid" >>"$SSID_INVENTORY"
+	}
+	ssid_is_ambiguous() {
+		[ "$(grep -F -x -c -- "$1" "$SSID_INVENTORY" 2>/dev/null || true)" -gt 1 ]
+	}
 
 	json_init
 	json_add_array access_points
@@ -412,21 +411,27 @@ emit_configured_access_points() {
 		config_get ssid "$section" ssid ''
 		config_get network "$section" network ''
 		config_get_bool disabled "$section" disabled 0
-		bridge=''
+		device=''
 		mapping_error=''
+		if [ -z "$ssid" ]; then
+			mapping_error='SSID is empty'
+		elif ssid_is_ambiguous "$ssid"; then
+			mapping_error="SSID \"$ssid\" is used by multiple APs and cannot be selected by WLOC."
+		fi
 		if [ -z "$network" ]; then
 			mapping_error='network is not configured'
-		elif case "$network" in *[!A-Za-z0-9_.-]*) true;; *) false;; esac; then
-			mapping_error='ambiguous network mapping'
 		else
-			bridge="$(network_bridge "$network" 2>/dev/null || true)"
-			[ -n "$bridge" ] || mapping_error='network bridge unavailable'
+			device="$(wloc_ap_get_network_device "$network" 2>/dev/null || true)"
+			[ -n "$device" ] || mapping_error='network device unavailable'
 		fi
 		interface=''
+		radio=''
 		bssid=''
 		runtime_ssid=''
 		runtime="$(runtime_for_section "$section")"
 		if [ -n "$runtime" ]; then
+			radio="${runtime%%|*}"
+			runtime="${runtime#*|}"
 			interface="${runtime%%|*}"
 			runtime="${runtime#*|}"
 			bssid="${runtime%%|*}"
@@ -435,24 +440,30 @@ emit_configured_access_points() {
 		else
 			active=0
 		fi
-	[ -n "$runtime_ssid" ] && ssid="$runtime_ssid"
+		if [ -z "$ssid" ]; then unique=0; else unique=1; fi
+		if ssid_is_ambiguous "$ssid"; then unique=0; ambiguous=1; else ambiguous=0; fi
 		json_add_object
 		json_add_string section "$section"
 		json_add_string ssid "$ssid"
 		json_add_string network "$network"
-		json_add_string bridge "$bridge"
+		json_add_string device "$device"
 		json_add_string mapping_error "$mapping_error"
+		json_add_boolean unique "$unique"
+		json_add_boolean ambiguous "$ambiguous"
 		json_add_boolean disabled "$disabled"
 		json_add_boolean active "$active"
-		json_add_string interface "$interface"
+		json_add_boolean up "$active"
+		json_add_string radio "$radio"
+		json_add_string ifname "$interface"
 		json_add_string bssid "$bssid"
 		json_close_object
 	}
 	config_load wireless
+	config_foreach collect_configured_ssid wifi-iface
 	config_foreach append_configured_access_point wifi-iface
 	json_close_array
 	json_dump
-	rm -f "$WIRELESS_RUNTIME"
+	rm -f "$WIRELESS_RUNTIME" "$SSID_INVENTORY"
 }
 
 case "$1" in

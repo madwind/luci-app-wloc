@@ -13,7 +13,7 @@ const source = fs.readFileSync(sourcePath, 'utf8').replace(
     'return view.extend({'
 );
 
-function loadInventory(responses) {
+function loadDiscovery(responses) {
     const testExports = {};
     const delays = [];
     const rpc = {
@@ -30,12 +30,12 @@ function loadInventory(responses) {
             callback();
         }
     }, testExports);
-    return { api: testExports, delays: delays };
+    return {api: testExports, delays: delays};
 }
 
 async function testRetriesAnEmptyInventoryAfterRestart() {
     let calls = 0;
-    const harness = loadInventory({
+    const harness = loadDiscovery({
         'luci.wloc.configured_access_points': function () {
             calls++;
             return Promise.resolve(calls < 3 ? { access_points: [] } : {
@@ -43,10 +43,11 @@ async function testRetriesAnEmptyInventoryAfterRestart() {
                     section: 'wloc_us_5g',
                     ssid: 'WLOC-US',
                     network: 'wloc_us',
-                    bridge: 'br-wloc-us',
+                    device: 'br-lan',
                     active: true,
-                    disabled: false,
-                    interface: 'phy0-ap0',
+                    up: true,
+                    unique: true,
+                    ifname: 'phy0-ap0',
                     bssid: '02:11:22:33:44:55'
                 }]
             });
@@ -58,65 +59,75 @@ async function testRetriesAnEmptyInventoryAfterRestart() {
         harness.api.constants.retryMs,
         harness.api.constants.retryMs
     ]);
-    assert.strictEqual(result.access_points[0].section, 'wloc_us_5g');
-    assert.strictEqual(result.access_points[0].bridge, 'br-wloc-us');
+    assert.strictEqual(result.access_points[0].ssid, 'WLOC-US');
+    assert.strictEqual(result.access_points[0].device, 'br-lan');
 }
 
-async function testBssidChangesWithoutChangingStableIdentity() {
-    const harness = loadInventory({
-        'luci.wloc.configured_access_points': function () {
-            return Promise.resolve({
-                access_points: [{
-                    section: 'wloc_us_5g',
-                    network: 'wloc_us',
-                    bridge: 'br-wloc-us',
-                    active: true,
-                    bssid: '02:AA:BB:CC:DD:EE'
-                }]
-            });
-        }
-    });
-    const result = await harness.api.callWirelessAccessPoints(1);
-    assert.deepStrictEqual(
-        [result.access_points[0].section, result.access_points[0].bridge],
-        ['wloc_us_5g', 'br-wloc-us']
-    );
-    assert.strictEqual(result.access_points[0].bssid, '02:AA:BB:CC:DD:EE');
-}
-
-async function testDisabledConfiguredApRemainsAvailable() {
-    const harness = loadInventory({
+async function testBssidAndRuntimeInterfaceAreMetadata() {
+    const harness = loadDiscovery({
         'luci.wloc.configured_access_points': function () {
             return Promise.resolve({
                 access_points: [{
                     section: 'wloc_us_5g',
                     ssid: 'WLOC-US',
                     network: 'wloc_us',
-                    bridge: 'br-wloc-us',
+                    device: 'br-lan',
+                    active: true,
+                    ifname: 'phy0-ap0',
+                    bssid: '02:AA:BB:CC:DD:EE',
+                    unique: true
+                }]
+            });
+        }
+    });
+    const result = await harness.api.callWirelessAccessPoints(1);
+    assert.deepStrictEqual(
+        [result.access_points[0].ssid, result.access_points[0].section],
+        ['WLOC-US', 'wloc_us_5g']
+    );
+    assert.strictEqual(result.access_points[0].bssid, '02:AA:BB:CC:DD:EE');
+    assert.strictEqual(result.access_points[0].ifname, 'phy0-ap0');
+}
+
+async function testOfflineConfiguredApRemainsAvailable() {
+    const harness = loadDiscovery({
+        'luci.wloc.configured_access_points': function () {
+            return Promise.resolve({
+                access_points: [{
+                    section: 'wloc_us_5g',
+                    ssid: 'WLOC-US',
+                    network: 'wloc_us',
+                    device: 'br-lan',
                     active: false,
+                    up: false,
                     disabled: true,
-                    bssid: ''
+                    bssid: '',
+                    unique: true
                 }]
             });
         }
     });
     const result = await harness.api.callWirelessAccessPoints(1);
     assert.strictEqual(result.access_points.length, 1);
-    assert.strictEqual(result.access_points[0].section, 'wloc_us_5g');
+    assert.strictEqual(result.access_points[0].ssid, 'WLOC-US');
     assert.strictEqual(result.access_points[0].disabled, true);
     assert.strictEqual(result.access_points[0].bssid, '');
 }
 
-assert.ok(source.includes("uci.set('wloc', sectionId, 'wireless_section', value)"));
-assert.ok(source.includes("uci.set('wloc', sectionId, 'bridge', ap.bridge)"));
-assert.ok(source.includes("uci.unset('wloc', sectionId, 'bssid')"));
+assert.ok(source.includes("form.ListValue, 'ssid', _('Access Point / SSID')"));
+assert.ok(source.includes("uci.set('wloc', sectionId, 'ssid', value)"));
+assert.ok(source.includes("uci.unset('wloc', sectionId, 'bridge')"));
+assert.ok(source.includes("uci.unset('wloc', sectionId, 'wireless_section')"));
+assert.ok(source.includes("Configured SSID \"%s\" was not found."));
+assert.ok(source.includes("SSID \"%s\" is used by multiple APs and cannot be selected by WLOC."));
+assert.ok(!source.includes("uci.set('wloc', sectionId, 'wireless_section', value)"));
 
 Promise.resolve()
     .then(testRetriesAnEmptyInventoryAfterRestart)
-    .then(testBssidChangesWithoutChangingStableIdentity)
-    .then(testDisabledConfiguredApRemainsAvailable)
+    .then(testBssidAndRuntimeInterfaceAreMetadata)
+    .then(testOfflineConfiguredApRemainsAvailable)
     .then(function () {
-        process.stdout.write('Wireless section discovery tests: PASS\n');
+        process.stdout.write('AP discovery tests: PASS\n');
     })
     .catch(function (error) {
         process.stderr.write(error.stack + '\n');
