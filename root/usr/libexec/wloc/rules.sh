@@ -5,7 +5,6 @@ set -eu
 
 TABLE=wloc
 INGRESS_SET=target_ingress_interfaces
-LEGACY_INGRESS_SET=target_ap_interfaces
 HOST_SET=apple_wloc_v4
 # The RPC apply transaction updates this snapshot only after nft succeeds, so
 # DNS maintenance follows the active configuration rather than unsaved state.
@@ -43,17 +42,8 @@ active_ingress_set() {
 		printf '%s\n' "$INGRESS_SET"
 		return 0
 	fi
-	if redirect_uses_set "$LEGACY_INGRESS_SET" "$table_dump" &&
-		nft list set inet "$TABLE" "$LEGACY_INGRESS_SET" >/dev/null 2>&1; then
-		printf '%s\n' "$LEGACY_INGRESS_SET"
-		return 0
-	fi
 	if nft list set inet "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
 		printf '%s\n' "$INGRESS_SET"
-		return 0
-	fi
-	if nft list set inet "$TABLE" "$LEGACY_INGRESS_SET" >/dev/null 2>&1; then
-		printf '%s\n' "$LEGACY_INGRESS_SET"
 		return 0
 	fi
 	return 1
@@ -210,16 +200,14 @@ refresh_hosts() {
 table_healthy() {
 	awk \
 		-v ingress_set="$INGRESS_SET" \
-		-v legacy_ingress_set="$LEGACY_INGRESS_SET" \
 		-v host_set="$HOST_SET" \
 		-v port="$1" '
 		$1 == "set" {
 			current_set = $2
 			if ($2 == ingress_set) new_ingress = 1
-			if ($2 == legacy_ingress_set) legacy_ingress = 1
 			if ($2 == host_set) host = 1
 		}
-		current_set == ingress_set || current_set == legacy_ingress_set {
+		current_set == ingress_set {
 			if ($1 == "type" && $2 == "ifname") ingress_type = 1
 			if ($1 == "flags" && $2 == "timeout") ingress_timeout = 1
 		}
@@ -232,18 +220,17 @@ table_healthy() {
 		}
 		in_redirect && /type[[:space:]]+nat[[:space:]]+hook[[:space:]]+prerouting/ { redirect_hook = 1 }
 		in_redirect && index($0, "iifname @" ingress_set) { redirect_set = ingress_set }
-		in_redirect && index($0, "iifname @" legacy_ingress_set) { redirect_set = legacy_ingress_set }
-		in_redirect && (index($0, "iifname @" ingress_set) || index($0, "iifname @" legacy_ingress_set)) \
+		in_redirect && (index($0, "iifname @" ingress_set)) \
 			&& index($0, "ip daddr @" host_set) \
 			&& index($0, "tcp dport 443") \
 			&& index($0, "counter") \
 			&& index($0, "redirect to :" port) \
-			&& (index($0, "comment \"wloc owned ingress redirect\"") || index($0, "comment \"wloc owned AP redirect\"")) { ingress_redirect = 1 }
+			&& index($0, "comment \"wloc owned ingress redirect\"") { ingress_redirect = 1 }
 		END {
-			exit !((new_ingress || legacy_ingress) && ingress_type && ingress_timeout \
+			exit !(new_ingress && ingress_type && ingress_timeout \
 			&& host && host_type && host_timeout && redirect_chain \
 			&& redirect_hook && ingress_redirect \
-			&& ((redirect_set == ingress_set && new_ingress) || (redirect_set == legacy_ingress_set && legacy_ingress)))
+			&& redirect_set == ingress_set)
 		}
 	'
 }

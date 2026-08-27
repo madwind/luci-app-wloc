@@ -11,9 +11,9 @@ cat >"$lib_functions" <<'EOF'
 config_load() { loaded_config="$1"; }
 config_foreach() {
 	[ "$loaded_config" = wireless ] || return 0
-	"$1" wifi0
-	"$1" wifi1
-	"$1" wifi2
+	"$1" wifi0 || :
+	"$1" wifi1 || :
+	"$1" wifi2 || :
 }
 config_get() {
 	local destination="$1" section="$2" option="$3" value="${4:-}"

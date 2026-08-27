@@ -35,8 +35,8 @@ msgstr "1 小时前"
 msgid "1 min ago"
 msgstr "1 分钟前"
 
-msgid "Access point"
-msgstr "接入点"
+msgid "Access Point / SSID"
+msgstr "接入点 / SSID"
 
 msgid "Action failed: %s"
 msgstr "操作失败：%s"
@@ -50,8 +50,8 @@ msgstr "活动 nftables 规则"
 msgid "Active state"
 msgstr "活动状态"
 
-msgid "Actually disable the selected wireless section during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing section never falls back to another AP or the whole radio."
-msgstr "在此期间通过临时应用 disabled=1 并重新加载 WiFi 来禁用选定的 wireless section。不会提交任何配置；如果该 section 不存在，也不会回退到其他 AP 或整个无线电台。"
+msgid "Actually disable the selected SSID during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing SSID never falls back to another AP or the whole radio."
+msgstr "在此期间通过临时应用 disabled=1 并重新加载 WiFi 来禁用选定的 SSID。不会提交任何配置；如果 SSID 不存在，也不会回退到其他 AP 或整个无线电台。"
 
 msgid "Add AP"
 msgstr "添加 AP"
@@ -206,8 +206,8 @@ msgstr "上次更新"
 msgid "Latitude"
 msgstr "纬度"
 
-msgid "Live AP data is not ready; choices are loaded from the saved wireless configuration."
-msgstr "实时 AP 数据未就绪；选项从已保存的 wireless 配置加载。"
+msgid "Live AP status is not ready; configured SSIDs remain selectable."
+msgstr "实时 AP 状态尚未就绪；仍可选择已配置的 SSID。"
 
 msgid "Loaded"
 msgstr "已加载"
@@ -244,9 +244,6 @@ msgstr "nftables 规则集"
 
 msgid "No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule."
 msgstr "在 wireless 中未找到已配置的 AP。请先添加 wifi-iface，再创建 WLOC 规则。"
-
-msgid "Live AP status is not ready; configured AP entries remain selectable."
-msgstr "实时 AP 状态尚未就绪；仍可选择已配置的 AP。"
 
 msgid "No events in this session yet."
 msgstr "本会话尚无事件。"
@@ -289,12 +286,6 @@ msgstr "刷新"
 
 msgid "Live BSSID"
 msgstr "实时 BSSID"
-
-msgid "Network bridge"
-msgstr "网络桥接设备"
-
-msgid "Network bridge mapping is unavailable."
-msgstr "网络桥接映射不可用。"
 
 msgid "Refresh AP list"
 msgstr "刷新 AP 列表"
@@ -359,17 +350,17 @@ msgstr "正在保存规则..."
 msgid "Scheduled disable"
 msgstr "定时禁用"
 
-msgid "Select a configured wireless section."
-msgstr "请选择已配置的 wireless section。"
+msgid "Select an exact configured SSID and assign one virtual location to clients connected through that AP."
+msgstr "请选择一个已配置的精确 SSID，并为通过该 AP 连接的客户端分配一个虚拟位置。"
 
-msgid "Select an AP and assign one virtual location to all devices connected through its network bridge."
-msgstr "选择一个 AP，并为通过其网络桥接设备连接的所有设备分配一个虚拟位置。"
+msgid "Select the exact, case-sensitive SSID configured in wireless. Runtime interfaces, BSSIDs and devices are discovered automatically."
+msgstr "请选择 wireless 中配置的、大小写敏感的精确 SSID。运行时接口、BSSID 和设备会自动发现。"
 
-msgid "Select a configured AP. Its bridge handles location matching and its wireless section controls scheduled disable."
-msgstr "选择一个已配置的 AP。其桥接设备负责位置匹配，其 wireless section 控制定时禁用。"
+msgid "Configured SSID \"%s\" was not found."
+msgstr "未找到已配置的 SSID“%s”。"
 
-msgid "The selected AP has no unambiguous network bridge."
-msgstr "所选 AP 没有明确对应的网络桥接设备。"
+msgid "SSID \"%s\" is used by multiple APs and cannot be selected by WLOC."
+msgstr "SSID“%s”被多个 AP 使用，WLOC 无法选择它。"
 
 msgid "Runtime interface"
 msgstr "运行时接口"
@@ -453,8 +444,8 @@ msgstr "未保存的更改"
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr "在此浏览器中使用 ipinfo.io 填写 AP 位置坐标。"
 
-msgid "Version %s · Assign one Apple WLOC location to each selected network bridge."
-msgstr "版本 %s · 为每个选定的网络桥接设备分配一个 Apple WLOC 位置。"
+msgid "Version %s · Bind each Apple WLOC location to one unique configured SSID."
+msgstr "版本 %s · 将每个 Apple WLOC 位置绑定到一个唯一的已配置 SSID。"
 
 msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."
 msgstr "自定义表已应用，但无法刷新 Apple WLOC 地址。"

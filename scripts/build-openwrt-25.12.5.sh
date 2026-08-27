@@ -230,6 +230,7 @@ if [ -n "$APK_TOOL" ] && [ -x "$APK_TOOL" ]; then
 		etc/init.d/wloc \
 		etc/uci-defaults/luci-app-wloc \
 		usr/libexec/wloc/rules.sh \
+		usr/libexec/wloc/ap-lib.sh \
 		usr/libexec/wloc/wifi-schedule.sh \
 		usr/libexec/rpcd/luci.wloc; do
 		[ "$(stat -c '%a' "$APK_EXTRACT_DIR/$executable")" = 755 ] \

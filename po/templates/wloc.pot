@@ -34,7 +34,7 @@ msgstr ""
 msgid "1 min ago"
 msgstr ""
 
-msgid "Access point"
+msgid "Access Point / SSID"
 msgstr ""
 
 msgid "Action failed: %s"
@@ -49,7 +49,7 @@ msgstr ""
 msgid "Active state"
 msgstr ""
 
-msgid "Actually disable the selected wireless section during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing section never falls back to another AP or the whole radio."
+msgid "Actually disable the selected SSID during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing SSID never falls back to another AP or the whole radio."
 msgstr ""
 
 msgid "Add AP"
@@ -205,7 +205,7 @@ msgstr ""
 msgid "Latitude"
 msgstr ""
 
-msgid "Live AP data is not ready; choices are loaded from the saved wireless configuration."
+msgid "Live AP status is not ready; configured SSIDs remain selectable."
 msgstr ""
 
 msgid "Loaded"
@@ -242,9 +242,6 @@ msgid "nftables ruleset"
 msgstr ""
 
 msgid "No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule."
-msgstr ""
-
-msgid "Live AP status is not ready; configured AP entries remain selectable."
 msgstr ""
 
 msgid "No events in this session yet."
@@ -287,12 +284,6 @@ msgid "Refresh"
 msgstr ""
 
 msgid "Live BSSID"
-msgstr ""
-
-msgid "Network bridge"
-msgstr ""
-
-msgid "Network bridge mapping is unavailable."
 msgstr ""
 
 msgid "Refresh AP list"
@@ -358,16 +349,16 @@ msgstr ""
 msgid "Scheduled disable"
 msgstr ""
 
-msgid "Select a configured wireless section."
+msgid "Select an exact configured SSID and assign one virtual location to clients connected through that AP."
 msgstr ""
 
-msgid "Select an AP and assign one virtual location to all devices connected through its network bridge."
+msgid "Select the exact, case-sensitive SSID configured in wireless. Runtime interfaces, BSSIDs and devices are discovered automatically."
 msgstr ""
 
-msgid "Select a configured AP. Its bridge handles location matching and its wireless section controls scheduled disable."
+msgid "Configured SSID \"%s\" was not found."
 msgstr ""
 
-msgid "The selected AP has no unambiguous network bridge."
+msgid "SSID \"%s\" is used by multiple APs and cannot be selected by WLOC."
 msgstr ""
 
 msgid "Runtime interface"
@@ -451,7 +442,7 @@ msgstr ""
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr ""
 
-msgid "Version %s · Assign one Apple WLOC location to each selected network bridge."
+msgid "Version %s · Bind each Apple WLOC location to one unique configured SSID."
 msgstr ""
 
 msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."

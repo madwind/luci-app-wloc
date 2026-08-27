@@ -175,63 +175,89 @@ if printf '%s\n' "$empty_host_set_fixture" \
 fi
 
 
-legacy_host_set_fixture="$(printf '%s\n' "$empty_host_set_fixture" \
-	| sed 's/target_ingress_interfaces/target_ap_interfaces/g; s/wloc owned ingress redirect/wloc owned AP redirect/g')"
-printf '%s\n' "$legacy_host_set_fixture" \
-	| table_healthy 61520 \
-	|| fail 'table_healthy rejected the legacy ingress set during migration'
-
-
-echo '  -> bridge ingress synchronization'
+echo '  -> SSID-resolved ingress synchronization'
 
 fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
-mkdir -p "$fixture_root/br-wloc-us/brif"
-: >"$fixture_root/br-wloc-us/brif/phy0-ap0"
-: >"$fixture_root/br-wloc-us/brif/phy1-ap0"
+mkdir -p "$fixture_root/br-lan/brif"
+: >"$fixture_root/br-lan/brif/phy0-ap0"
+: >"$fixture_root/br-lan/brif/phy1-ap0"
 export WLOC_SYS_CLASS_NET="$fixture_root"
-nft_mode=new
 
 nft() {
 	if [ "${1:-}" = '-f' ] && [ "${2:-}" = '-' ]; then
 		cat
 		return 0
 	fi
-	if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ] && [ "$nft_mode" = new ]; then
-		return 0
-	fi
-	if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ap_interfaces ] && [ "$nft_mode" = legacy ]; then
+	if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ]; then
 		return 0
 	fi
 	return 1
 }
 
+resolver_lib="$fixture_root/resolver-lib.sh"
+printf '%s\n' \
+	'config_load() { resolver_config="$1"; }' \
+	'config_foreach() {' \
+	'  if [ "$resolver_config" = wloc ]; then "$1" location_us; "$1" location_jp;' \
+	'  elif [ "$resolver_config" = wireless ]; then "$1" wifi_us; "$1" wifi_jp;' \
+	'  fi' \
+	'}' \
+	'config_get() {' \
+	'  local destination="$1" section="$2" option="$3" value="${4:-}"' \
+	'  case "$section:$option" in' \
+	'    location_us:enabled|location_jp:enabled) value=1;;' \
+	'    location_us:ssid) value=SSID-US;; location_jp:ssid) value=SSID-JP;;' \
+	'    wifi_us:mode|wifi_jp:mode) value=ap;;' \
+	'    wifi_us:ssid) value=SSID-US;; wifi_jp:ssid) value=SSID-JP;;' \
+	'    wifi_us:network|wifi_jp:network) value=lan;;' \
+	'  esac' \
+	'  eval "$destination=\$value"' \
+	'}' \
+	'config_get_bool() { config_get "$@"; }' \
+	>"$resolver_lib"
+export WLOC_LIB_FUNCTIONS="$resolver_lib"
+export WLOC_AP_LIB_PATH="$ROOTFS/usr/libexec/wloc/ap-lib.sh"
+AP_LIB="$WLOC_AP_LIB_PATH"
+uci() {
+	[ "${1:-}" = '-q' ] && shift
+	[ "${1:-}" = get ] || return 1
+	case "${2:-}" in
+		network.lan.device) printf '%s\n' br-lan;;
+		*) return 1;;
+	esac
+}
+load_ap_lib
+
 expected_ingress_batch='flush set inet wloc target_ingress_interfaces
-add element inet wloc target_ingress_interfaces { "br-wloc-us" timeout 30s }
+add element inet wloc target_ingress_interfaces { "br-lan" timeout 30s }
 add element inet wloc target_ingress_interfaces { "phy0-ap0" timeout 30s }
 add element inet wloc target_ingress_interfaces { "phy1-ap0" timeout 30s }'
-[ "$(sync_ingress_interfaces 'br-wloc-us')" = "$expected_ingress_batch" ] \
-	|| fail 'sync_ingress_interfaces generated an unexpected ingress set batch'
+[ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
+	|| fail 'SSID-resolved ingress synchronization generated an unexpected batch'
 
-expected_duplicate_batch="$expected_ingress_batch"
-[ "$(sync_ingress_interfaces 'br-wloc-us' 'br-wloc-us')" = "$expected_duplicate_batch" ] \
-	|| fail 'sync_ingress_interfaces did not deduplicate interfaces'
+[ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
+	|| fail 'reconcile was not idempotent or did not deduplicate shared bridge interfaces'
 
-expected_empty_batch='flush set inet wloc target_ingress_interfaces'
-[ "$(sync_ingress_interfaces 'br-wloc-missing')" = "$expected_empty_batch" ] \
-	|| fail 'sync_ingress_interfaces did not fail open for an unavailable bridge'
 
-if sync_ingress_interfaces 'not/a-bridge'; then
-	fail 'sync_ingress_interfaces accepted an invalid bridge'
+if grep -Eq 'rule\.bridge|duplicate bridge' \
+	"$ROOT/src/wloc-rs/src/config.rs" "$ROOT/src/wloc-rs/src/main.rs" "$ROOT/src/wloc-rs/src/proxy.rs" "$RULES"; then
+	fail 'bridge identity or duplicate-bridge validation remains in core WLOC code'
 fi
 
-nft_mode=legacy
-legacy_batch="$(printf '%s\n' "$expected_ingress_batch" | sed 's/target_ingress_interfaces/target_ap_interfaces/g')"
-[ "$(sync_ingress_interfaces 'br-wloc-us')" = "$legacy_batch" ] \
-	|| fail 'sync_ingress_interfaces did not use the legacy set when required'
+if grep -Eq 'find_wireless_by_bssid|resolve_old_wireless_section|network_bridge' \
+	"$ROOTFS/etc/uci-defaults/luci-app-wloc"; then
+	fail 'SSID migration still contains a BSSID/bridge fallback'
+fi
+
+grep -F 'wloc_ap_find_section_by_ssid' "$RULES" >/dev/null \
+	|| fail 'rules.sh does not resolve ingress from configured SSIDs'
+
+grep -F 'json_add_boolean unique' "$ROOTFS/usr/libexec/rpcd/luci.wloc" >/dev/null \
+	|| fail 'RPC AP discovery does not expose SSID uniqueness'
 
 
-echo '  -> wireless-section schedule synchronization'
+echo '  -> SSID-based schedule synchronization'
 
 if grep -Eq 'runtime_bssid_for_ifname|wireless_ifname|network.*bssid' "$SCHEDULE"; then
 	fail 'wifi schedule still contains a BSSID or runtime-interface fallback'
@@ -240,7 +266,10 @@ fi
 schedule_lib="$fixture_root/schedule-lib.sh"
 printf '%s\n' \
 	'config_load() { schedule_config="$1"; }' \
-	'config_foreach() { [ "$schedule_config" = wloc ] && "$1" wifi_us; }' \
+	'config_foreach() {' \
+	'  if [ "$schedule_config" = wloc ]; then "$1" wifi_us;' \
+	'  elif [ "$schedule_config" = wireless ] && [ "${fake_wireless_exists:-0}" -eq 1 ]; then "$1" wifi_ap; fi' \
+	'}' \
 	'config_get() {' \
 	'  local destination="$1" section="$2" option="$3" value' \
 	'  local default="${4:-}"' \
@@ -250,13 +279,16 @@ printf '%s\n' \
 	'    schedule_enabled) value="$schedule_enabled_value";;' \
 	'    schedule_start) value=00:00;;' \
 	'    schedule_end) value=00:00;;' \
-	'    wireless_section) value=wloc_us_5g;;' \
+	'    ssid) value=WLOC-US;;' \
+	'    mode) value=ap;;' \
+	'    network) value=lan;;' \
 	'  esac' \
 	'  eval "$destination=\$value"' \
 	'}' \
 	'config_get_bool() { config_get "$@"; }' \
 	>"$schedule_lib"
 export WLOC_LIB_FUNCTIONS="$schedule_lib"
+export WLOC_AP_LIB_PATH="$ROOTFS/usr/libexec/wloc/ap-lib.sh"
 export WLOC_SCHEDULE_STATE_DIR="$fixture_root"
 eval "$(sed '/^case /,$d' "$SCHEDULE")"
 
@@ -269,10 +301,10 @@ uci() {
 	case "${1:-}" in
 		get)
 			case "${2:-}" in
-				wireless.wloc_us_5g)
+				wireless.wifi_ap)
 					[ "$fake_wireless_exists" -eq 1 ] || return 1
 					;;
-				wireless.wloc_us_5g.disabled)
+				wireless.wifi_ap.disabled)
 					[ "$fake_wireless_exists" -eq 1 ] || return 1
 					printf '%s\n' "$fake_disabled"
 					;;
@@ -292,8 +324,8 @@ wifi() { reload_count=$((reload_count + 1)); }
 logger() { :; }
 
 reconcile
-[ "$fake_disabled" = 1 ] || fail 'schedule did not disable the selected wireless section'
-[ "$(cat "$fixture_root/wifi-schedule.state")" = 'wloc_us_5g|0' ] \
+[ "$fake_disabled" = 1 ] || fail 'schedule did not disable the SSID-resolved wireless section'
+[ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|0' ] \
 	|| fail 'schedule did not record the original disabled value'
 [ "$reload_count" -eq 1 ] || fail 'schedule did not reload WiFi after disabling'
 
@@ -306,8 +338,8 @@ reconcile
 	schedule_enabled_value=1
 fake_wireless_exists=0
 reconcile
-[ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing wireless section'
-[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing wireless section'
+[ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing SSID'
+[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing SSID'
 
 
 echo 'host tests: PASS'
