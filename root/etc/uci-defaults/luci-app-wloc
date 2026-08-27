@@ -2,17 +2,129 @@
 
 . /lib/functions.sh
 
+valid_ifname() {
+	case "$1" in
+		''|*[!A-Za-z0-9_.-]*) return 1;;
+		esac
+	[ "${#1}" -le 15 ]
+}
+
+valid_section() {
+	case "$1" in
+		''|*[!A-Za-z0-9_-]*) return 1;;
+		esac
+}
+
+network_bridge() {
+	local network="$1" bridge status
+	case "$network" in
+		''|*[!A-Za-z0-9_.-]*) return 1;;
+	esac
+
+	status="$(ubus -S -t 3 call "network.interface.$network" status 2>/dev/null || true)"
+	bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.device' 2>/dev/null || true)"
+	[ -n "$bridge" ] || bridge="$(printf '%s\n' "$status" | jsonfilter -e '@.l3_device' 2>/dev/null || true)"
+	valid_ifname "$bridge" && { printf '%s\n' "$bridge"; return 0; }
+
+	bridge="$(uci -q get "network.$network.device" 2>/dev/null || true)"
+	[ -n "$bridge" ] || bridge="$(uci -q get "network.$network.ifname" 2>/dev/null || true)"
+	valid_ifname "$bridge" && printf '%s\n' "$bridge"
+}
+
+migration_bssid=''
+migration_section=''
+migration_matches=0
+
+find_wireless_by_bssid() {
+	local section="$1" mode candidate candidate_mac
+	config_get mode "$section" mode ap
+	case "$mode" in
+		ap|ap-wds) ;;
+		*) return 0;;
+	esac
+	config_get candidate "$section" bssid ''
+	config_get candidate_mac "$section" macaddr ''
+	case "$migration_bssid" in
+		''|*[!0-9A-Fa-f:]*) return 0;;
+	esac
+	if [ "$(printf '%s' "$candidate" | tr 'A-F' 'a-f')" = "$migration_bssid" ] ||
+		[ "$(printf '%s' "$candidate_mac" | tr 'A-F' 'a-f')" = "$migration_bssid" ]; then
+		migration_matches=$((migration_matches + 1))
+		migration_section="$section"
+	fi
+}
+
+resolve_old_wireless_section() {
+	local bssid="$1"
+	migration_bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
+	migration_section=''
+	migration_matches=0
+	config_foreach find_wireless_by_bssid wifi-iface
+	[ "$migration_matches" -eq 1 ] && printf '%s\n' "$migration_section"
+}
+
+migrate_wifi_rule() {
+	local section="$1" wireless_section bssid ssid network bridge
+	wireless_section="$(uci -q get "wloc.$section.wireless_section" 2>/dev/null || true)"
+	bssid="$(uci -q get "wloc.$section.bssid" 2>/dev/null || true)"
+
+	# A saved section is the preferred source. BSSID is used only once to
+	# recover a missing section from the old schema.
+	if ! valid_section "$wireless_section"; then
+		[ -n "$bssid" ] || {
+			uci -q set "wloc.$section.migration_pending=1"
+			return 0
+		}
+		wireless_section="$(resolve_old_wireless_section "$bssid")"
+	fi
+
+	valid_section "$wireless_section" || {
+		uci -q set "wloc.$section.migration_pending=1"
+		return 0
+	}
+	uci -q get "wireless.$wireless_section" >/dev/null 2>&1 || {
+		uci -q set "wloc.$section.migration_pending=1"
+		return 0
+	}
+
+	config_get network "$wireless_section" network ''
+	bridge="$(network_bridge "$network" 2>/dev/null || true)"
+	valid_ifname "$bridge" || {
+		uci -q set "wloc.$section.migration_pending=1"
+		return 0
+	}
+
+	uci -q set "wloc.$section.wireless_section=$wireless_section"
+	uci -q set "wloc.$section.bridge=$bridge"
+	config_get ssid "$wireless_section" ssid ''
+	[ -n "$(uci -q get "wloc.$section.ssid" 2>/dev/null || true)" ] || [ -z "$ssid" ] ||
+		uci -q set "wloc.$section.ssid=$ssid"
+	uci -q delete "wloc.$section.bssid"
+	uci -q delete "wloc.$section.network"
+	uci -q delete "wloc.$section.wireless_ifname"
+	uci -q delete "wloc.$section.migration_pending"
+}
+
 # Seed only missing values so upgrades never overwrite a configured instance.
-uci -q get wloc.main >/dev/null \
-	|| uci -q set wloc.main=wloc
-uci -q get wloc.main.enabled >/dev/null \
-	|| uci -q set wloc.main.enabled='0'
+uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
+uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 listen_port="$(uci -q get wloc.main.listen_port || true)"
 case "$listen_port" in
 	''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
 esac
-uci -q get wloc.main.runtime_log >/dev/null \
-	|| uci -q set wloc.main.runtime_log='0'
+uci -q get wloc.main.runtime_log >/dev/null || uci -q set wloc.main.runtime_log='0'
+uci -q set wloc.main.schema_version='2'
+
+wloc_sections=''
+collect_wloc_section() {
+	wloc_sections="$wloc_sections $1"
+}
+config_load wloc
+config_foreach collect_wloc_section wifi
+config_load wireless
+for section in $wloc_sections; do
+	migrate_wifi_rule "$section"
+done
 
 uci -q commit wloc
 exit 0

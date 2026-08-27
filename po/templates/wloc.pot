@@ -34,7 +34,7 @@ msgstr ""
 msgid "1 min ago"
 msgstr ""
 
-msgid "Access point (BSSID)"
+msgid "Access point"
 msgstr ""
 
 msgid "Action failed: %s"
@@ -49,7 +49,7 @@ msgstr ""
 msgid "Active state"
 msgstr ""
 
-msgid "Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio."
+msgid "Actually disable the selected wireless section during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing section never falls back to another AP or the whole radio."
 msgstr ""
 
 msgid "Add AP"
@@ -241,10 +241,10 @@ msgstr ""
 msgid "nftables ruleset"
 msgstr ""
 
-msgid "No active AP BSSID was found. WiFi may still be starting; try again shortly."
+msgid "No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule."
 msgstr ""
 
-msgid "No AP is currently visible. Existing saved BSSID values remain selectable, but a new BSSID needs the wireless interface to be available."
+msgid "Live AP status is not ready; configured AP entries remain selectable."
 msgstr ""
 
 msgid "No events in this session yet."
@@ -286,6 +286,15 @@ msgstr ""
 msgid "Refresh"
 msgstr ""
 
+msgid "Live BSSID"
+msgstr ""
+
+msgid "Network bridge"
+msgstr ""
+
+msgid "Network bridge mapping is unavailable."
+msgstr ""
+
 msgid "Refresh AP list"
 msgstr ""
 
@@ -304,7 +313,7 @@ msgstr ""
 msgid "Restore at"
 msgstr ""
 
-msgid "Retry AP discovery after WiFi or the router has restarted. The page reloads only after at least one BSSID is found."
+msgid "Refresh the configured AP inventory after wireless configuration has changed or the router has restarted."
 msgstr ""
 
 msgid "Root CA SHA-256: "
@@ -349,13 +358,19 @@ msgstr ""
 msgid "Scheduled disable"
 msgstr ""
 
-msgid "Select a valid access point BSSID."
+msgid "Select a configured wireless section."
 msgstr ""
 
-msgid "Select an AP and assign one virtual location to all devices connected through it."
+msgid "Select an AP and assign one virtual location to all devices connected through its network bridge."
 msgstr ""
 
-msgid "Select one AP by BSSID. Its location and scheduled disable apply to this AP only."
+msgid "Select a configured AP. Its bridge handles location matching and its wireless section controls scheduled disable."
+msgstr ""
+
+msgid "The selected AP has no unambiguous network bridge."
+msgstr ""
+
+msgid "Runtime interface"
 msgstr ""
 
 msgid "Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s."
@@ -386,9 +401,6 @@ msgid "Success"
 msgstr ""
 
 msgid "Syntax check failed."
-msgstr ""
-
-msgid "The BSSID must be an individual unicast address."
 msgstr ""
 
 msgid "The configured tables currently loaded in the kernel."
@@ -439,7 +451,7 @@ msgstr ""
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr ""
 
-msgid "Version %s · Assign one Apple WLOC location to each selected AP."
+msgid "Version %s · Assign one Apple WLOC location to each selected network bridge."
 msgstr ""
 
 msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."

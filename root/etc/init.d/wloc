@@ -11,15 +11,13 @@ rule_count=0
 rule_error=''
 wifi_sections=''
 
-valid_mac() {
-	local first_octet
+valid_ifname() {
 	case "$1" in
-		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
-		*) return 1;;
+		''|*[!A-Za-z0-9_.-]*)
+			return 1
+			;;
 	esac
-	first_octet="${1%%:*}"
-	case "$first_octet" in [0-9A-Fa-f][13579BbDdFf]) return 1;; esac
-	[ "$1" != '00:00:00:00:00:00' ]
+	[ "${#1}" -le 15 ]
 }
 
 collect_wifi() {
@@ -27,23 +25,28 @@ collect_wifi() {
 }
 
 validate_wifi() {
-	local section enabled name bssid latitude longitude proxy_type proxy_host proxy_port
+	local section enabled name bridge wireless_section schedule_enabled latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
 	config_get name "$section" ssid "$section"
-	config_get bssid "$section" bssid
+	config_get bridge "$section" bridge
+	config_get wireless_section "$section" wireless_section
+	config_get_bool schedule_enabled "$section" schedule_enabled 0
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
-
 	[ -n "$latitude" ] && [ -n "$longitude" ] || {
 		rule_error="incomplete location parameters for AP: $name"; return 0;
 	}
-	valid_mac "$bssid" || { rule_error="invalid BSSID for AP: $name"; return 0; }
+	valid_ifname "$bridge" || { rule_error="invalid network bridge for AP: $name"; return 0; }
+	if [ "$schedule_enabled" -eq 1 ]; then
+		case "$wireless_section" in
+			''|*[!A-Za-z0-9_-]*) rule_error="invalid wireless section for AP: $name"; return 0;;
+		esac
+	fi
 	case "$proxy_type" in
 		direct) ;;
 		http|socks5)
@@ -61,7 +64,7 @@ validate_wifi() {
 }
 
 append_rule_for_wifi() {
-	local section enabled name latitude longitude proxy_type proxy_host proxy_port bssid
+	local section enabled name bridge latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
@@ -71,9 +74,8 @@ append_rule_for_wifi() {
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	config_get bssid "$section" bssid
-	bssid="$(printf '%s' "$bssid" | tr 'A-F' 'a-f')"
-	procd_append_param command --rule "$section" "$bssid" "$latitude" "$longitude"
+	config_get bridge "$section" bridge
+	procd_append_param command --rule "$section" "$bridge" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"

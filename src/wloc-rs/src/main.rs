@@ -40,19 +40,19 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16, bssids: &[String]) -> Result<(), String> {
-    let mut selectors = Vec::with_capacity(bssids.len() + 1);
+fn reconcile_rules(helper: &Path, port: u16, bridges: &[String]) -> Result<(), String> {
+    let mut selectors = Vec::with_capacity(bridges.len() + 1);
     selectors.push(port.to_string());
-    selectors.extend_from_slice(bssids);
+    selectors.extend_from_slice(bridges);
     run_rules(helper, "reconcile", &selectors)
 }
 
 async fn reconcile_rules_async(
     helper: PathBuf,
     port: u16,
-    bssids: Arc<Vec<String>>,
+    bridges: Arc<Vec<String>>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &bssids))
+    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &bridges))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
@@ -171,17 +171,17 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-        let rule_bssids = Arc::new(
+        let rule_bridges = Arc::new(
             config
                 .rules
                 .iter()
-                .map(|rule| rule.bssid.label())
+                .map(|rule| rule.bridge.clone())
                 .collect::<Vec<_>>(),
         );
         reconcile_rules_async(
             config.rules_helper.clone(),
             config.listen_port,
-            Arc::clone(&rule_bssids),
+            Arc::clone(&rule_bridges),
         )
         .await
         .map_err(std::io::Error::other)?;
@@ -203,7 +203,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let lease_status = Arc::clone(&status);
         let lease_helper = config.rules_helper.clone();
         let lease_port = config.listen_port;
-        let lease_bssids = Arc::clone(&rule_bssids);
+        let lease_bridges = Arc::clone(&rule_bridges);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -212,7 +212,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if let Err(error) = reconcile_rules_async(
                     lease_helper.clone(),
                     lease_port,
-                    Arc::clone(&lease_bssids),
+                    Arc::clone(&lease_bridges),
                 )
                 .await
                 {

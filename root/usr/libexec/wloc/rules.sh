@@ -4,7 +4,8 @@
 set -eu
 
 TABLE=wloc
-AP_INTERFACE_SET=target_ap_interfaces
+INGRESS_SET=target_ingress_interfaces
+LEGACY_INGRESS_SET=target_ap_interfaces
 HOST_SET=apple_wloc_v4
 # The RPC apply transaction updates this snapshot only after nft succeeds, so
 # DNS maintenance follows the active configuration rather than unsaved state.
@@ -21,17 +22,50 @@ DNS_SAMPLES=1
 DNS_REFRESH_SECONDS=300
 DNS_RETRY_SECONDS=60
 ORDER_CHECK_SECONDS=60
-AP_INTERFACE_TIMEOUT=30s
+INGRESS_INTERFACE_TIMEOUT=30s
 
-clear_ap_interfaces() {
-	nft list set inet "$TABLE" "$AP_INTERFACE_SET" >/dev/null 2>&1 ||
+redirect_uses_set() {
+	local wanted="$1" table_dump
+	table_dump="${2:-}"
+	printf '%s\n' "$table_dump" | awk -v wanted="$wanted" '
+		$1 == "chain" { in_redirect = ($2 == "redirect_prerouting") }
+		in_redirect && index($0, "iifname @" wanted) { found = 1 }
+		END { exit !found }
+	'
+}
+
+active_ingress_set() {
+	local table_dump
+	table_dump="$(nft list table inet "$TABLE" 2>/dev/null || true)"
+	if redirect_uses_set "$INGRESS_SET" "$table_dump" &&
+		nft list set inet "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
+		printf '%s\n' "$INGRESS_SET"
 		return 0
-	nft flush set inet "$TABLE" "$AP_INTERFACE_SET" >/dev/null 2>&1 ||
-		return 1
+	fi
+	if redirect_uses_set "$LEGACY_INGRESS_SET" "$table_dump" &&
+		nft list set inet "$TABLE" "$LEGACY_INGRESS_SET" >/dev/null 2>&1; then
+		printf '%s\n' "$LEGACY_INGRESS_SET"
+		return 0
+	fi
+	if nft list set inet "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
+		printf '%s\n' "$INGRESS_SET"
+		return 0
+	fi
+	if nft list set inet "$TABLE" "$LEGACY_INGRESS_SET" >/dev/null 2>&1; then
+		printf '%s\n' "$LEGACY_INGRESS_SET"
+		return 0
+	fi
+	return 1
+}
+
+clear_ingress_interfaces() {
+	local set
+	set="$(active_ingress_set)" || return 0
+	nft flush set inet "$TABLE" "$set" >/dev/null 2>&1 || return 1
 }
 
 cleanup() {
-	clear_ap_interfaces || true
+	clear_ingress_interfaces || true
 	rm -f "$STAMP" "$DNS_ATTEMPT_STAMP" "$ORDER_STATE" "$ORDER_CHECK_STAMP" \
 		"$PRIORITY_STATE" "$PRIORITY_DETAILS"
 }
@@ -46,19 +80,6 @@ valid_ipv4() {
 	oldifs=$IFS; IFS=.; set -- $1; IFS=$oldifs
 	[ "$#" -eq 4 ] || return 1
 	for octet in "$@"; do [ "$octet" -ge 0 ] 2>/dev/null && [ "$octet" -le 255 ] || return 1; done
-}
-
-valid_mac() {
-	local first_octet
-	case "$1" in
-		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
-		*) return 1;;
-	esac
-	first_octet="${1%%:*}"
-	case "$first_octet" in
-		[0-9A-Fa-f][13579BbDdFf]) return 1;;
-	esac
-	[ "$1" != '00:00:00:00:00:00' ]
 }
 
 host_set_targets() {
@@ -187,17 +208,21 @@ refresh_hosts() {
 
 table_healthy() {
 	awk \
-		-v ap_interface_set="$AP_INTERFACE_SET" \
+		-v ingress_set="$INGRESS_SET" \
+		-v legacy_ingress_set="$LEGACY_INGRESS_SET" \
 		-v host_set="$HOST_SET" \
 		-v port="$1" '
 		$1 == "set" {
 			current_set = $2
-			if ($2 == ap_interface_set) ap_interface = 1
+			if ($2 == ingress_set) new_ingress = 1
+			if ($2 == legacy_ingress_set) legacy_ingress = 1
 			if ($2 == host_set) host = 1
 		}
-		current_set == ap_interface_set && $1 == "type" && $2 == "ifname" { ap_type = 1 }
+		current_set == ingress_set || current_set == legacy_ingress_set {
+			if ($1 == "type" && $2 == "ifname") ingress_type = 1
+			if ($1 == "flags" && $2 == "timeout") ingress_timeout = 1
+		}
 		current_set == host_set && $1 == "type" && $2 == "ipv4_addr" { host_type = 1 }
-		current_set == ap_interface_set && $1 == "flags" && $2 == "timeout" { ap_timeout = 1 }
 		current_set == host_set && $1 == "flags" && $2 == "timeout" { host_timeout = 1 }
 		$1 == "chain" {
 			current_set = ""
@@ -205,16 +230,19 @@ table_healthy() {
 			if (in_redirect) redirect_chain = 1
 		}
 		in_redirect && /type[[:space:]]+nat[[:space:]]+hook[[:space:]]+prerouting/ { redirect_hook = 1 }
-		in_redirect && index($0, "iifname @" ap_interface_set) \
+		in_redirect && index($0, "iifname @" ingress_set) { redirect_set = ingress_set }
+		in_redirect && index($0, "iifname @" legacy_ingress_set) { redirect_set = legacy_ingress_set }
+		in_redirect && (index($0, "iifname @" ingress_set) || index($0, "iifname @" legacy_ingress_set)) \
 			&& index($0, "ip daddr @" host_set) \
 			&& index($0, "tcp dport 443") \
 			&& index($0, "counter") \
 			&& index($0, "redirect to :" port) \
-			&& index($0, "comment \"wloc owned AP redirect\"") { ap_redirect = 1 }
+			&& (index($0, "comment \"wloc owned ingress redirect\"") || index($0, "comment \"wloc owned AP redirect\"")) { ingress_redirect = 1 }
 		END {
-			exit !(ap_interface && ap_type && ap_timeout \
-				&& host && host_type && host_timeout && redirect_chain \
-				&& redirect_hook && ap_redirect)
+			exit !((new_ingress || legacy_ingress) && ingress_type && ingress_timeout \
+			&& host && host_type && host_timeout && redirect_chain \
+			&& redirect_hook && ingress_redirect \
+			&& ((redirect_set == ingress_set && new_ingress) || (redirect_set == legacy_ingress_set && legacy_ingress)))
 		}
 	'
 }
@@ -489,35 +517,9 @@ apply_rules() {
 	check_prerouting_order || true
 }
 
-valid_interface() {
+valid_ifname() {
 	case "$1" in ''|*[!A-Za-z0-9_.-]*) return 1;; esac
 	[ "${#1}" -le 15 ]
-}
-
-normalize_mac() {
-	awk -v value="$1" 'BEGIN { print tolower(value) }'
-}
-
-hostapd_interfaces() {
-	local wanted object status bssid interface
-	wanted="$(normalize_mac "$1")"
-	valid_mac "$wanted" || return 1
-	for object in $(ubus -S -t 3 list 'hostapd.*' 2>/dev/null || true); do
-		case "$object" in hostapd.*) :;; *) continue;; esac
-		status="$(ubus -S -t 3 call "$object" get_status '{}' 2>/dev/null || true)"
-		[ -n "$status" ] || continue
-		bssid="$(printf '%s\n' "$status" | jsonfilter -e '@.bssid' 2>/dev/null || true)"
-		bssid="$(normalize_mac "$bssid")"
-		[ "$bssid" = "$wanted" ] || continue
-		interface="$(printf '%s\n' "$status" | jsonfilter -e '@.interface' 2>/dev/null || true)"
-		[ -n "$interface" ] || interface="$(printf '%s\n' "$status" | jsonfilter -e '@.ifname' 2>/dev/null || true)"
-		[ -n "$interface" ] || interface="${object#hostapd.}"
-		valid_interface "$interface" && printf '%s\n' "$interface"
-	done
-}
-
-lease() {
-	resolve_hosts || { echo 'wloc: Apple WLOC DNS resolution failed' >&2; exit 1; }
 }
 
 reconcile() {
@@ -528,16 +530,29 @@ reconcile() {
 	ensure_table_healthy "$port" || return 1
 	resolve_hosts || return 1
 	if order_check_due; then check_prerouting_order || true; fi
-	sync_ap_interfaces "$@"
+	sync_ingress_interfaces "$@"
 }
 
-sync_ap_interfaces() {
-	local bssid interface interfaces
+resolve_ingress_interfaces() {
+	local bridge="$1" member sys_class_net
+	valid_ifname "$bridge" || return 1
+	sys_class_net="${WLOC_SYS_CLASS_NET:-/sys/class/net}"
+	[ -e "$sys_class_net/$bridge" ] || return 0
+	printf '%s\n' "$bridge"
+	for member in "$sys_class_net/$bridge"/brif/*; do
+		[ -e "$member" ] || continue
+		member="${member##*/}"
+		valid_ifname "$member" && printf '%s\n' "$member"
+	done
+}
+
+sync_ingress_interfaces() {
+	local bridge interface interfaces set
 
 	interfaces=''
-	for bssid in "$@"; do
-		valid_mac "$bssid" || {
-			echo "wloc: invalid AP BSSID: $bssid" >&2
+	for bridge in "$@"; do
+		valid_ifname "$bridge" || {
+			echo "wloc: invalid network bridge: $bridge" >&2
 			return 1
 		}
 
@@ -547,27 +562,27 @@ sync_ap_interfaces() {
 				*" $interface "*) ;;
 				*) interfaces="$interfaces $interface" ;;
 			esac
-		done <<EOF
-$(hostapd_interfaces "$bssid")
+			done <<EOF
+$(resolve_ingress_interfaces "$bridge")
 EOF
 	done
+	set="$(active_ingress_set)" || {
+		echo "wloc: no compatible ingress interface set is loaded" >&2
+		return 1
+	}
 
 	{
 		printf 'flush set inet %s %s\n' \
-			"$TABLE" "$AP_INTERFACE_SET"
+			"$TABLE" "$set"
 		for interface in $interfaces; do
 			printf 'add element inet %s %s { "%s" timeout %s }\n' \
-				"$TABLE" "$AP_INTERFACE_SET" "$interface" "$AP_INTERFACE_TIMEOUT"
+				"$TABLE" "$set" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
 		done
 	} | nft -f -
 }
 
 case "${1:-}" in
 	apply) apply_rules "${2:-}";;
-	lease)
-		shift
-		lease "$@"
-		;;
 	reconcile)
 		port="${2:-}"
 		shift 2
@@ -580,5 +595,5 @@ case "${1:-}" in
 	check-order) check_prerouting_order;;
 	resolve-hosts) resolve_hosts;;
 	refresh-hosts) refresh_hosts;;
-	*) echo 'usage: rules.sh {apply PORT|lease|reconcile PORT|cleanup|status|check-order|resolve-hosts|refresh-hosts}' >&2; exit 2;;
+	*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|check-order|resolve-hosts|refresh-hosts}' >&2; exit 2;;
 esac

@@ -3,38 +3,6 @@ use std::path::PathBuf;
 
 use crate::wloc::PatchTarget;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct MacAddress([u8; 6]);
-
-impl MacAddress {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        let mut bytes = [0_u8; 6];
-        let parts = value.split(':').collect::<Vec<_>>();
-        if parts.len() != 6 {
-            return Err("invalid MAC address".into());
-        }
-        for (index, part) in parts.iter().enumerate() {
-            if part.len() != 2 {
-                return Err("invalid MAC address".into());
-            }
-            bytes[index] =
-                u8::from_str_radix(part, 16).map_err(|_| "invalid MAC address".to_owned())?;
-        }
-        if bytes == [0; 6] || bytes == [0xff; 6] || bytes[0] & 1 != 0 {
-            return Err("MAC must be an individual unicast address".into());
-        }
-        Ok(Self(bytes))
-    }
-
-    pub fn label(self) -> String {
-        self.0
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<Vec<_>>()
-            .join(":")
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundProxy {
     Direct,
@@ -64,7 +32,7 @@ impl OutboundProxy {
 pub struct LocationRule {
     pub id: String,
     pub name: String,
-    pub bssid: MacAddress,
+    pub bridge: String,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
 }
@@ -86,9 +54,9 @@ impl LocationRule {
 
     pub fn log_context(&self) -> String {
         format!(
-            "rule_name=\"{}\" ap_bssid={}",
+            "rule_name=\"{}\" bridge={}",
             self.safe_log_name(),
-            self.bssid.label().to_uppercase()
+            self.bridge
         )
     }
 
@@ -111,7 +79,7 @@ fn parse_target<I>(args: &mut I, flag: &str) -> Result<PatchTarget, String>
 where
     I: Iterator<Item = String>,
 {
-    let missing = || format!("{flag} requires ID DEVICE NETWORK LATITUDE LONGITUDE");
+    let missing = || format!("{flag} requires ID BRIDGE LATITUDE LONGITUDE");
     let latitude = args
         .next()
         .ok_or_else(missing)?
@@ -156,12 +124,18 @@ impl Config {
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
                         return Err(format!("duplicate rule ID: {id}"));
                     }
-                    let bssid = MacAddress::parse(&args.next().ok_or_else(value)?)?;
+                    let bridge = parse_bridge(&args.next().ok_or_else(value)?)?;
+                    if rules
+                        .iter()
+                        .any(|rule: &LocationRule| rule.bridge == bridge)
+                    {
+                        return Err(format!("duplicate bridge: {bridge}"));
+                    }
                     let target = parse_target(&mut args, &flag)?;
                     rules.push(LocationRule {
                         name: id.clone(),
                         id,
-                        bssid,
+                        bridge,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
@@ -212,7 +186,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID AP_BSSID LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+        "wlocd --rule ID BRIDGE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
     }
 }
 
@@ -251,6 +225,18 @@ fn parse_rule_id(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn parse_bridge(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 15
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return Err("invalid bridge".into());
+    }
+    Ok(value.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,12 +250,12 @@ mod tests {
         let config = Config::from_iter(args(&[
             "--rule",
             "ap1",
-            "aa:bb:cc:dd:ee:01",
+            "br-wloc-us",
             "1",
             "2",
             "--rule",
             "ap2",
-            "aa:bb:cc:dd:ee:02",
+            "br-wloc-eu",
             "3",
             "4",
         ]))
@@ -289,7 +275,7 @@ mod tests {
         let config = Config::from_iter(args(&[
             "--rule",
             "ap",
-            "aa:bb:cc:dd:ee:01",
+            "br-wloc-london",
             "51.5074",
             "-0.1277",
             "--rule-name",
@@ -314,43 +300,44 @@ mod tests {
     }
 
     #[test]
-    fn accepts_overlapping_rules_but_rejects_duplicate_ids() {
-        let overlapping = Config::from_iter(args(&[
+    fn rejects_duplicate_bridges_and_ids() {
+        let duplicate_bridge = Config::from_iter(args(&[
             "--rule",
             "first",
-            "aa:bb:cc:dd:ee:01",
+            "br-wloc-us",
             "1",
             "2",
             "--rule",
             "second",
-            "aa:bb:cc:dd:ee:01",
+            "br-wloc-us",
             "3",
             "4",
         ]));
-        assert!(overlapping.is_ok());
+        assert!(duplicate_bridge.unwrap_err().contains("duplicate bridge"));
 
         let duplicate_id = Config::from_iter(args(&[
             "--rule",
             "same",
-            "aa:bb:cc:dd:ee:01",
+            "br-wloc-us",
             "1",
             "2",
             "--rule",
             "same",
-            "aa:bb:cc:dd:ee:02",
+            "br-wloc-eu",
             "3",
             "4",
         ]));
         assert!(duplicate_id.unwrap_err().contains("duplicate rule ID"));
-        assert!(MacAddress::parse("01:00:5e:00:00:01").is_err());
     }
 
     #[test]
-    fn ap_bssid_is_explicit() {
-        let ap = MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap();
+    fn bridge_name_must_be_a_linux_interface_name() {
         let config =
-            Config::from_iter(args(&["--rule", "diablo", "aa:bb:cc:dd:ee:01", "1", "2"])).unwrap();
-        assert_eq!(config.rules[0].bssid, ap);
+            Config::from_iter(args(&["--rule", "diablo", "br-wloc-us", "1", "2"])).unwrap();
+        assert_eq!(config.rules[0].bridge, "br-wloc-us");
         assert!(Config::from_iter(args(&["--rule", "bad", "*", "1", "2"])).is_err());
+        assert!(Config::from_iter(args(&["--rule", "bad", "", "1", "2"])).is_err());
+        assert!(Config::from_iter(args(&["--rule", "bad", "br wloc", "1", "2"])).is_err());
+        assert!(Config::from_iter(args(&["--rule", "bad", "br-1234567890123", "1", "2"])).is_err());
     }
 }

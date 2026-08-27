@@ -35,8 +35,8 @@ msgstr "1 小时前"
 msgid "1 min ago"
 msgstr "1 分钟前"
 
-msgid "Access point (BSSID)"
-msgstr "接入点（BSSID）"
+msgid "Access point"
+msgstr "接入点"
 
 msgid "Action failed: %s"
 msgstr "操作失败：%s"
@@ -50,8 +50,8 @@ msgstr "活动 nftables 规则"
 msgid "Active state"
 msgstr "活动状态"
 
-msgid "Actually disable the matching OpenWrt AP during this window by applying a temporary wireless disabled=1 override and reloading WiFi. Nothing is committed; the original value is restored afterward. BSSID mode requires an exact AP interface or wifi-iface mapping and never falls back to the whole radio."
-msgstr "在此期间通过临时应用 wireless disabled=1 并重新加载 WiFi 来实际禁用匹配的 OpenWrt AP。不会提交任何配置，之后将恢复原值。BSSID 模式需要精确的 AP 接口或 wifi-iface 映射，不会回退到整个无线电台。"
+msgid "Actually disable the selected wireless section during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing section never falls back to another AP or the whole radio."
+msgstr "在此期间通过临时应用 disabled=1 并重新加载 WiFi 来禁用选定的 wireless section。不会提交任何配置；如果该 section 不存在，也不会回退到其他 AP 或整个无线电台。"
 
 msgid "Add AP"
 msgstr "添加 AP"
@@ -242,11 +242,11 @@ msgstr "nftables 配置"
 msgid "nftables ruleset"
 msgstr "nftables 规则集"
 
-msgid "No active AP BSSID was found. WiFi may still be starting; try again shortly."
-msgstr "未找到活动的 AP BSSID。WiFi 可能仍在启动，请稍后再试。"
+msgid "No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule."
+msgstr "在 wireless 中未找到已配置的 AP。请先添加 wifi-iface，再创建 WLOC 规则。"
 
-msgid "No AP is currently visible. Existing saved BSSID values remain selectable, but a new BSSID needs the wireless interface to be available."
-msgstr "当前没有可见的 AP。已保存的 BSSID 仍可被选择，但新的 BSSID 需要无线接口可用。"
+msgid "Live AP status is not ready; configured AP entries remain selectable."
+msgstr "实时 AP 状态尚未就绪；仍可选择已配置的 AP。"
 
 msgid "No events in this session yet."
 msgstr "本会话尚无事件。"
@@ -287,6 +287,15 @@ msgstr "原因：%s"
 msgid "Refresh"
 msgstr "刷新"
 
+msgid "Live BSSID"
+msgstr "实时 BSSID"
+
+msgid "Network bridge"
+msgstr "网络桥接设备"
+
+msgid "Network bridge mapping is unavailable."
+msgstr "网络桥接映射不可用。"
+
 msgid "Refresh AP list"
 msgstr "刷新 AP 列表"
 
@@ -305,8 +314,8 @@ msgstr "重启未完成。WLOC prerouting 优先级：%s。发现代理优先级
 msgid "Restore at"
 msgstr "恢复时间"
 
-msgid "Retry AP discovery after WiFi or the router has restarted. The page reloads only after at least one BSSID is found."
-msgstr "在 WiFi 或路由器重启后重试 AP 发现。仅在找到至少一个 BSSID 后才会重新加载页面。"
+msgid "Refresh the configured AP inventory after wireless configuration has changed or the router has restarted."
+msgstr "无线配置变更或路由器重启后，刷新已配置的 AP 清单。"
 
 msgid "Root CA SHA-256: "
 msgstr "根证书 SHA-256："
@@ -350,14 +359,20 @@ msgstr "正在保存规则..."
 msgid "Scheduled disable"
 msgstr "定时禁用"
 
-msgid "Select a valid access point BSSID."
-msgstr "请选择有效的接入点 BSSID。"
+msgid "Select a configured wireless section."
+msgstr "请选择已配置的 wireless section。"
 
-msgid "Select an AP and assign one virtual location to all devices connected through it."
-msgstr "选择一个 AP，并为通过它连接的所有设备分配一个虚拟位置。"
+msgid "Select an AP and assign one virtual location to all devices connected through its network bridge."
+msgstr "选择一个 AP，并为通过其网络桥接设备连接的所有设备分配一个虚拟位置。"
 
-msgid "Select one AP by BSSID. Its location and scheduled disable apply to this AP only."
-msgstr "按 BSSID 选择一个 AP。其位置和定时禁用设置仅适用于该 AP。"
+msgid "Select a configured AP. Its bridge handles location matching and its wireless section controls scheduled disable."
+msgstr "选择一个已配置的 AP。其桥接设备负责位置匹配，其 wireless section 控制定时禁用。"
+
+msgid "The selected AP has no unambiguous network bridge."
+msgstr "所选 AP 没有明确对应的网络桥接设备。"
+
+msgid "Runtime interface"
+msgstr "运行时接口"
 
 msgid "Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s."
 msgstr "服务已重启。WLOC prerouting 优先级：%s。发现代理优先级：%s。"
@@ -389,8 +404,6 @@ msgstr "成功"
 msgid "Syntax check failed."
 msgstr "语法检查失败。"
 
-msgid "The BSSID must be an individual unicast address."
-msgstr "BSSID 必须是独立的单播地址。"
 
 msgid "The configured tables currently loaded in the kernel."
 msgstr "当前加载到内核中的已配置表。"
@@ -440,8 +453,8 @@ msgstr "未保存的更改"
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr "在此浏览器中使用 ipinfo.io 填写 AP 位置坐标。"
 
-msgid "Version %s · Assign one Apple WLOC location to each selected AP."
-msgstr "版本 %s · 为每个选定的 AP 分配一个 Apple WLOC 位置。"
+msgid "Version %s · Assign one Apple WLOC location to each selected network bridge."
+msgstr "版本 %s · 为每个选定的网络桥接设备分配一个 Apple WLOC 位置。"
 
 msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."
 msgstr "自定义表已应用，但无法刷新 Apple WLOC 地址。"

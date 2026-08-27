@@ -7,24 +7,28 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-Each entry selects one AP by BSSID and assigns one location and optional
-outbound proxy to every device connected through that AP. Entries are evaluated
-in configuration order; the first matching AP wins. Requests from an AP without
-a matching entry pass through unchanged. Use this package only on devices you
-own or are authorized to test.
+Each entry selects one configured wireless section, uses its network bridge as
+the stable location identity, and assigns one location and optional outbound
+proxy to every device connected through that bridge. Entries are evaluated in
+configuration order; duplicate bridges are rejected. Requests whose route
+device has no matching entry pass through unchanged. The live AP BSSID is
+runtime status only and is not used for rule matching. Use this package only on
+devices you own or are authorized to test.
 
-Each AP can also be given a daily disable window in router local
-time. During the window, matching configured AP interfaces receive a temporary
-runtime `disabled` override and are reloaded; the original wireless UCI values
-are restored when the window ends and are never committed by WLOC. Equal start
-and end times mean all day, and an end time earlier than the start crosses
-midnight. The window targets only the selected `wifi-iface`, resolved by its
-section, explicit BSSID/MAC, or its live AP interface. It never falls back to
-disabling the entire radio when that mapping is unavailable.
+Each AP can also be given a daily disable window in router local time. During
+the window, the selected `wireless_section` receives a temporary runtime
+`disabled` override and is reloaded; the original wireless UCI value is
+restored when the window ends and is never committed by WLOC. Equal start and
+end times mean all day, and an end time earlier than the start crosses
+midnight. If the selected wireless section is missing, WLOC records a warning
+and leaves every other AP unchanged; it never falls back to another AP or the
+whole radio.
 
-The nftables rules put selected AP interfaces in a hostapd interface set, then
-match the resolved IPv4 addresses of both Apple WLOC hostnames and TCP/443. They
-do not capture the whole LAN bridge.
+The nftables rules resolve each configured bridge to the bridge itself and its
+current bridge members, place those runtime ingress interfaces in a short-lived
+interface set, and then match the resolved IPv4 addresses of both Apple WLOC
+hostnames and TCP/443. They do not capture the whole LAN unless that LAN bridge
+is explicitly configured as a WLOC location.
 WLOC uses the prerouting priority configured in its nftables table. The default
 configuration uses `mangle - 2` (`-152`). At runtime, WLOC scans other
 IPv4-capable prerouting chains for reachable `REDIRECT` or `TPROXY` paths and
@@ -78,8 +82,10 @@ Copy the APK for your architecture to the router and install it:
 apk add --allow-untrusted ./luci-app-wloc-*.apk
 ```
 
-Open **Services > WLOC** in LuCI, add an AP, select its BSSID, and enter its
-fixed WGS84 latitude and longitude baseline, then save and apply. On every service start,
+Open **Services > WLOC** in LuCI, add an AP, select its configured wireless
+section, and enter its fixed WGS84 latitude and longitude baseline, then save
+and apply. WLOC stores the selected wireless section and its resolved network
+bridge; a changing BSSID does not invalidate the rule. On every service start,
 the first real location establishes the reference. Every later response uses
 the fixed virtual baseline plus the difference between the current and previous
 real location. The upstream accuracy is preserved unchanged. Install the
