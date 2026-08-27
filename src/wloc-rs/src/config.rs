@@ -157,10 +157,7 @@ impl Config {
                         return Err(format!("duplicate rule ID: {id}"));
                     }
                     let ssid = parse_ssid(&args.next().ok_or_else(value)?)?;
-                    if rules
-                        .iter()
-                        .any(|rule: &LocationRule| rule.ssid == ssid)
-                    {
+                    if rules.iter().any(|rule: &LocationRule| rule.ssid == ssid) {
                         return Err(format!("duplicate SSID: {ssid}"));
                     }
                     let target = parse_target(&mut args, &flag)?;
@@ -289,16 +286,7 @@ mod tests {
     #[test]
     fn preserves_rule_order_without_implicit_priority() {
         let config = Config::from_iter(args(&[
-            "--rule",
-            "ap1",
-            "SSID-US",
-            "1",
-            "2",
-            "--rule",
-            "ap2",
-            "SSID-EU",
-            "3",
-            "4",
+            "--rule", "ap1", "SSID-US", "1", "2", "--rule", "ap2", "SSID-EU", "3", "4",
         ]))
         .unwrap();
         assert_eq!(
@@ -343,38 +331,19 @@ mod tests {
     #[test]
     fn rejects_duplicate_ssids_and_ids() {
         let duplicate_ssid = Config::from_iter(args(&[
-            "--rule",
-            "first",
-            "SSID-US",
-            "1",
-            "2",
-            "--rule",
-            "second",
-            "SSID-US",
-            "3",
-            "4",
+            "--rule", "first", "SSID-US", "1", "2", "--rule", "second", "SSID-US", "3", "4",
         ]));
         assert!(duplicate_ssid.unwrap_err().contains("duplicate SSID"));
 
         let duplicate_id = Config::from_iter(args(&[
-            "--rule",
-            "same",
-            "SSID-US",
-            "1",
-            "2",
-            "--rule",
-            "same",
-            "SSID-EU",
-            "3",
-            "4",
+            "--rule", "same", "SSID-US", "1", "2", "--rule", "same", "SSID-EU", "3", "4",
         ]));
         assert!(duplicate_id.unwrap_err().contains("duplicate rule ID"));
     }
 
     #[test]
     fn ssid_is_exact_and_preserves_case_and_spaces() {
-        let config =
-            Config::from_iter(args(&["--rule", "diablo", "Home WiFi", "1", "2"])).unwrap();
+        let config = Config::from_iter(args(&["--rule", "diablo", "Home WiFi", "1", "2"])).unwrap();
         assert_eq!(config.rules[0].ssid, "Home WiFi");
         assert!(Config::from_iter(args(&["--rule", "bad", "", "1", "2"])).is_err());
         assert!(Config::from_iter(args(&["--rule", "bad", "Home\nWiFi", "1", "2"])).is_err());

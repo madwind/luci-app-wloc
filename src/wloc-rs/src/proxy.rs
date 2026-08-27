@@ -186,8 +186,8 @@ impl Proxy {
         let resolved = tokio::task::spawn_blocking(move || {
             neighbor_mac_for(&arp_path, &dhcp_leases_path, peer)
         })
-            .await
-            .map_err(|error| format!("neighbor lookup task failed: {error}"))?;
+        .await
+        .map_err(|error| format!("neighbor lookup task failed: {error}"))?;
         let Some((identity, _lookup)) = resolved else {
             return Ok(None);
         };
@@ -227,7 +227,9 @@ impl Proxy {
         };
         Ok(first_matching_rule(
             &self.rules,
-            access_point.as_ref().map(|access_point| access_point.ssid.as_str()),
+            access_point
+                .as_ref()
+                .map(|access_point| access_point.ssid.as_str()),
         )
         .cloned())
     }
@@ -1236,7 +1238,10 @@ mod peer_identity_tests {
     #[test]
     fn matches_exact_ssid_and_not_a_different_case() {
         let rules = vec![rule("home", "Home"), rule("guest", "Guest")];
-        assert_eq!(first_matching_rule(&rules, Some("Home")).unwrap().id, "home");
+        assert_eq!(
+            first_matching_rule(&rules, Some("Home")).unwrap().id,
+            "home"
+        );
         assert!(first_matching_rule(&rules, Some("home")).is_none());
         assert!(first_matching_rule(&rules, Some("Home-5G")).is_none());
     }
@@ -1250,15 +1255,24 @@ mod peer_identity_tests {
         ] {
             assert!(MacAddress::parse(bssid).is_ok());
             assert!(!interface.is_empty());
-            assert_eq!(first_matching_rule(&rules, Some("Home")).unwrap().id, "home");
+            assert_eq!(
+                first_matching_rule(&rules, Some("Home")).unwrap().id,
+                "home"
+            );
         }
     }
 
     #[test]
     fn shared_bridge_is_irrelevant_when_ssids_differ() {
         let rules = vec![rule("ssid_a", "SSID-A"), rule("ssid_b", "SSID-B")];
-        assert_eq!(first_matching_rule(&rules, Some("SSID-A")).unwrap().id, "ssid_a");
-        assert_eq!(first_matching_rule(&rules, Some("SSID-B")).unwrap().id, "ssid_b");
+        assert_eq!(
+            first_matching_rule(&rules, Some("SSID-A")).unwrap().id,
+            "ssid_a"
+        );
+        assert_eq!(
+            first_matching_rule(&rules, Some("SSID-B")).unwrap().id,
+            "ssid_b"
+        );
         assert!(first_matching_rule(&rules, Some("Ethernet")).is_none());
     }
 

@@ -222,8 +222,7 @@ mod tests {
     #[test]
     fn finds_client_case_insensitively() {
         let value: Value =
-            serde_json::from_str(r#"{"clients":{"AA:BB:CC:DD:EE:01":{"signal":-40}}}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"clients":{"AA:BB:CC:DD:EE:01":{"signal":-40}}}"#).unwrap();
         assert!(has_client(
             &value,
             MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap()
