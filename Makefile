@@ -10,7 +10,19 @@ PKG_LICENSE_FILES:=LICENSE NOTICE
 PKG_MAINTAINER:=luci-app-wloc maintainers
 
 LUCI_TITLE:=Apple WLOC movement-following location proxy for OpenWrt
-LUCI_DEPENDS:=+luci-base +nftables +ip-full +jshn
+
+# Do not put runtime-only dependencies in LUCI_DEPENDS.
+# LUCI_DEPENDS becomes OpenWrt build dependencies as well.
+LUCI_DEPENDS:=
+
+# Runtime dependencies only. They are written into the APK metadata
+# without pulling the whole target dependency tree into this SDK build.
+LUCI_EXTRA_DEPENDS:= \
+	luci-base (>= 0), \
+	nftables (>= 0), \
+	ip-full (>= 0), \
+	jshn (>= 0)
+
 LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per configured ingress bridge. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
@@ -31,8 +43,6 @@ include $(TOPDIR)/feeds/luci/luci.mk
 
 export RUST_TARGET RUST_LINKER_ENV TARGET_CC_NOCACHE TARGET_AR TARGET_CFLAGS
 
-# call BuildPackage - OpenWrt buildroot signature
-
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
 /etc/wloc/firewall.nft
@@ -41,14 +51,12 @@ endef
 define Package/luci-app-wloc/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	[ ! -x /etc/uci-defaults/luci-app-wloc ] || {
-		/etc/uci-defaults/luci-app-wloc && rm -f /etc/uci-defaults/luci-app-wloc
-	}
-	# rpcd caches executable plugin method lists. Reload it after an install or
-	# upgrade so newly added LuCI RPC methods are available immediately.
-	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
-	/etc/init.d/wloc enable
-	/etc/init.d/wloc restart || true
+    [ ! -x /etc/uci-defaults/luci-app-wloc ] || {
+       /etc/uci-defaults/luci-app-wloc && rm -f /etc/uci-defaults/luci-app-wloc
+    }
+    /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    /etc/init.d/wloc enable
+    /etc/init.d/wloc restart || true
 }
 exit 0
 endef
@@ -56,9 +64,9 @@ endef
 define Package/luci-app-wloc/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	/usr/libexec/wloc/rules.sh cleanup 2>/dev/null || true
-	/etc/init.d/wloc disable 2>/dev/null || true
-	/etc/init.d/wloc stop 2>/dev/null || true
+    /usr/libexec/wloc/rules.sh cleanup 2>/dev/null || true
+    /etc/init.d/wloc disable 2>/dev/null || true
+    /etc/init.d/wloc stop 2>/dev/null || true
 }
 exit 0
 endef
