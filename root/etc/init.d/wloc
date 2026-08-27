@@ -99,8 +99,8 @@ start_service() {
 	mkdir -p /var/run/wloc
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
 		/var/run/wloc/package.version "$START_ERROR"
-	# Restore optional user-authored tables. They are kept separate from the
-	# runtime-owned inet/wloc table and a blank file is a valid no-op.
+	# Apply the user-managed nftables configuration. The required WLOC table is
+	# validated below before the interception daemon starts.
 	ubus -S call luci.wloc firewall_apply '{}' >/dev/null 2>&1 || true
 	config_load wloc
 
@@ -141,7 +141,9 @@ start_service() {
 
 	# Start with empty short-lived sets. wlocd arms them after its listener is ready.
 	"$RULES" apply "$listen_port" || {
-		startup_failure 'custom table inet wloc is missing or could not be initialized'; return $?;
+		startup_failure \
+			"WLOC nftables table is missing, incompatible, or does not redirect to local port $listen_port; interception remains disabled"
+		return $?
 	}
 	mkdir -p /etc/wloc
 	chmod 0700 /etc/wloc

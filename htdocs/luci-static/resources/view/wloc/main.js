@@ -241,7 +241,7 @@ return view.extend({
 							return _('Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s.').format(priority, found);
 						if (priority)
 							return _('Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s').format(priority, found, status.service_reason || _('interception is not ready'));
-						return _('Restart failed: %s').format(status.service_reason || _('no safe prerouting priority was found'));
+						return _('Restart failed: %s').format(status.service_reason || _('interception is not ready'));
 					});
 				})
 			]);
@@ -250,7 +250,7 @@ return view.extend({
 		option.datatype = 'port';
 		option.default = '61520';
 		option.rmempty = false;
-		option.description = _('Normally this should not be changed. Startup stops safely if the selected port is occupied; only devices connecting through enabled APs to Apple WLOC over TCP 443 are intercepted.');
+		option.description = _('Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Startup stops safely if the selected port is occupied or the redirect port does not match.');
 		option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
 		option.default = '0';
 		option.rmempty = false;

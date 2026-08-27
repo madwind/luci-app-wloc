@@ -25,17 +25,12 @@ disabling the entire radio when that mapping is unavailable.
 The nftables rules put selected AP interfaces in a hostapd interface set, then
 match the resolved IPv4 addresses of both Apple WLOC hostnames and TCP/443. They
 do not capture the whole LAN bridge.
-Before installing its
-REDIRECT, WLOC scans all IPv4-capable prerouting base chains and follows their
-`jump`/`goto` paths to find every reachable REDIRECT or TPROXY verdict. It then
-chooses a numeric priority earlier than all detected transparent-proxy ingress
-paths (for example, priority `-152` when the earliest proxy uses `mangle - 1`,
-or `-151`). WLOC stays after conntrack priority `-200`, which REDIRECT requires;
-if no safe, verifiable priority exists, startup fails instead of claiming an
-ordering guarantee it cannot provide. The chosen priority and every detected
-proxy chain, priority, verdict type, path type, and relative order are written
-to the system log in numeric priority order. LuCI also reports the selected
-ingress priority and whether the order is verified.
+WLOC uses the prerouting priority configured in its nftables table. The default
+configuration uses `mangle - 2` (`-152`). At runtime, WLOC scans other
+IPv4-capable prerouting chains for reachable `REDIRECT` or `TPROXY` paths and
+compares their priorities with the active WLOC chain. WLOC no longer rewrites
+its own priority automatically. Conflicts or unparseable priorities are
+reported through runtime state, system logs, and LuCI.
 
 WLOC does not install a TPROXY stage, policy route, or OUTPUT hook. The client
 connection is redirected to WLOC first. After WLOC handles it, the daemon's
