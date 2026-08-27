@@ -18,10 +18,10 @@ LUCI_DEPENDS:=
 # Runtime dependencies only. They are written into the APK metadata
 # without pulling the whole target dependency tree into this SDK build.
 LUCI_EXTRA_DEPENDS:= \
-	luci-base (>= 0), \
-	nftables (>= 0), \
-	ip-full (>= 0), \
-	jshn (>= 0)
+	luci-base (>=0), \
+	nftables (>=0), \
+	ip-full (>=0), \
+	jshn (>=0)
 
 LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per configured ingress bridge. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
