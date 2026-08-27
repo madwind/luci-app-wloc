@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
@@ -11,7 +12,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::client_hello::peek_sni;
-use crate::config::{LocationRule, OutboundProxy};
+use crate::config::{LocationRule, MacAddress, OutboundProxy};
+use crate::network_source::HostapdNetworkSource;
 use crate::status::Status;
 use crate::wloc::{
     patch_response_following, request_wifi_devices, valid_request, LocationFollower, PatchTarget,
@@ -22,11 +24,17 @@ const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const GLOBAL_STREAM_LIMIT: usize = 2;
-const BRIDGE_CACHE_TTL: Duration = Duration::from_secs(30);
+const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
-struct BridgeCacheEntry {
-    bridge: String,
+struct PeerIdentity {
+    mac: MacAddress,
+    hostname: Option<String>,
+}
+
+#[derive(Clone)]
+struct PeerCacheEntry {
+    identity: PeerIdentity,
     expires_at: Instant,
 }
 
@@ -101,7 +109,10 @@ pub struct Proxy {
     acceptor: TlsAcceptor,
     connector: TlsConnector,
     rules: Vec<LocationRule>,
-    bridge_cache: Arc<tokio::sync::Mutex<HashMap<Ipv4Addr, BridgeCacheEntry>>>,
+    arp_path: PathBuf,
+    dhcp_leases_path: PathBuf,
+    peer_cache: Arc<tokio::sync::Mutex<HashMap<Ipv4Addr, PeerCacheEntry>>>,
+    network_source: HostapdNetworkSource,
     listen_port: u16,
     status: Arc<Status>,
     h2_pool: Arc<tokio::sync::Mutex<HashMap<String, H2Entry>>>,
@@ -131,7 +142,14 @@ impl Proxy {
             acceptor: TlsAcceptor::from(Arc::new(server)),
             connector: TlsConnector::from(Arc::new(client)),
             rules,
-            bridge_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            arp_path: std::env::var_os("WLOC_ARP_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/proc/net/arp")),
+            dhcp_leases_path: std::env::var_os("WLOC_DHCP_LEASES_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/tmp/dhcp.leases")),
+            peer_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            network_source: HostapdNetworkSource::new(),
             listen_port,
             status,
             h2_pool: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -153,44 +171,65 @@ impl Proxy {
             Some(rule) => format!("{} {detail}", rule.log_context_with_ip(ip)),
             None => format!(
                 "{} {detail}",
-                unmatched_context(ip, "configured_rule_missing")
+                unmatched_context(None, None, ip, "configured_rule_missing")
             ),
         }
     }
 
-    async fn bridge_for(&self, peer: Ipv4Addr) -> Result<Option<String>, String> {
-        let cached = self.bridge_cache.lock().await.get(&peer).cloned();
+    async fn identity_for(&self, peer: Ipv4Addr) -> Result<Option<PeerIdentity>, String> {
+        let cached = self.peer_cache.lock().await.get(&peer).cloned();
         if let Some(entry) = cached.filter(|entry| entry.expires_at > Instant::now()) {
-            return Ok(Some(entry.bridge));
+            return Ok(Some(entry.identity));
         }
-        let bridge = tokio::task::spawn_blocking(move || route_device_for(peer))
+        let arp_path = self.arp_path.clone();
+        let dhcp_leases_path = self.dhcp_leases_path.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            neighbor_mac_for(&arp_path, &dhcp_leases_path, peer)
+        })
             .await
-            .map_err(|error| format!("route lookup task failed: {error}"))??;
-        let Some(bridge) = bridge else {
+            .map_err(|error| format!("neighbor lookup task failed: {error}"))?;
+        let Some((identity, _lookup)) = resolved else {
             return Ok(None);
         };
-        self.bridge_cache.lock().await.insert(
+        self.peer_cache.lock().await.insert(
             peer,
-            BridgeCacheEntry {
-                bridge: bridge.clone(),
-                expires_at: Instant::now() + BRIDGE_CACHE_TTL,
+            PeerCacheEntry {
+                identity: identity.clone(),
+                expires_at: Instant::now() + PEER_CACHE_TTL,
             },
         );
-        Ok(Some(bridge))
+        Ok(Some(identity))
     }
 
     async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
         let IpAddr::V4(peer) = peer else {
             return Ok(None);
         };
-        let Some(bridge) = self.bridge_for(peer).await? else {
+        let Some(identity) = self.identity_for(peer).await? else {
             return Ok(None);
         };
-        Ok(self
-            .rules
-            .iter()
-            .find(|rule| rule.bridge == bridge)
-            .cloned())
+        let access_point = match self.network_source.current_for(identity.mac).await {
+            Ok(access_point) => access_point,
+            Err(error) => {
+                self.status.update_detail(
+                    "network_source_failed",
+                    &unmatched_context(
+                        identity.hostname.as_deref(),
+                        Some(identity.mac),
+                        peer,
+                        "hostapd",
+                    ),
+                    Some(&error),
+                    |_| {},
+                );
+                None
+            }
+        };
+        Ok(first_matching_rule(
+            &self.rules,
+            access_point.as_ref().map(|access_point| access_point.ssid.as_str()),
+        )
+        .cloned())
     }
 
     pub async fn handle(&self, stream: TcpStream) -> Result<(), ProxyError> {
@@ -200,7 +239,7 @@ impl Proxy {
             Err(error) => {
                 self.status.update_detail(
                     "rule_lookup_failed",
-                    &unmatched_context(peer_address.ip(), "route"),
+                    &unmatched_context(None, None, peer_address.ip(), "hostapd"),
                     Some(&error),
                     |c| c.passthrough(),
                 );
@@ -900,30 +939,131 @@ async fn remove_h2_generation(
     }
 }
 
-fn parse_route_device(output: &str) -> Option<&str> {
-    let mut fields = output.split_whitespace();
-    while let Some(field) = fields.next() {
-        if field == "dev" {
-            return fields.next();
+fn first_matching_rule<'a>(
+    rules: &'a [LocationRule],
+    ssid: Option<&str>,
+) -> Option<&'a LocationRule> {
+    ssid.and_then(|ssid| rules.iter().find(|rule| rule.ssid == ssid))
+}
+
+fn arp_mac_for(path: &Path, address: Ipv4Addr) -> Option<MacAddress> {
+    let table = std::fs::read_to_string(path).ok()?;
+    for line in table.lines().skip(1) {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 4 || columns[0].parse::<Ipv4Addr>().ok() != Some(address) {
+            continue;
+        }
+        if let Ok(mac) = MacAddress::parse(columns[3]) {
+            return Some(mac);
         }
     }
     None
 }
 
-fn route_device_for(address: Ipv4Addr) -> Result<Option<String>, String> {
+fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<MacAddress> {
     let output = std::process::Command::new("ip")
-        .args(["-4", "route", "get", &address.to_string()])
+        .args(["neigh", "show", &address.to_string()])
         .output()
-        .map_err(|error| format!("ip route get: {error}"))?;
+        .ok()?;
     if !output.status.success() {
-        return Ok(None);
+        return None;
     }
     let output = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_route_device(&output).map(str::to_owned))
+    let columns = output.split_whitespace().collect::<Vec<_>>();
+    columns
+        .windows(2)
+        .find(|pair| pair[0] == "lladdr")
+        .and_then(|pair| MacAddress::parse(pair[1]).ok())
 }
 
-fn unmatched_context(ip: impl std::fmt::Display, lookup: &str) -> String {
-    format!("matched=false ip={ip} bridge=unknown lookup={lookup}")
+fn dhcp_lease_identity_from(table: &str, address: Ipv4Addr) -> Option<PeerIdentity> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    table.lines().rev().find_map(|line| {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 3 || columns[2].parse::<Ipv4Addr>().ok() != Some(address) {
+            return None;
+        }
+        let expires = columns[0].parse::<u64>().ok()?;
+        if expires != 0 && expires <= now {
+            return None;
+        }
+        let mac = MacAddress::parse(columns[1]).ok()?;
+        let hostname = columns
+            .get(3)
+            .filter(|value| !value.is_empty() && **value != "*")
+            .map(|value| (*value).to_owned());
+        Some(PeerIdentity { mac, hostname })
+    })
+}
+
+fn dhcp_lease_identity_for(path: &Path, address: Ipv4Addr) -> Option<PeerIdentity> {
+    let table = std::fs::read_to_string(path).ok()?;
+    dhcp_lease_identity_from(&table, address)
+}
+
+fn mac_label(mac: MacAddress) -> String {
+    mac.label().to_uppercase()
+}
+
+fn safe_device_name(hostname: Option<&str>) -> String {
+    hostname
+        .filter(|value| !value.is_empty() && *value != "*")
+        .unwrap_or("unknown")
+        .chars()
+        .map(|character| {
+            if character == '"' || character == '\\' || character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(80)
+        .collect()
+}
+
+fn unmatched_context(
+    hostname: Option<&str>,
+    mac: Option<MacAddress>,
+    ip: impl std::fmt::Display,
+    lookup: &str,
+) -> String {
+    let device = safe_device_name(hostname);
+    let mac = mac.map(mac_label).unwrap_or_else(|| "unknown".into());
+    format!("device=\"{device}\" matched=false mac={mac} ip={ip} lookup={lookup}")
+}
+
+fn neighbor_mac_for(
+    arp_path: &Path,
+    dhcp_leases_path: &Path,
+    address: Ipv4Addr,
+) -> Option<(PeerIdentity, &'static str)> {
+    dhcp_lease_identity_for(dhcp_leases_path, address)
+        .map(|identity| (identity, "dhcp_lease"))
+        .or_else(|| {
+            arp_mac_for(arp_path, address).map(|mac| {
+                (
+                    PeerIdentity {
+                        mac,
+                        hostname: None,
+                    },
+                    "arp",
+                )
+            })
+        })
+        .or_else(|| {
+            ip_neigh_mac_for(address).map(|mac| {
+                (
+                    PeerIdentity {
+                        mac,
+                        hostname: None,
+                    },
+                    "ip_neigh",
+                )
+            })
+        })
 }
 
 async fn exchange_h2(
@@ -1076,25 +1216,68 @@ impl std::fmt::Display for ProxyError {
 impl std::error::Error for ProxyError {}
 
 #[cfg(test)]
-mod bridge_lookup_tests {
-    use super::{parse_route_device, unmatched_context};
+mod peer_identity_tests {
+    use super::{dhcp_lease_identity_from, first_matching_rule, unmatched_context};
+    use std::net::Ipv4Addr;
 
-    #[test]
-    fn parses_route_device() {
-        assert_eq!(
-            parse_route_device("192.168.50.20 dev br-wloc-us src 192.168.50.1"),
-            Some("br-wloc-us")
-        );
+    use crate::config::{LocationRule, MacAddress, OutboundProxy};
+    use crate::wloc::PatchTarget;
+
+    fn rule(id: &str, ssid: &str) -> LocationRule {
+        LocationRule {
+            id: id.into(),
+            name: id.into(),
+            ssid: ssid.into(),
+            target: PatchTarget::new(1.0, 2.0).unwrap(),
+            outbound: OutboundProxy::Direct,
+        }
     }
 
     #[test]
-    fn missing_or_malformed_route_is_unmatched() {
-        assert_eq!(parse_route_device("192.168.50.20 via 192.168.50.1"), None);
-        assert_eq!(parse_route_device(""), None);
-        assert_eq!(
-            unmatched_context("192.168.50.20", "route"),
-            "matched=false ip=192.168.50.20 bridge=unknown lookup=route"
-        );
+    fn matches_exact_ssid_and_not_a_different_case() {
+        let rules = vec![rule("home", "Home"), rule("guest", "Guest")];
+        assert_eq!(first_matching_rule(&rules, Some("Home")).unwrap().id, "home");
+        assert!(first_matching_rule(&rules, Some("home")).is_none());
+        assert!(first_matching_rule(&rules, Some("Home-5G")).is_none());
+    }
+
+    #[test]
+    fn bssid_and_ifname_changes_do_not_change_ssid_match() {
+        let rules = vec![rule("home", "Home")];
+        for (bssid, interface) in [
+            ("aa:bb:cc:dd:ee:01", "phy0-ap0"),
+            ("aa:bb:cc:dd:ee:02", "phy0-ap2"),
+        ] {
+            assert!(MacAddress::parse(bssid).is_ok());
+            assert!(!interface.is_empty());
+            assert_eq!(first_matching_rule(&rules, Some("Home")).unwrap().id, "home");
+        }
+    }
+
+    #[test]
+    fn shared_bridge_is_irrelevant_when_ssids_differ() {
+        let rules = vec![rule("ssid_a", "SSID-A"), rule("ssid_b", "SSID-B")];
+        assert_eq!(first_matching_rule(&rules, Some("SSID-A")).unwrap().id, "ssid_a");
+        assert_eq!(first_matching_rule(&rules, Some("SSID-B")).unwrap().id, "ssid_b");
+        assert!(first_matching_rule(&rules, Some("Ethernet")).is_none());
+    }
+
+    #[test]
+    fn includes_dhcp_hostname_for_an_unmatched_device() {
+        let address = Ipv4Addr::new(192, 168, 1, 139);
+        let identity = dhcp_lease_identity_from(
+            "0 24:27:30:d9:27:10 192.168.1.139 midea_ac_0049 *\n",
+            address,
+        )
+        .unwrap();
+        assert_eq!(identity.hostname.as_deref(), Some("midea_ac_0049"));
+        assert!(unmatched_context(
+            identity.hostname.as_deref(),
+            Some(identity.mac),
+            address,
+            "hostapd"
+        )
+        .contains("device=\"midea_ac_0049\""));
     }
 }
 
