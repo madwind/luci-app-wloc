@@ -138,11 +138,15 @@ The optional debug mode returns `{"wloc":"ok"}` for requests to these endpoints
 without contacting the upstream server.
 
 The LuCI **Interception status** reports whether the service is actually usable:
-`Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. After a
-firewall **Save & apply**, WLOC immediately reconciles its dynamic sets when the
-listener is ready; if the daemon or a runtime update is temporarily unavailable,
-the sets remain fail-open and the daemon retries automatically. Normal firewall
-or runtime recovery does not require a manual **Restart service**.
+`Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. In the
+firewall editor, **Check syntax** only validates the editor, **Apply** loads a
+candidate temporarily, and **Save** persists the currently applied candidate.
+An applied candidate is never written to the persistent file until you confirm
+that network, LuCI, and SSH still work; rebooting without Save restores the last
+saved rules. WLOC immediately reconciles its dynamic sets when the listener is
+ready; if the daemon or a runtime update is temporarily unavailable, the sets
+remain fail-open and the daemon retries automatically. Normal firewall or
+runtime recovery does not require a manual **Restart service**.
 
 ## License
 

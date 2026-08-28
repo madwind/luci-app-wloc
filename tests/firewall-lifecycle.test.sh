@@ -115,6 +115,27 @@ snapshot_after="$(cksum "$WLOC_FIREWALL_RUNTIME")"
 [ "$snapshot_before" = "$snapshot_after" ] || fail 'failed apply replaced the last applied snapshot'
 NFTP_APPLY_RC=0
 
+echo '  -> syntax failures keep the last applied snapshot and persistent file'
+saved_firewall="$fixture_root/firewall.saved.nft"
+candidate_firewall="$fixture_root/firewall.candidate.nft"
+printf '%s\n' 'table inet saved {' '}' >"$saved_firewall"
+printf '%s\n' 'table inet candidate {' '}' >"$candidate_firewall"
+cp "$saved_firewall" "$WLOC_FIREWALL_RUNTIME"
+snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+NFTP_CHECK_RC=1
+if firewall_apply_file "$candidate_firewall"; then
+	fail 'nft syntax failure was reported as success'
+fi
+[ "$snapshot_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+	|| fail 'syntax failure replaced the last applied snapshot'
+NFTP_CHECK_RC=0
+cmp -s "$saved_firewall" "$WLOC_FIREWALL_RUNTIME" \
+	|| fail 'syntax failure changed the persistent firewall fixture'
+firewall_copy_atomic "$candidate_firewall" "$saved_firewall" \
+	|| fail 'atomic save of an applied candidate failed'
+cmp -s "$candidate_firewall" "$saved_firewall" \
+	|| fail 'atomic save did not replace the persistent fixture'
+
 echo '  -> active state checks the declared tables'
 NFTP_ACTIVE_RC=0
 firewall_active "$WLOC_FIREWALL_RUNTIME" \

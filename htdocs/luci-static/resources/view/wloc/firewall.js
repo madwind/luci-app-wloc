@@ -4,8 +4,8 @@
 
 var callRead = rpc.declare({ object: 'luci.wloc', method: 'firewall_read', expect: { '': {} } });
 var callValidate = rpc.declare({ object: 'luci.wloc', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} } });
-var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', params: [ 'config' ], expect: { '': {} } });
-var callApply = rpc.declare({ object: 'luci.wloc', method: 'firewall_apply', expect: { '': {} } });
+var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', expect: { '': {} } });
+var callApply = rpc.declare({ object: 'luci.wloc', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} } });
 
 function setState(element, state, value) {
 	element.classList.remove('success', 'warning', 'error', 'notice');
@@ -63,8 +63,19 @@ function formatNftables(source) {
 	return lines.join('\n') + (lines.length ? '\n' : '');
 }
 
+function contentHash(value) {
+	var hash = 2166136261;
+	value = String(value || '');
+	for (var i = 0; i < value.length; i++)
+		hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+	return ('00000000' + (hash >>> 0).toString(16)).slice(-8);
+}
+
 function setBusy(buttons, busy) {
-	buttons.forEach(function(button) { button.disabled = busy; });
+	buttons.forEach(function(button) {
+		button.wlocBusy = busy;
+		button.disabled = busy || !!button.wlocStateDisabled;
+	});
 }
 
 function tableRow(label, value) {
@@ -95,15 +106,24 @@ return view.extend({
 		var path = E('span', {}, '/etc/wloc/firewall.nft');
 		var bytes = E('span', {}, '%s %s'.format(0, _('B')));
 		var dirty = E('span', {}, _('Not loaded'));
+		var runtimeState = E('span', {}, _('Loading'));
+		var persistentState = E('span', {}, _('Loading'));
 		var activeStatus = E('span', {}, _('Loading'));
 		var feedback = E('div', { 'class': 'alert-message', 'aria-live': 'polite', hidden: true });
 		var formatButton = E('button', { 'class': 'btn cbi-button', 'type': 'button' }, _('Format'));
 		var checkButton = E('button', { 'class': 'btn cbi-button', 'type': 'button' }, _('Check syntax'));
 		var saveButton = E('button', { 'class': 'btn cbi-button cbi-button-save', 'type': 'button' }, _('Save'));
-		var applyButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Save & apply'));
+		var applyButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Apply'));
 		var refreshButton = E('button', { 'class': 'btn cbi-button', 'type': 'button' }, _('Refresh'));
 		var buttons = [ formatButton, checkButton, saveButton, applyButton, refreshButton ];
 		var loaded = false;
+		var appliedPresent = false;
+		var persistentPresent = false;
+		var appliedHash = '';
+		var savedHash = '';
+
+		saveButton.wlocStateDisabled = true;
+		saveButton.disabled = true;
 
 		function updateBytes() {
 			bytes.textContent = '%s %s'.format(new Blob([ editor.value ]).size, _('B'));
@@ -111,7 +131,27 @@ return view.extend({
 
 		function markChanged() {
 			updateBytes();
-			dirty.textContent = loaded ? _('Unsaved changes') : _('Not loaded');
+			updateStates();
+		}
+
+		function updateStates() {
+			var editorHash = contentHash(editor.value);
+			var matchesApplied = loaded && appliedPresent && editorHash === appliedHash;
+			var matchesSaved = matchesApplied && persistentPresent && editorHash === savedHash;
+			if (!loaded) {
+				dirty.textContent = _('Not loaded');
+				runtimeState.textContent = _('Loading');
+				persistentState.textContent = _('Loading');
+			} else {
+				dirty.textContent = matchesApplied
+					? (matchesSaved ? _('Matches saved rules') : _('Matches applied rules; not saved'))
+					: _('Modified; apply before saving');
+				runtimeState.textContent = appliedPresent ? _('Applied') : _('Not applied');
+				persistentState.textContent = matchesSaved ? _('Saved') : _('Not saved');
+			}
+			saveButton.wlocStateDisabled = !matchesApplied || matchesSaved;
+			if (!saveButton.wlocBusy)
+				saveButton.disabled = saveButton.wlocStateDisabled;
 		}
 
 		function validate() {
@@ -129,14 +169,13 @@ return view.extend({
 		}
 
 		function formatEditor() {
-			return validate().then(function(valid) {
-				if (!valid) return false;
-				editor.value = formatNftables(editor.value);
-				markChanged();
-				setState(feedback, 'ok', _('Rules formatted. Review the changes before saving.'));
-				editor.focus();
-				return true;
-			});
+			if (!loaded)
+				return false;
+			editor.value = formatNftables(editor.value);
+			markChanged();
+			setState(feedback, 'ok', _('Rules formatted. Review the changes, then check and apply them.'));
+			editor.focus();
+			return true;
 		}
 
 		function refreshActive() {
@@ -144,56 +183,75 @@ return view.extend({
 			return callRead().then(function(result) {
 				if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
 				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
+				appliedPresent = result.applied_present === true;
+				appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
 				updateActiveState(activeStatus, result);
+				updateStates();
 				return result;
 			}).catch(function(error) {
 				setState(feedback, 'error', String(error));
 				return null;
-			}).then(function(result) { setBusy(buttons, false); return result; });
+			}).then(function(result) { setBusy(buttons, false); updateStates(); return result; });
 		}
 
-		function save(apply) {
+		function apply() {
 			setBusy(buttons, true);
-			setState(feedback, '', apply ? _('Saving and applying rules...') : _('Saving rules...'));
-			return callSave(editor.value).then(function(result) {
+			setState(feedback, '', _('Checking and temporarily applying the editor contents...'));
+			return callApply(editor.value).then(function(result) {
 				if (!result || result.ok !== true)
-					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to save nftables rules.'));
-				loaded = true;
-				dirty.textContent = _('Saved');
-				if (!apply) {
-					setState(feedback, 'ok', _('Rules saved but not applied.'));
-					return null;
-				}
-				return callApply().then(function(applied) {
-					if (!applied || applied.ok !== true)
-						throw new Error([ applied && applied.error && _(applied.error), applied && applied.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
-					active.value = applied.active || _('# No custom nftables tables are active.') + '\n';
-					updateActiveState(activeStatus, applied);
-					setState(feedback, 'ok', _('Rules saved and applied.'));
-					return applied;
-				});
+					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
+				appliedPresent = true;
+				appliedHash = contentHash(result.applied !== undefined ? result.applied : editor.value);
+				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
+				updateActiveState(activeStatus, result);
+				updateStates();
+				setState(feedback, 'ok', _('Rules were temporarily applied. Confirm that network, LuCI and SSH still work, then click Save.'));
+				return result;
 			}).catch(function(error) {
 				setState(feedback, 'error', String(error));
 				return null;
-			}).then(function(result) { setBusy(buttons, false); return result; });
+			}).then(function(result) { setBusy(buttons, false); updateStates(); return result; });
+		}
+
+		function save() {
+			var matchesApplied = loaded && appliedPresent && contentHash(editor.value) === appliedHash;
+			if (!matchesApplied) {
+				setState(feedback, 'warn', _('The current editor contents have not been applied and cannot be saved.'));
+				updateStates();
+				return Promise.resolve(null);
+			}
+			setBusy(buttons, true);
+			setState(feedback, '', _('Saving the currently applied rules...'));
+			return callSave().then(function(result) {
+				if (!result || result.ok !== true)
+					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to save nftables rules.'));
+				persistentPresent = true;
+				savedHash = appliedHash;
+				updateStates();
+				setState(feedback, 'ok', _('The currently applied rules were saved and will load on the next boot.'));
+				return result;
+			}).catch(function(error) {
+				setState(feedback, 'error', String(error));
+				return null;
+			}).then(function(result) { setBusy(buttons, false); updateStates(); return result; });
 		}
 
 		formatButton.addEventListener('click', formatEditor);
 		checkButton.addEventListener('click', validate);
 		refreshButton.addEventListener('click', refreshActive);
-		saveButton.addEventListener('click', function() { save(false); });
-		applyButton.addEventListener('click', function() { save(true); });
+		saveButton.addEventListener('click', save);
+		applyButton.addEventListener('click', apply);
 		editor.addEventListener('input', markChanged);
 		editor.addEventListener('keydown', function(event) {
 			if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-				event.preventDefault(); save(false);
+				event.preventDefault(); save();
 			} else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-				event.preventDefault(); save(true);
+				event.preventDefault(); apply();
 			} else if (event.key === 'Tab') {
 				event.preventDefault();
 				var start = editor.selectionStart, end = editor.selectionEnd;
-				editor.value = editor.value.slice(0, start) + '\t' + editor.value.slice(end);
-				editor.selectionStart = editor.selectionEnd = start + 1;
+				editor.value = editor.value.slice(0, start) + '    ' + editor.value.slice(end);
+				editor.selectionStart = editor.selectionEnd = start + 4;
 				editor.dispatchEvent(new Event('input'));
 			}
 		});
@@ -203,7 +261,9 @@ return view.extend({
 				tableRow(_('File'), path),
 				tableRow(_('Size'), bytes),
 				tableRow(_('Active state'), activeStatus),
-				tableRow(_('Editor state'), dirty)
+				tableRow(_('Editor state'), dirty),
+				tableRow(_('Runtime state'), runtimeState),
+				tableRow(_('Persistent state'), persistentState)
 			])
 		]);
 
@@ -216,7 +276,7 @@ return view.extend({
 				E('div', { 'class': 'cbi-section-descr' }, _('WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged.')),
 				E('label', { 'class': 'cbi-section-descr', 'for': 'wloc-firewall-editor' }, _('nftables ruleset')),
 				editor,
-				E('div', { 'class': 'cbi-section-descr' }, _('Save & apply checks nftables syntax and loads the ruleset. No WLOC rule layout is enforced.')),
+				E('div', { 'class': 'cbi-section-descr' }, _('Check syntax only validates the editor. Apply temporarily loads it without changing the persistent file. Save is enabled only after the current editor contents have been applied. No WLOC rule layout is enforced.')),
 				E('div', { 'class': 'cbi-page-actions' }, [ formatButton, checkButton, saveButton, applyButton, refreshButton ]),
 				feedback
 			]),
@@ -232,10 +292,14 @@ return view.extend({
 			path.textContent = result.path || '/etc/wloc/firewall.nft';
 			editor.value = result.config || '';
 			active.value = result.active || '';
+			persistentPresent = result.persistent_present !== false;
+			appliedPresent = result.applied_present === true;
+			savedHash = persistentPresent ? contentHash(editor.value) : '';
+			appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
 			loaded = true;
-			dirty.textContent = _('Loaded');
 			updateActiveState(activeStatus, result);
 			updateBytes();
+			updateStates();
 		}).catch(function(error) {
 			setState(feedback, 'error', String(error));
 		});

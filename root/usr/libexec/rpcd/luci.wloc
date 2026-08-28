@@ -2,26 +2,46 @@
 
 . /usr/share/libubox/jshn.sh
 
-INIT=/etc/init.d/wloc
-RULES=/usr/libexec/wloc/rules.sh
-FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
-STATE=/var/run/wloc/status.json
-RUNTIME_LOG=/var/run/wloc/runtime.log
-CAINFO=/etc/wloc/ca.info.json
-VERSION_CACHE=/var/run/wloc/package.version
-FIREWALL=/etc/wloc/firewall.nft
-FIREWALL_RUNTIME=/var/run/wloc/firewall.applied.nft
+INIT=${WLOC_INIT_PATH:-/etc/init.d/wloc}
+RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
+FIREWALL_HELPER=${WLOC_FIREWALL_HELPER_PATH:-/usr/libexec/wloc/firewall.sh}
+STATE=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
+RUNTIME_LOG=${WLOC_RUNTIME_LOG_PATH:-/var/run/wloc/runtime.log}
+CAINFO=${WLOC_CAINFO_PATH:-/etc/wloc/ca.info.json}
+VERSION_CACHE=${WLOC_VERSION_CACHE_PATH:-/var/run/wloc/package.version}
+FIREWALL=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
+FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-/var/run/wloc/firewall.applied.nft}
+FIREWALL_CANDIDATE=${WLOC_FIREWALL_CANDIDATE:-/var/run/wloc/firewall.candidate.nft}
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$FIREWALL_HELPER"
 
 firewall_response() {
-	firewall_collect_active "$FIREWALL"
+	local active_source
+	if [ -r "$FIREWALL_RUNTIME" ]; then
+		active_source="$FIREWALL_RUNTIME"
+	else
+		active_source="$FIREWALL"
+	fi
+	firewall_collect_active "$active_source" || {
+		FIREWALL_ACTIVE=''
+		FIREWALL_ACTIVE_FOUND=0
+		FIREWALL_TABLE_COUNT=0
+		FIREWALL_ACTIVE_TABLE_COUNT=0
+	}
 	json_init
 	json_add_boolean ok 1
 	json_add_string path "$FIREWALL"
 	json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
+	json_add_string applied "$(cat "$FIREWALL_RUNTIME" 2>/dev/null || true)"
+	json_add_string candidate "$(cat "$FIREWALL_CANDIDATE" 2>/dev/null || true)"
+	json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
+	json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
+	json_add_string candidate_hash "$(firewall_file_hash "$FIREWALL_CANDIDATE" 2>/dev/null || true)"
+	[ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
+	[ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
+	[ -r "$FIREWALL_CANDIDATE" ] && json_add_boolean candidate_present 1 || json_add_boolean candidate_present 0
 	json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
 	json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
 	json_add_int table_count "$FIREWALL_TABLE_COUNT"
@@ -39,8 +59,8 @@ firewall_request_config() {
 
 emit_firewall_validate() {
 	local source
-	mkdir -p /var/run/wloc
-	source="$(mktemp /var/run/wloc/firewall-source.XXXXXX)" || exit 1
+	mkdir -p "$FIREWALL_RUNTIME_DIR"
+	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-source.XXXXXX")" || exit 1
 	printf '%s' "$firewall_config" >"$source"
 	if firewall_validate_file "$source"; then
 		json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
@@ -53,32 +73,51 @@ emit_firewall_validate() {
 }
 
 emit_firewall_save() {
-	local source saved
-	mkdir -p /var/run/wloc /etc/wloc
-	source="$(mktemp /var/run/wloc/firewall-source.XXXXXX)" || exit 1
-	printf '%s' "$firewall_config" >"$source"
-	if ! firewall_validate_file "$source"; then
-		json_init; json_add_boolean ok 0; json_add_boolean valid 0
-		json_add_string error 'nftables syntax check failed'
+	if ! [ -r "$FIREWALL_RUNTIME" ]; then
+		json_init; json_add_boolean ok 0
+		json_add_string error 'No successfully applied firewall candidate is available to save.'
+		json_dump
+		return
+	fi
+	if ! firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"; then
+		json_init; json_add_boolean ok 0
+		json_add_string error 'Applied rules are active, but persistent saving failed.'
+		json_add_string detail "$firewall_error"; json_dump
+		return
+	fi
+	json_init; json_add_boolean ok 1
+	json_add_string path "$FIREWALL"
+	json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
+	json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
+	json_dump
+}
+
+emit_firewall_apply() {
+	local source
+	mkdir -p "$FIREWALL_RUNTIME_DIR"
+	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-candidate-source.XXXXXX")" || exit 1
+	if ! printf '%s' "$firewall_config" >"$source"; then
+		rm -f "$source"
+		json_init; json_add_boolean ok 0
+		json_add_string error 'Unable to stage the firewall candidate.'
+		json_dump
+		return
+	fi
+	if ! firewall_apply_file "$source"; then
+		json_init; json_add_boolean ok 0
+		json_add_string error 'Failed to apply nftables candidate.'
 		json_add_string detail "$firewall_error"; json_dump
 		rm -f "$source"
 		return
 	fi
-	saved="$(mktemp /etc/wloc/firewall.nft.XXXXXX)" || { rm -f "$source"; exit 1; }
-	chmod 0600 "$saved"
-	cat "$source" >"$saved" && mv -f "$saved" "$FIREWALL"
-	rm -f "$source"
-	json_init; json_add_boolean ok 1; json_add_boolean valid 1
-	json_add_string path "$FIREWALL"; json_dump
-}
-
-emit_firewall_apply() {
-	if ! firewall_apply_file "$FIREWALL"; then
+	if ! firewall_copy_atomic "$source" "$FIREWALL_CANDIDATE"; then
 		json_init; json_add_boolean ok 0
-		json_add_string error 'Failed to apply nftables rules.'
+		json_add_string error 'Rules were applied, but the runtime candidate snapshot could not be saved.'
 		json_add_string detail "$firewall_error"; json_dump
+		rm -f "$source"
 		return
 	fi
+	rm -f "$source"
 	firewall_response
 }
 
@@ -168,7 +207,15 @@ emit_status() {
 	conflict=0
 	[ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
 	daemon_running=0
-	pidof wlocd >/dev/null 2>&1 && daemon_running=1
+	service_status_available=0
+	if service_daemon_running; then
+		daemon_running=1
+	elif [ "$service_status_available" -eq 0 ] && pidof wlocd >/dev/null 2>&1; then
+		# Older OpenWrt releases may not expose the service object yet. This
+		# compatibility fallback is deliberately skipped when ubus answered,
+		# so a manually launched wlocd cannot impersonate the managed daemon.
+		daemon_running=1
+	fi
 	service_reason=''
 	if [ "$daemon_running" -eq 0 ]; then
 		service_reason="$(cat /var/run/wloc/start-error 2>/dev/null || true)"
@@ -277,12 +324,28 @@ emit_configured_access_points() {
 	json_dump
 }
 
+service_daemon_running() {
+	local response running
+	service_status_available=0
+	command -v ubus >/dev/null 2>&1 || return 1
+	response="$(ubus call service list '{"name":"wloc"}' 2>/dev/null)" || return 1
+	[ -n "$response" ] || return 1
+	json_load "$response" 2>/dev/null || return 1
+	service_status_available=1
+	json_select wloc 2>/dev/null || return 1
+	json_select instances 2>/dev/null || return 1
+	json_select daemon 2>/dev/null || return 1
+	json_get_var running running
+	case "$running" in 1|true|yes) return 0;; esac
+	return 1
+}
+
 case "$1" in
 list)
 	json_init
 	for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
 		json_add_object "$method"
-		case "$method" in firewall_validate|firewall_save) json_add_string config '';; esac
+		case "$method" in firewall_validate|firewall_apply) json_add_string config '';; esac
 		json_close_object
 	done
 	json_dump
@@ -292,9 +355,11 @@ call)
 	status) emit_status;;
 	configured_access_points) emit_configured_access_points;;
 	restart)
-		"$INIT" restart >/dev/null 2>&1
-		sleep 1
-		emit_status
+		if "$INIT" restart >/dev/null 2>&1; then
+			json_init; json_add_boolean ok 1; json_add_string state restarting; json_dump
+		else
+			json_init; json_add_boolean ok 0; json_add_string error 'Unable to restart the WLOC service.'; json_dump
+		fi
 		;;
 	disable)
 		uci -q set wloc.main.enabled='0'
@@ -310,7 +375,6 @@ call)
 			/etc/wloc/ca.pem /etc/wloc/ca.info.json \
 			/www/wloc-ca.mobileconfig
 		[ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
-		sleep 1
 		emit_status
 		;;
 	cleanup)
@@ -333,10 +397,12 @@ call)
 		emit_firewall_validate
 		;;
 	firewall_save)
-		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
 		emit_firewall_save
 		;;
-	firewall_apply) emit_firewall_apply;;
+	firewall_apply)
+		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
+		emit_firewall_apply
+		;;
 	*) echo '{"error":"unknown method"}'; exit 1;;
 	esac
 	;;

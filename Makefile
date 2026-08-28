@@ -54,9 +54,11 @@ define Package/luci-app-wloc/postinst
     [ ! -x /etc/uci-defaults/luci-app-wloc ] || {
        /etc/uci-defaults/luci-app-wloc && rm -f /etc/uci-defaults/luci-app-wloc
     }
-    /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    rm -f /tmp/luci-indexcache.*
+    rm -rf /tmp/luci-modulecache/
+    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
     /etc/init.d/wloc enable
-    /etc/init.d/wloc restart || true
+    /etc/init.d/wloc start >/dev/null 2>&1 || true
 }
 exit 0
 endef

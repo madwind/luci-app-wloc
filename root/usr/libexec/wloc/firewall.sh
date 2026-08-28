@@ -4,6 +4,7 @@
 
 FIREWALL_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
 FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-${FIREWALL_RUNTIME_DIR}/firewall.applied.nft}
+FIREWALL_CANDIDATE=${WLOC_FIREWALL_CANDIDATE:-${FIREWALL_RUNTIME_DIR}/firewall.candidate.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
 
@@ -61,6 +62,39 @@ EOF
 firewall_active() {
 	firewall_collect_active "$1" || return 1
 	[ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]
+}
+
+firewall_file_hash() {
+	local source="$1"
+	[ -r "$source" ] || return 1
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$source" | awk '{ print $1; exit }'
+	else
+		cksum "$source" | awk '{ print $1 ":" $2; exit }'
+	fi
+}
+
+firewall_copy_atomic() {
+	local source="$1" destination="$2" directory temporary
+	[ -r "$source" ] || {
+		firewall_error='source file is not readable'
+		return 1
+	}
+	directory="${destination%/*}"
+	[ "$directory" = "$destination" ] && directory='.'
+	mkdir -p "$directory" || {
+		firewall_error='unable to create firewall snapshot directory'
+		return 1
+	}
+	temporary="$(mktemp "${destination}.XXXXXX")" || {
+		firewall_error='unable to create firewall snapshot'
+		return 1
+	}
+	if ! cp "$source" "$temporary" || ! chmod 0600 "$temporary" || ! mv -f "$temporary" "$destination"; then
+		rm -f "$temporary"
+		firewall_error='unable to atomically replace firewall snapshot'
+		return 1
+	fi
 }
 
 firewall_wloc_ready() {
@@ -136,7 +170,7 @@ EOF
 }
 
 firewall_apply_file() {
-	local source="$1" transaction detail rc family name tables runtime_tmp
+	local source="$1" transaction detail rc family name tables
 	firewall_error=''
 	firewall_validate_file "$source" || return 1
 	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
@@ -178,15 +212,10 @@ EOF
 		firewall_error='unable to create WLOC firewall snapshot directory'
 		return 1
 	}
-	runtime_tmp="$(mktemp "${FIREWALL_RUNTIME}.XXXXXX")" || {
-		firewall_error='unable to create WLOC firewall snapshot'
+	firewall_copy_atomic "$source" "$FIREWALL_RUNTIME" || {
+		firewall_error="unable to save applied nftables snapshot: ${firewall_error:-unknown error}"
 		return 1
 	}
-	if ! cp "$source" "$runtime_tmp" || ! chmod 0600 "$runtime_tmp" || ! mv -f "$runtime_tmp" "$FIREWALL_RUNTIME"; then
-		rm -f "$runtime_tmp"
-		firewall_error='unable to save applied nftables snapshot'
-		return 1
-	fi
 	if firewall_wloc_ready; then
 		firewall_runtime_reconcile || return 1
 	else

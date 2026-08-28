@@ -154,6 +154,22 @@ if grep -Fq 'Only top-level table declarations are allowed.' "$RPC"; then
 fi
 grep -F 'nft --check --file' "$FIREWALL_HELPER" >/dev/null \
 	|| fail 'nftables editor no longer performs a syntax-only check'
+grep -F 'FIREWALL_CANDIDATE=' "$FIREWALL_HELPER" >/dev/null \
+	|| fail 'firewall helper does not define a volatile candidate snapshot'
+grep -F 'firewall_copy_atomic' "$FIREWALL_HELPER" >/dev/null \
+	|| fail 'firewall helper does not provide atomic snapshot replacement'
+grep -F 'firewall_request_config' "$RPC" >/dev/null \
+	|| fail 'apply and validate RPCs do not receive editor content'
+grep -F 'firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"' "$RPC" >/dev/null \
+	|| fail 'save RPC does not copy the applied snapshot to persistent storage'
+if grep -Fq "callSave(editor.value)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
+	fail 'firewall save still accepts un-applied editor contents'
+fi
+grep -F 'callApply(editor.value)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+	|| fail 'firewall apply does not receive editor contents'
+if grep -Fq 'Save & apply' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
+	fail 'firewall editor still exposes a combined Save & apply action'
+fi
 grep -F "'    '.repeat(indent)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
 	|| fail 'nftables editor formatter does not use four-space indentation'
 if grep -Fq "'\\t'.repeat(indent)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
