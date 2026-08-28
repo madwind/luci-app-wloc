@@ -140,7 +140,7 @@ grep -Fq 'procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"' 
 if grep -Eq 'gid|GID|--gid' "$INIT"; then
 	fail 'init script still contains daemon GID handling'
 fi
-if grep -Eq 'pidfile|daemonize|(^|[^A-Za-z0-9_])&([[:space:]]|$)' "$INIT"; then
+if grep -Eq 'pidfile|daemonize|(^|[[:space:]])&([[:space:]]|$)' "$INIT"; then
 	fail 'init script contains self-managed daemonization or background execution'
 fi
 grep -Fq 'service_daemon_running' "$RPC" \
