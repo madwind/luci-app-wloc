@@ -89,8 +89,8 @@ migrate_location() {
 }
 
 # Seed only missing values so upgrades never overwrite an already configured
-# instance. Schema 6 stores the fixed interface as the WLOC rule identity and
-# no longer exposes a configurable daemon GID.
+# instance. Schema 7 stores the fixed interface as the WLOC rule identity,
+# removes configurable domains, and does not expose a configurable daemon GID.
 uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
 uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 listen_port="$(uci -q get wloc.main.listen_port 2>/dev/null || true)"
@@ -98,13 +98,12 @@ case "$listen_port" in
 	''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
 esac
 uci -q delete wloc.main.gid
-uci -q get wloc.main.domain >/dev/null || {
-	uci -q add_list wloc.main.domain='gs-loc.apple.com'
-	uci -q add_list wloc.main.domain='gs-loc-cn.apple.com'
-}
+# Schema 6 allowed custom domains. Schema 7 always removes that legacy list so
+# an old test endpoint cannot remain active after an upgrade.
+uci -q delete wloc.main.domain
 uci -q get wloc.main.debug >/dev/null || uci -q set wloc.main.debug='0'
 uci -q get wloc.main.runtime_log >/dev/null || uci -q set wloc.main.runtime_log='0'
-uci -q set wloc.main.schema_version='6'
+	uci -q set wloc.main.schema_version='7'
 
 wloc_sections=''
 collect_wloc_section() {

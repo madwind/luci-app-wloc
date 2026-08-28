@@ -138,11 +138,10 @@ impl Config {
         I: IntoIterator<Item = String>,
     {
         let mut listen_port = 61520_u16;
-        let mut domains = DEFAULT_DOMAINS
+        let domains = DEFAULT_DOMAINS
             .iter()
             .map(|domain| (*domain).to_owned())
             .collect::<Vec<_>>();
-        let mut domains_explicit = false;
         let mut debug = false;
         let mut runtime_log = false;
         let mut rules = Vec::new();
@@ -158,17 +157,6 @@ impl Config {
                         .ok_or_else(value)?
                         .parse()
                         .map_err(|_| "invalid listen port")?
-                }
-                "--domain" => {
-                    let domain = parse_domain(&args.next().ok_or_else(value)?)?;
-                    if !domains_explicit {
-                        domains.clear();
-                        domains_explicit = true;
-                    }
-                    if domains.iter().any(|configured| configured == &domain) {
-                        return Err(format!("duplicate domain: {domain}"));
-                    }
-                    domains.push(domain);
                 }
                 "--debug" => debug = true,
                 "--runtime-log" => runtime_log = true,
@@ -238,7 +226,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--domain DOMAIN] [--debug] [--runtime-log]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--debug] [--runtime-log]"
     }
 }
 
@@ -263,25 +251,6 @@ fn parse_proxy_host(value: &str) -> Result<String, String> {
         return Err("invalid proxy host".into());
     }
     Ok(value.to_owned())
-}
-
-fn parse_domain(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.len() > 253 || value.ends_with('.') {
-        return Err("invalid domain".into());
-    }
-    for label in value.split('.') {
-        if label.is_empty()
-            || label.len() > 63
-            || label.starts_with('-')
-            || label.ends_with('-')
-            || !label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err("invalid domain".into());
-        }
-    }
-    Ok(value.to_ascii_lowercase())
 }
 
 fn parse_rule_id(value: &str) -> Result<String, String> {
@@ -400,37 +369,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_custom_domains_and_debug_mode() {
-        let config = Config::from_iter(args(&[
-            "--rule",
-            "ap",
-            "phy0-ap0",
-            "1",
-            "2",
-            "--domain",
-            "Test.Example.com",
-            "--domain",
-            "wloc.test",
-            "--debug",
-        ]))
-        .unwrap();
-        assert_eq!(config.domains, ["test.example.com", "wloc.test"]);
+    fn keeps_fixed_domains_and_does_not_advertise_overrides() {
+        let config =
+            Config::from_iter(args(&["--rule", "ap", "phy0-ap0", "1", "2", "--debug"])).unwrap();
+        assert_eq!(config.domains, ["gs-loc.apple.com", "gs-loc-cn.apple.com"]);
         assert!(config.debug);
-    }
-
-    #[test]
-    fn rejects_invalid_domains() {
-        for domain in [
-            "",
-            ".example.com",
-            "example..com",
-            "-example.com",
-            "example-.com",
-        ] {
-            assert!(Config::from_iter(args(&[
-                "--rule", "ap", "phy0-ap0", "1", "2", "--domain", domain,
-            ]))
-            .is_err());
-        }
+        assert!(!Config::usage().contains("domain"));
     }
 }

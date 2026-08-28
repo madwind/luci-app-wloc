@@ -40,18 +40,12 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16, domains: &[String]) -> Result<(), String> {
-    let mut selectors = vec![port.to_string()];
-    selectors.extend(domains.iter().cloned());
-    run_rules(helper, "reconcile", &selectors)
+fn reconcile_rules(helper: &Path, port: u16) -> Result<(), String> {
+    run_rules(helper, "reconcile", &[port.to_string()])
 }
 
-async fn reconcile_rules_async(
-    helper: PathBuf,
-    port: u16,
-    domains: Vec<String>,
-) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &domains))
+async fn reconcile_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
@@ -162,11 +156,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-        let initially_armed = match reconcile_rules_async(
-            config.rules_helper.clone(),
-            config.listen_port,
-            config.domains.clone(),
-        )
+		let initially_armed = match reconcile_rules_async(
+			config.rules_helper.clone(),
+			config.listen_port,
+		)
         .await
         {
             Ok(()) => {
@@ -202,20 +195,18 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let armed = Arc::new(AtomicBool::new(initially_armed));
         let lease_armed = Arc::clone(&armed);
-        let lease_status = Arc::clone(&status);
-        let lease_helper = config.rules_helper.clone();
-        let lease_port = config.listen_port;
-        let lease_domains = config.domains.clone();
-        tokio::spawn(async move {
+		let lease_status = Arc::clone(&status);
+		let lease_helper = config.rules_helper.clone();
+		let lease_port = config.listen_port;
+		tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-                if let Err(error) = reconcile_rules_async(
-                    lease_helper.clone(),
-                    lease_port,
-                    lease_domains.clone(),
-                )
+				if let Err(error) = reconcile_rules_async(
+					lease_helper.clone(),
+					lease_port,
+				)
                 .await
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);

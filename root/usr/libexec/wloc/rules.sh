@@ -12,41 +12,12 @@ CUSTOM_FIREWALL=/var/run/wloc/firewall.applied.nft
 STAMP=/var/run/wloc/hosts.refreshed
 DNS_ATTEMPT_STAMP=/var/run/wloc/hosts.attempted
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
-DEFAULT_HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
-HOSTS="$DEFAULT_HOSTS"
+HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
 HOST_TIMEOUT=15m
 DNS_SAMPLES=1
 DNS_REFRESH_SECONDS=300
 DNS_RETRY_SECONDS=10
 INGRESS_INTERFACE_TIMEOUT=120s
-
-append_configured_host() {
-	[ -n "$1" ] || return 0
-	HOSTS="${HOSTS}${HOSTS:+ }$1"
-}
-
-load_configured_hosts() {
-	HOSTS=''
-	if [ -r /lib/functions.sh ]; then
-		# OpenWrt's helper reads this installer-only variable directly. Keep
-		# strict mode enabled while making runtime invocations safe.
-		IPKG_INSTROOT=${IPKG_INSTROOT:-}
-		CONFIG_LIST_STATE=${CONFIG_LIST_STATE:-}
-		NO_CALLBACK=${NO_CALLBACK:-}
-		. /lib/functions.sh
-		config_load wloc 2>/dev/null || true
-		config_list_foreach main domain append_configured_host
-	fi
-	[ -n "$HOSTS" ] || HOSTS="$DEFAULT_HOSTS"
-}
-
-set_hosts() {
-	if [ "$#" -gt 0 ]; then
-		HOSTS="$*"
-	else
-		load_configured_hosts
-	fi
-}
 
 active_ingress_set() {
 	local family
@@ -260,7 +231,6 @@ EOF
 }
 
 refresh_hosts() {
-	set_hosts "$@"
 	rm -f "$STAMP" "$DNS_ATTEMPT_STAMP"
 	resolve_hosts
 }
@@ -268,10 +238,8 @@ refresh_hosts() {
 apply_rules() {
 	local port
 	port="$1"
-	shift
-	set_hosts "$@"
 	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
-	refresh_hosts "$@"
+	refresh_hosts
 }
 
 valid_ifname() {
@@ -286,8 +254,6 @@ load_ap_lib() {
 reconcile() {
 	local port
 	port="$1"
-	shift
-	set_hosts "$@"
 	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
 	resolve_hosts || {
 		echo 'wloc: host-set reconciliation failed' >&2
@@ -366,26 +332,21 @@ EOF
 case "${1:-}" in
 	apply)
 		port="${2:-}"
-		shift 2
-		apply_rules "$port" "$@"
+		apply_rules "$port"
 		;;
 	reconcile)
 		port="${2:-}"
-		shift 2
-		reconcile "$port" "$@"
+		reconcile "$port"
 		;;
 	cleanup) cleanup;;
 	status)
 		nft list table inet "$TABLE" 2>/dev/null
 		;;
 	resolve-hosts)
-		shift
-		set_hosts "$@"
 		resolve_hosts
 		;;
 	refresh-hosts)
-		shift
-		refresh_hosts "$@"
+		refresh_hosts
 		;;
 	*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|resolve-hosts|refresh-hosts}' >&2; exit 2;;
 esac
