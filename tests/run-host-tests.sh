@@ -100,6 +100,18 @@ grep -Fq 'firewall_active' "$RPC" \
 
 grep -Fq 'listener_ready' "$INIT" \
 	|| fail 'service start does not defer dynamic-set population until listener readiness'
+grep -Fq 'procd_open_instance daemon' "$INIT" \
+	|| fail 'daemon procd instance is not explicitly named'
+grep -Fq 'procd_open_instance schedule' "$INIT" \
+	|| fail 'schedule procd instance is not explicitly named'
+grep -Fq 'procd_set_param respawn' "$INIT" \
+	|| fail 'procd respawn is not configured'
+grep -Fq 'procd_set_param stdout 1' "$INIT" \
+	|| fail 'daemon stdout is not connected to logd'
+grep -Fq 'procd_set_param stderr 1' "$INIT" \
+	|| fail 'daemon stderr is not connected to logd'
+grep -Fq 'procd_add_reload_trigger wloc' "$INIT" \
+	|| fail 'service reload trigger is missing'
 if grep -Fq 'ubus -S call luci.wloc' "$INIT"; then
 	fail 'service start still calls luci.wloc through ubus'
 fi
@@ -108,6 +120,18 @@ grep -Fq 'procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"' 
 if grep -Eq 'gid|GID|--gid' "$INIT"; then
 	fail 'init script still contains daemon GID handling'
 fi
+if grep -Eq 'pidfile|daemonize|(^|[^A-Za-z0-9_])&([[:space:]]|$)' "$INIT"; then
+	fail 'init script contains self-managed daemonization or background execution'
+fi
+grep -Fq 'service_daemon_running' "$RPC" \
+	|| fail 'status RPC does not query the procd service state'
+grep -Fq 'ubus call service list' "$RPC" \
+	|| fail 'status RPC does not query ubus service list'
+if grep -Fq 'sleep 1' "$RPC"; then
+	fail 'status RPC still waits with a fixed one-second sleep'
+fi
+grep -Fq 'state restarting' "$RPC" \
+	|| fail 'restart RPC does not return an immediate accepted state'
 
 echo '==> WLOC recovery behavior'
 
