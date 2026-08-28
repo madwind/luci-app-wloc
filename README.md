@@ -154,6 +154,18 @@ ready; if the daemon or a runtime update is temporarily unavailable, the sets
 remain fail-open and the daemon retries automatically. Normal firewall or
 runtime recovery does not require a manual **Restart service**.
 
+For a real-system lifecycle check, provide an OpenWrt x86_64 QEMU image with
+root SSH key access and run the optional test:
+
+```sh
+WLOC_OPENWRT_IMAGE=/path/to/openwrt.img \
+WLOC_OPENWRT_APK=/path/to/luci-app-wloc-x86_64.apk \
+WLOC_OPENWRT_SSH_KEY=/path/to/root.key \
+sh tests/openwrt-lifecycle.test.sh
+```
+
+It uses QEMU snapshot mode, so the supplied image is not modified.
+
 ## License
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
