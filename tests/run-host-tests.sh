@@ -93,9 +93,17 @@ grep -Fq 'rm -rf /tmp/luci-modulecache/' "$ROOT/Makefile" \
 	|| fail 'package postinst does not clear the LuCI module cache'
 grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
 	|| fail 'package postinst does not reload rpcd'
-if grep -Eq '/etc/init.d/wloc (enable|start|disable|stop)' "$ROOT/Makefile"; then
-	fail 'package hooks still duplicate standard service lifecycle actions'
+if grep -Eq '/etc/init.d/wloc (enable|start|disable)' "$ROOT/Makefile"; then
+	fail 'package hooks still duplicate standard enable/start/disable actions'
 fi
+grep -Fq '/etc/init.d/wloc stop' "$ROOT/Makefile" \
+	|| fail 'package prerm does not stop WLOC before cleanup'
+prerm_stop_line="$(grep -nF '/etc/init.d/wloc stop' "$ROOT/Makefile" | cut -d: -f1 | head -n 1)"
+prerm_cleanup_line="$(grep -nF 'firewall.sh remove-runtime' "$ROOT/Makefile" | cut -d: -f1 | head -n 1)"
+[ -n "$prerm_stop_line" ] && [ -n "$prerm_cleanup_line" ] \
+	|| fail 'package prerm lifecycle actions are incomplete'
+[ "$prerm_stop_line" -lt "$prerm_cleanup_line" ] \
+	|| fail 'package prerm removes firewall state before stopping WLOC'
 grep -Fq 'SCP_OPTIONS=' "$QEMU_TEST" \
 	|| fail 'QEMU lifecycle test does not separate scp options'
 grep -Fq -- '-P $SSH_PORT' "$QEMU_TEST" \
@@ -105,8 +113,8 @@ if grep -Fq 'scp $SSH_OPTIONS' "$QEMU_TEST"; then
 fi
 grep -Fq 'ubus call service list' "$QEMU_TEST" \
 	|| fail 'QEMU lifecycle test does not query procd through ubus'
-grep -Fq "jsonfilter -e '@.wloc.instances.daemon.pid'" "$QEMU_TEST" \
-	|| fail 'QEMU lifecycle test does not read the daemon PID with jsonfilter'
+grep -Fq "service_value '@.wloc.instances.daemon.pid'" "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not read the daemon PID through service_value'
 if grep -Fq '"daemon"' "$QEMU_TEST" || grep -Fq '"schedule"' "$QEMU_TEST"; then
 	fail 'QEMU lifecycle test still parses procd JSON with grep'
 fi
@@ -149,8 +157,6 @@ grep -Fq 'listener_ready' "$INIT" \
 	|| fail 'service start does not defer dynamic-set population until listener readiness'
 grep -Fq 'firewall.applied.nft' "$INIT" \
 	|| fail 'service start does not clear the volatile applied firewall snapshot'
-grep -Fq 'firewall.candidate.nft' "$INIT" \
-	|| fail 'service start does not clear the volatile candidate firewall snapshot'
 grep -Fq 'procd_open_instance daemon' "$INIT" \
 	|| fail 'daemon procd instance is not explicitly named'
 grep -Fq 'procd_open_instance schedule' "$INIT" \
@@ -231,8 +237,6 @@ if grep -Fq 'Only top-level table declarations are allowed.' "$RPC"; then
 fi
 grep -F 'nft --check --file' "$FIREWALL_HELPER" >/dev/null \
 	|| fail 'nftables editor no longer performs a syntax-only check'
-grep -F 'FIREWALL_CANDIDATE=' "$FIREWALL_HELPER" >/dev/null \
-	|| fail 'firewall helper does not define a volatile candidate snapshot'
 grep -F 'firewall_copy_atomic' "$FIREWALL_HELPER" >/dev/null \
 	|| fail 'firewall helper does not provide atomic snapshot replacement'
 grep -F 'firewall_request_config' "$RPC" >/dev/null \

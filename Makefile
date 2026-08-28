@@ -60,8 +60,8 @@ endef
 define Package/luci-app-wloc/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-    /usr/libexec/wloc/rules.sh cleanup 2>/dev/null || true
-    /usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
+	/etc/init.d/wloc stop >/dev/null 2>&1 || true
+	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
 exit 0
 endef

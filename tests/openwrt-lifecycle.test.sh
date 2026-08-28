@@ -87,6 +87,17 @@ reboot_guest() {
 	fail 'WLOC procd instances did not start after reboot'
 }
 
+wait_for_instance() {
+	local instance="$1" attempt
+	for attempt in $(seq 1 30); do
+		if instance_running "$instance"; then
+			return 0
+		fi
+		sleep 1
+	done
+	return 1
+}
+
 apk_name="$(basename "$WLOC_OPENWRT_APK")"
 qemu-system-x86_64 \
 	-machine q35 \
@@ -111,14 +122,19 @@ ssh_cmd "apk add --allow-untrusted /tmp/$apk_name" >/dev/null \
 	|| fail 'apk could not install luci-app-wloc'
 ssh_cmd "command -v rpcd >/dev/null && [ -x /etc/init.d/wloc ]" \
 	|| fail 'package install did not provide rpcd or the wloc init script'
-ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci commit wireless; uci commit wloc" \
-	|| fail 'could not create the deterministic WLOC test rule'
-ssh_cmd /etc/init.d/wloc enable >/dev/null \
-	|| fail 'wloc could not be enabled'
+
 ssh_cmd /etc/init.d/wloc enabled \
-	|| fail 'wloc did not report enabled after enable'
-ssh_cmd /etc/init.d/wloc start >/dev/null \
-	|| fail 'wloc could not be started'
+	|| fail 'OpenWrt default_postinst did not enable wloc'
+wait_for_instance schedule \
+	|| fail 'OpenWrt default_postinst did not start the WLOC schedule instance'
+if instance_running daemon; then
+	fail 'WLOC daemon started while main.enabled was still 0'
+fi
+
+ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
+	|| fail 'could not create the deterministic WLOC test rule'
+ssh_cmd /etc/init.d/wloc restart >/dev/null \
+	|| fail 'wloc could not be restarted after enabling the daemon'
 
 instance_running daemon \
 	|| fail 'procd daemon instance is not running'
