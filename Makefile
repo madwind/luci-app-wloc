@@ -51,14 +51,8 @@ endef
 define Package/luci-app-wloc/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-    [ ! -x /etc/uci-defaults/luci-app-wloc ] || {
-       /etc/uci-defaults/luci-app-wloc && rm -f /etc/uci-defaults/luci-app-wloc
-    }
-    rm -f /tmp/luci-indexcache.*
     rm -rf /tmp/luci-modulecache/
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-    /etc/init.d/wloc enable
-    /etc/init.d/wloc start >/dev/null 2>&1 || true
 }
 exit 0
 endef
@@ -67,8 +61,7 @@ define Package/luci-app-wloc/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
     /usr/libexec/wloc/rules.sh cleanup 2>/dev/null || true
-    /etc/init.d/wloc disable 2>/dev/null || true
-    /etc/init.d/wloc stop 2>/dev/null || true
+    /usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
 exit 0
 endef

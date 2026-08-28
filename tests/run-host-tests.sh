@@ -13,7 +13,9 @@ INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
+FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
+FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 
 fail() {
 	echo "host tests: FAIL: $*" >&2
@@ -36,7 +38,9 @@ done
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
 [ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
 [ -f "$LIFECYCLE_TEST" ] || fail "WLOC lifecycle test not found"
+[ -f "$FIREWALL_REMOVE_TEST" ] || fail "WLOC firewall removal test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
+[ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
 
 
 echo '==> Shell syntax'
@@ -78,20 +82,17 @@ done < <(
 echo '==> JavaScript behavior'
 
 node "$AP_TEST"
+node "$FIREWALL_UI_TEST"
 
 
 echo '==> Service startup behavior'
 
-grep -Fq 'rm -f /tmp/luci-indexcache.*' "$ROOT/Makefile" \
-	|| fail 'package postinst does not clear the LuCI index cache'
 grep -Fq 'rm -rf /tmp/luci-modulecache/' "$ROOT/Makefile" \
 	|| fail 'package postinst does not clear the LuCI module cache'
 grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
 	|| fail 'package postinst does not reload rpcd'
-grep -Fq '/etc/init.d/wloc start' "$ROOT/Makefile" \
-	|| fail 'package postinst does not start wloc without an unnecessary restart'
-if grep -Fq '/etc/init.d/rpcd restart' "$ROOT/Makefile"; then
-	fail 'package postinst still restarts rpcd'
+if grep -Eq '/etc/init.d/wloc (enable|start|disable|stop)' "$ROOT/Makefile"; then
+	fail 'package hooks still duplicate standard service lifecycle actions'
 fi
 grep -Fq 'group: checks-${{ github.workflow }}-${{ github.ref }}' "$ROOT/.github/workflows/ci.yml" \
 	|| fail 'standalone and reusable checks do not have isolated concurrency keys'
@@ -109,6 +110,18 @@ grep -Fq 'firewall_runtime_reconcile' "$FIREWALL_HELPER" \
 	|| fail 'firewall helper does not support immediate runtime reconciliation'
 grep -Fq 'firewall_runtime_cleanup' "$FIREWALL_HELPER" \
 	|| fail 'firewall helper does not fail open while wlocd is stopped'
+grep -Fq 'FIREWALL_RUNTIME_WARNING' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not expose reconcile recovery state'
+grep -Fq 'runtime_ready' "$RPC" \
+	|| fail 'firewall RPC does not expose runtime readiness'
+grep -Fq 'recovering' "$RPC" \
+	|| fail 'firewall RPC does not expose recovery state'
+grep -Fq 'firewall_remove_file' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not remove declared nftables tables'
+grep -Fq 'remove-runtime' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not expose runtime table cleanup'
+grep -Fq 'firewall.sh remove-runtime' "$ROOT/Makefile" \
+	|| fail 'package prerm does not clean up runtime nftables tables'
 grep -Fq 'firewall_wloc_ready' "$FIREWALL_HELPER" \
 	|| fail 'firewall helper does not gate dynamic sets on daemon readiness'
 grep -Fq 'firewall_active' "$RPC" \
@@ -190,6 +203,7 @@ fi
 echo '==> WLOC lifecycle behavior'
 
 sh "$LIFECYCLE_TEST"
+sh "$FIREWALL_REMOVE_TEST"
 sh "$RPC_FIREWALL_TEST"
 
 echo '==> nftables editor behavior'
@@ -212,6 +226,10 @@ if grep -Fq "callSave(editor.value)" "$ROOT/htdocs/luci-static/resources/view/wl
 fi
 grep -F 'callApply(editor.value)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
 	|| fail 'firewall apply does not receive editor contents'
+grep -F 'initialEditorContent(result)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+	|| fail 'firewall refresh does not restore an applied candidate'
+grep -F 'savedHash = persistentPresent ? contentHash(result.config ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+	|| fail 'firewall refresh does not keep the persistent hash separate from the editor'
 if grep -Fq 'Save & apply' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
 	fail 'firewall editor still exposes a combined Save & apply action'
 fi

@@ -71,6 +71,25 @@ function contentHash(value) {
 	return ('00000000' + (hash >>> 0).toString(16)).slice(-8);
 }
 
+function initialEditorContent(result) {
+	var persistent = String(result && result.config || '');
+	var applied = String(result && result.applied || '');
+	return result && result.applied_present === true &&
+		contentHash(applied) !== contentHash(persistent) ? applied : persistent;
+}
+
+function initialEditorState(result) {
+	var persistent = String(result && result.config || '');
+	var applied = String(result && result.applied || '');
+	var appliedPresent = result && result.applied_present === true;
+	var persistentPresent = result && result.persistent_present === true;
+	var editor = initialEditorContent(result);
+	var matchesApplied = appliedPresent && contentHash(editor) === contentHash(applied);
+	var matchesSaved = matchesApplied && persistentPresent &&
+		contentHash(applied) === contentHash(persistent);
+	return { content: editor, saveEnabled: matchesApplied && !matchesSaved };
+}
+
 function setBusy(buttons, busy) {
 	buttons.forEach(function(button) {
 		button.wlocBusy = busy;
@@ -121,6 +140,9 @@ return view.extend({
 		var persistentPresent = false;
 		var appliedHash = '';
 		var savedHash = '';
+		var runtimeReady = false;
+		var recovering = false;
+		var runtimeWarning = '';
 
 		saveButton.wlocStateDisabled = true;
 		saveButton.disabled = true;
@@ -147,7 +169,8 @@ return view.extend({
 				dirty.textContent = matchesApplied
 					? (matchesSaved ? _('Matches saved rules') : _('Matches applied rules; not saved'))
 					: _('Modified; apply before saving');
-				runtimeState.textContent = appliedPresent ? _('Applied') : _('Not applied');
+				runtimeState.textContent = recovering ? _('Recovering') :
+					runtimeReady || appliedPresent ? _('Applied') : _('Not applied');
 				persistentState.textContent = appliedMatchesSaved ? _('Saved') : _('Not saved');
 			}
 			saveButton.wlocStateDisabled = !matchesApplied || matchesSaved;
@@ -184,10 +207,17 @@ return view.extend({
 			return callRead().then(function(result) {
 				if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
 				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
+				persistentPresent = result.persistent_present === true;
+				savedHash = persistentPresent ? contentHash(result.config || '') : '';
 				appliedPresent = result.applied_present === true;
 				appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
+				runtimeReady = result.runtime_ready === true;
+				recovering = result.recovering === true;
+				runtimeWarning = String(result.warning || '');
 				updateActiveState(activeStatus, result);
 				updateStates();
+				if (runtimeWarning)
+					setState(feedback, 'warn', _(runtimeWarning));
 				return result;
 			}).catch(function(error) {
 				setState(feedback, 'error', String(error));
@@ -203,10 +233,15 @@ return view.extend({
 					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
 				appliedPresent = true;
 				appliedHash = contentHash(result.applied !== undefined ? result.applied : editor.value);
+				runtimeReady = result.runtime_ready === true;
+				recovering = result.recovering === true;
+				runtimeWarning = String(result.warning || '');
 				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
 				updateActiveState(activeStatus, result);
 				updateStates();
-				setState(feedback, 'ok', _('Rules were temporarily applied. Confirm that network, LuCI and SSH still work, then click Save.'));
+				setState(feedback, recovering ? 'warn' : 'ok', recovering
+					? _('Firewall rules were temporarily applied. Runtime dynamic sets are recovering automatically.')
+					: _('Rules were temporarily applied. Confirm that network, LuCI and SSH still work, then click Save.'));
 				return result;
 			}).catch(function(error) {
 				setState(feedback, 'error', String(error));
@@ -292,16 +327,21 @@ return view.extend({
 		callRead().then(function(result) {
 			if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
 			path.textContent = result.path || '/etc/wloc/firewall.nft';
-			editor.value = result.config || '';
+			editor.value = initialEditorContent(result);
 			active.value = result.active || '';
-			persistentPresent = result.persistent_present !== false;
+			persistentPresent = result.persistent_present === true;
 			appliedPresent = result.applied_present === true;
-			savedHash = persistentPresent ? contentHash(editor.value) : '';
+			savedHash = persistentPresent ? contentHash(result.config || '') : '';
 			appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
+			runtimeReady = result.runtime_ready === true;
+			recovering = result.recovering === true;
+			runtimeWarning = String(result.warning || '');
 			loaded = true;
 			updateActiveState(activeStatus, result);
 			updateBytes();
 			updateStates();
+			if (runtimeWarning)
+				setState(feedback, 'warn', _(runtimeWarning));
 		}).catch(function(error) {
 			setState(feedback, 'error', String(error));
 		});

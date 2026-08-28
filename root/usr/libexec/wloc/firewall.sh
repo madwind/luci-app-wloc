@@ -5,6 +5,7 @@
 FIREWALL_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
 FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-${FIREWALL_RUNTIME_DIR}/firewall.applied.nft}
 FIREWALL_CANDIDATE=${WLOC_FIREWALL_CANDIDATE:-${FIREWALL_RUNTIME_DIR}/firewall.candidate.nft}
+FIREWALL_PERSISTENT=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
 
@@ -125,6 +126,68 @@ firewall_runtime_cleanup() {
 	fi
 }
 
+firewall_remove_file() {
+	local source="$1" transaction detail rc family name tables
+	firewall_error=''
+	[ -r "$source" ] || {
+		firewall_error='nftables configuration file is not readable'
+		return 1
+	}
+	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
+		firewall_error='unable to create WLOC runtime directory'
+		return 1
+	}
+	transaction="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-remove.XXXXXX")" || {
+		firewall_error='unable to create nftables removal transaction'
+		return 1
+	}
+	: >"$transaction"
+	# A command script has no generic inverse. Remove only table declarations
+	# that can be identified explicitly; all other commands are best-effort.
+	tables="$(firewall_tables "$source" | awk '!seen[$0]++')"
+	while read -r family name; do
+		[ -n "$family" ] || continue
+		if nft list table "$family" "$name" >/dev/null 2>&1; then
+			printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
+				rm -f "$transaction"
+				firewall_error='unable to build nftables removal transaction'
+				return 1
+			}
+		fi
+	done <<EOF
+$tables
+EOF
+	if [ ! -s "$transaction" ]; then
+		rm -f "$transaction"
+		return 0
+	fi
+	detail="$(nft --check --file "$transaction" 2>&1)" && rc=0 || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		rm -f "$transaction"
+		firewall_error="${detail:-nftables removal syntax check failed}"
+		return 1
+	fi
+	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
+	rm -f "$transaction"
+	[ "$rc" -eq 0 ] || {
+		firewall_error="${detail:-failed to remove nftables tables}"
+		return 1
+	}
+}
+
+firewall_remove_runtime() {
+	local source=''
+	if [ -r "$FIREWALL_RUNTIME" ]; then
+		source="$FIREWALL_RUNTIME"
+	elif [ -r "$FIREWALL_PERSISTENT" ]; then
+		source="$FIREWALL_PERSISTENT"
+	fi
+	if [ -n "$source" ]; then
+		firewall_remove_file "$source" || return 1
+	fi
+	rm -f "$FIREWALL_RUNTIME" "$FIREWALL_CANDIDATE"
+}
+
 firewall_validate_file() {
 	local source="$1" check detail rc family name tables
 	firewall_error=''
@@ -172,6 +235,10 @@ EOF
 firewall_apply_file() {
 	local source="$1" transaction detail rc family name tables
 	firewall_error=''
+	FIREWALL_RUNTIME_STATE_SET=0
+	FIREWALL_RUNTIME_READY=0
+	FIREWALL_RUNTIME_RECOVERING=0
+	FIREWALL_RUNTIME_WARNING=''
 	firewall_validate_file "$source" || return 1
 	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
 		firewall_error='unable to create WLOC runtime directory'
@@ -216,10 +283,22 @@ EOF
 		firewall_error="unable to save applied nftables snapshot: ${firewall_error:-unknown error}"
 		return 1
 	}
+	FIREWALL_RUNTIME_STATE_SET=1
 	if firewall_wloc_ready; then
-		firewall_runtime_reconcile || return 1
+		if firewall_runtime_reconcile; then
+			FIREWALL_RUNTIME_READY=1
+		else
+			# The nft transaction and applied snapshot already succeeded. Keep the
+			# completed Apply successful, but remove dynamic state fail-open while
+			# the daemon retries reconciliation.
+			firewall_runtime_cleanup || true
+			FIREWALL_RUNTIME_RECOVERING=1
+			FIREWALL_RUNTIME_WARNING='Runtime rule refresh failed; WLOC will retry automatically.'
+		fi
 	else
-		firewall_runtime_cleanup || return 1
+		firewall_runtime_cleanup || true
+		FIREWALL_RUNTIME_RECOVERING=1
+		FIREWALL_RUNTIME_WARNING='Runtime dynamic sets are waiting for the WLOC listener; WLOC will retry automatically.'
 	fi
 }
 
@@ -245,8 +324,20 @@ if [ "${WLOC_FIREWALL_HELPER_SOURCE:-0}" -ne 1 ]; then
 			printf '%s\n' "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
 			[ "$FIREWALL_ACTIVE_FOUND" -eq 1 ] || exit 1
 			;;
+		remove)
+			firewall_remove_file "${2:-}" || {
+				printf '%s\n' "${firewall_error:-failed to remove nftables tables}" >&2
+				exit 1
+			}
+			;;
+		remove-runtime)
+			firewall_remove_runtime || {
+				printf '%s\n' "${firewall_error:-failed to remove runtime nftables tables}" >&2
+				exit 1
+			}
+			;;
 		*)
-			printf '%s\n' 'usage: firewall.sh {validate|apply|active} FILE' >&2
+			printf '%s\n' 'usage: firewall.sh {validate|apply|active|remove} FILE | remove-runtime' >&2
 			exit 2
 			;;
 	esac

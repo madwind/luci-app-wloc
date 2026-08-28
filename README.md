@@ -153,6 +153,12 @@ saved rules. WLOC immediately reconciles its dynamic sets when the listener is
 ready; if the daemon or a runtime update is temporarily unavailable, the sets
 remain fail-open and the daemon retries automatically. Normal firewall or
 runtime recovery does not require a manual **Restart service**.
+When the package is uninstalled, its lifecycle hook first removes tables
+declared by the last applied snapshot (falling back to the persistent file
+when no snapshot exists) through a checked nftables delete transaction.
+Unrelated tables are not touched. Custom command scripts may change external
+nftables state that WLOC cannot reliably reverse, so their uninstall cleanup
+is necessarily best-effort.
 
 For a real-system lifecycle check, provide an OpenWrt x86_64 QEMU image with
 root SSH key access and run the optional test:

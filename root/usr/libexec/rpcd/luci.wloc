@@ -17,8 +17,37 @@ AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$FIREWALL_HELPER"
 
+firewall_response_state() {
+	local state_armed state_last_event
+	runtime_ready=0
+	recovering=0
+	runtime_warning=''
+
+	if [ "${FIREWALL_RUNTIME_STATE_SET:-0}" -eq 1 ]; then
+		runtime_ready="${FIREWALL_RUNTIME_READY:-0}"
+		recovering="${FIREWALL_RUNTIME_RECOVERING:-0}"
+		runtime_warning="${FIREWALL_RUNTIME_WARNING:-}"
+		return 0
+	fi
+
+	[ -s "$STATE" ] || return 0
+	state_armed=0
+	state_last_event=''
+	json_load_file "$STATE" 2>/dev/null || return 0
+	json_get_var state_armed armed
+	json_get_var state_last_event last_event
+	case "$state_armed" in 1|true|yes) runtime_ready=1;; esac
+	case "$state_last_event" in
+		lease_failed)
+			recovering=1
+			runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.'
+			;;
+	esac
+}
+
 firewall_response() {
 	local active_source
+	firewall_response_state
 	if [ -r "$FIREWALL_RUNTIME" ]; then
 		active_source="$FIREWALL_RUNTIME"
 	else
@@ -42,6 +71,9 @@ firewall_response() {
 	[ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
 	[ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
 	[ -r "$FIREWALL_CANDIDATE" ] && json_add_boolean candidate_present 1 || json_add_boolean candidate_present 0
+	json_add_boolean runtime_ready "$runtime_ready"
+	json_add_boolean recovering "$recovering"
+	json_add_string warning "$runtime_warning"
 	json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
 	json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
 	json_add_int table_count "$FIREWALL_TABLE_COUNT"

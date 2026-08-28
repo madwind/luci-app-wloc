@@ -37,6 +37,7 @@ WLOC_FIREWALL_HELPER_SOURCE=1
 DAEMON_RUNNING=1
 NFTP_CHECK_RC=0
 NFTP_APPLY_RC=0
+export WLOC_TEST_RULES_RC=0
 NFTP_ACTIVE_RC=0
 nft_transaction_log="$fixture_root/nft-transactions.log"
 : >"$nft_transaction_log"
@@ -93,7 +94,23 @@ grep -Fqx 'reconcile 61520' "$rules_log" \
 if grep -Fqx cleanup "$rules_log"; then
 	fail 'running daemon unexpectedly used cleanup instead of reconcile'
 fi
-[ -s "$WLOC_FIREWALL_RUNTIME" ] || fail 'successful apply did not save the firewall snapshot'
+	[ -s "$WLOC_FIREWALL_RUNTIME" ] || fail 'successful apply did not save the firewall snapshot'
+
+echo '  -> reconcile failures keep Apply successful and fail open'
+: >"$rules_log"
+DAEMON_RUNNING=1
+export WLOC_TEST_RULES_RC=1
+firewall_apply_file "$firewall_source" || fail 'reconcile failure was reported as Apply failure'
+grep -Fqx 'reconcile 61520' "$rules_log" \
+	|| fail 'reconcile was not attempted for the applied candidate'
+grep -Fqx cleanup "$rules_log" \
+	|| fail 'reconcile failure did not clean up dynamic sets'
+[ "$FIREWALL_RUNTIME_STATE_SET" -eq 1 ] || fail 'successful nft Apply did not set runtime state'
+[ "$FIREWALL_RUNTIME_READY" -eq 0 ] || fail 'failed reconcile was reported as runtime ready'
+[ "$FIREWALL_RUNTIME_RECOVERING" -eq 1 ] || fail 'failed reconcile did not enter recovering state'
+[ "$FIREWALL_RUNTIME_WARNING" = 'Runtime rule refresh failed; WLOC will retry automatically.' ] \
+	|| fail 'reconcile failure did not expose the recovery warning'
+export WLOC_TEST_RULES_RC=0
 
 echo '  -> stopped daemon keeps dynamic state empty'
 : >"$rules_log"
