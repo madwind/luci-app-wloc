@@ -8,9 +8,10 @@ INGRESS_SET=target_ingress_interfaces
 HOST_SET=apple_wloc_v4
 # The firewall helper updates this snapshot only after nft succeeds, so DNS
 # maintenance follows the active configuration rather than unsaved state.
-CUSTOM_FIREWALL=/var/run/wloc/firewall.applied.nft
-STAMP=/var/run/wloc/hosts.refreshed
-DNS_ATTEMPT_STAMP=/var/run/wloc/hosts.attempted
+RULES_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
+CUSTOM_FIREWALL=${WLOC_FIREWALL_RUNTIME:-${RULES_RUNTIME_DIR}/firewall.applied.nft}
+STAMP=${WLOC_HOSTS_STAMP:-${RULES_RUNTIME_DIR}/hosts.refreshed}
+DNS_ATTEMPT_STAMP=${WLOC_DNS_ATTEMPT_STAMP:-${RULES_RUNTIME_DIR}/hosts.attempted}
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
 HOST_TIMEOUT=15m
@@ -329,24 +330,26 @@ EOF
 	}
 }
 
-case "${1:-}" in
-	apply)
-		port="${2:-}"
-		apply_rules "$port"
-		;;
-	reconcile)
-		port="${2:-}"
-		reconcile "$port"
-		;;
-	cleanup) cleanup;;
-	status)
-		nft list table inet "$TABLE" 2>/dev/null
-		;;
-	resolve-hosts)
-		resolve_hosts
-		;;
-	refresh-hosts)
-		refresh_hosts
-		;;
-	*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|resolve-hosts|refresh-hosts}' >&2; exit 2;;
-esac
+if [ "${WLOC_RULES_SOURCE:-0}" -ne 1 ]; then
+	case "${1:-}" in
+		apply)
+			port="${2:-}"
+			apply_rules "$port"
+			;;
+		reconcile)
+			port="${2:-}"
+			reconcile "$port"
+			;;
+		cleanup) cleanup;;
+		status)
+			nft list table inet "$TABLE" 2>/dev/null
+			;;
+		resolve-hosts)
+			resolve_hosts
+			;;
+		refresh-hosts)
+			refresh_hosts
+			;;
+		*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|resolve-hosts|refresh-hosts}' >&2; exit 2;;
+	esac
+fi

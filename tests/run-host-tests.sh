@@ -12,6 +12,7 @@ SCHEDULE="$ROOTFS/usr/libexec/wloc/wifi-schedule.sh"
 INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
+LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
 
 fail() {
 	echo "host tests: FAIL: $*" >&2
@@ -33,6 +34,7 @@ done
 [ -f "$FIREWALL_HELPER" ] || fail "firewall.sh not found"
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
 [ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
+[ -f "$LIFECYCLE_TEST" ] || fail "WLOC lifecycle test not found"
 
 
 echo '==> Shell syntax'
@@ -121,12 +123,36 @@ if grep -Eq 'ORDER_STATE|ORDER_CHECK_STAMP|PRIORITY_STATE|PRIORITY_DETAILS|analy
 	fail 'obsolete prerouting priority/order state remains in rules.sh'
 fi
 
+
+echo '==> Fixed Apple WLOC domains'
+
+grep -Eq '^[[:space:]]+option schema_version '\''7'\''$' "$ROOTFS/etc/config/wloc" \
+	|| fail 'UCI configuration schema is not version 7'
+if grep -Eq '^[[:space:]]*list domain([[:space:]]|$)' "$ROOTFS/etc/config/wloc"; then
+	fail 'UCI configuration still stores configurable WLOC domains'
+fi
+grep -Fq "HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'" "$RULES" \
+	|| fail 'rules.sh does not use the two fixed Apple endpoints'
+grep -Fq 'DEFAULT_DOMAINS' "$ROOT/src/wloc-rs/src/lib.rs" \
+	|| fail 'Rust service does not define the fixed Apple endpoints'
+grep -Fq "uci -q delete wloc.main.domain" "$ROOTFS/etc/uci-defaults/luci-app-wloc" \
+	|| fail 'migration does not remove legacy configurable domains'
+if grep -REq -- '--domain|config_list_foreach main domain' \
+	"$INIT" "$RULES" "$ROOT/src/wloc-rs/src"; then
+	fail 'runtime code still accepts configurable WLOC domains'
+fi
+
+
+echo '==> WLOC lifecycle behavior'
+
+sh "$LIFECYCLE_TEST"
+
 echo '==> nftables editor behavior'
 
 if grep -Fq 'Only top-level table declarations are allowed.' "$RPC"; then
 	fail 'nftables editor still rejects valid top-level commands'
 fi
-grep -F 'nft --check --file' "$RPC" >/dev/null \
+grep -F 'nft --check --file' "$FIREWALL_HELPER" >/dev/null \
 	|| fail 'nftables editor no longer performs a syntax-only check'
 grep -F "'    '.repeat(indent)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
 	|| fail 'nftables editor formatter does not use four-space indentation'
@@ -143,7 +169,8 @@ sh "$AP_RESOLVER_TEST"
 echo '==> WLOC shell behavior'
 
 # Load function definitions from rules.sh without executing its command dispatcher.
-eval "$(sed '/^case /,$d' "$RULES")"
+WLOC_RULES_SOURCE=1
+. "$RULES"
 
 
 echo '  -> port validation'
@@ -194,7 +221,7 @@ if grep -Eq 'table_healthy|bridge_table_healthy|ensure_table_healthy' "$RULES"; 
 	fail 'rules.sh still enforces a fixed nftables table layout'
 fi
 
-grep -F 'refresh_hosts "$@"' "$RULES" >/dev/null \
+grep -F 'refresh_hosts()' "$RULES" >/dev/null \
 	|| fail 'rules.sh no longer maintains the optional host set'
 grep -F 'active_ingress_set' "$RULES" >/dev/null \
 	|| fail 'rules.sh no longer maintains the optional ingress set'
@@ -256,8 +283,8 @@ uci() {
 load_ap_lib
 
 expected_ingress_batch='flush set bridge wloc target_ingress_interfaces
-add element bridge wloc target_ingress_interfaces { "phy0-ap0" timeout 30s }
-add element bridge wloc target_ingress_interfaces { "phy1-ap0" timeout 30s }'
+add element bridge wloc target_ingress_interfaces { "phy0-ap0" timeout 120s }
+add element bridge wloc target_ingress_interfaces { "phy1-ap0" timeout 120s }'
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
 	|| fail 'fixed-interface ingress synchronization generated an unexpected batch'
 

@@ -2,8 +2,10 @@
 
 # Shared nftables transaction helper used by init and rpcd.
 
-FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-/var/run/wloc/firewall.applied.nft}
+FIREWALL_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
+FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-${FIREWALL_RUNTIME_DIR}/firewall.applied.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
+FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
 
 firewall_tables() {
 	[ -r "$1" ] || return 0
@@ -62,7 +64,7 @@ firewall_active() {
 }
 
 firewall_wloc_ready() {
-	pidof wlocd >/dev/null 2>&1 && [ -s /var/run/wloc/status.json ]
+	pidof wlocd >/dev/null 2>&1 && [ -s "$FIREWALL_STATUS_PATH" ]
 }
 
 firewall_runtime_reconcile() {
@@ -96,11 +98,11 @@ firewall_validate_file() {
 		firewall_error='nftables configuration file is not readable'
 		return 1
 	}
-	mkdir -p /var/run/wloc || {
+	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
 		firewall_error='unable to create WLOC runtime directory'
 		return 1
 	}
-	check="$(mktemp /var/run/wloc/firewall-check.XXXXXX)" || {
+	check="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-check.XXXXXX")" || {
 		firewall_error='unable to create nftables check file'
 		return 1
 	}
@@ -137,11 +139,11 @@ firewall_apply_file() {
 	local source="$1" transaction detail rc family name tables runtime_tmp
 	firewall_error=''
 	firewall_validate_file "$source" || return 1
-	mkdir -p /var/run/wloc || {
+	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
 		firewall_error='unable to create WLOC runtime directory'
 		return 1
 	}
-	transaction="$(mktemp /var/run/wloc/firewall-apply.XXXXXX)" || {
+	transaction="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply.XXXXXX")" || {
 		firewall_error='unable to create nftables apply transaction'
 		return 1
 	}
