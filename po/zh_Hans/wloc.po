@@ -3,7 +3,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Project-Id-Version: luci-app-wloc\n"
 "POT-Creation-Date: 2026-08-26\n"
-"PO-Revision-Date: 2026-08-26\n"
+"PO-Revision-Date: 2026-08-28\n"
 "Last-Translator: luci-app-wloc maintainers\n"
 "Language-Team: none\n"
 "Language: zh_Hans\n"
@@ -167,12 +167,6 @@ msgstr "失败：%s"
 msgid "iPhone root certificate"
 msgstr "iPhone 根证书"
 
-msgid "interception is not ready"
-msgstr "拦截未就绪"
-
-msgid "Interception is unavailable. Check the runtime log."
-msgstr "拦截不可用。请查看运行时日志。"
-
 msgid "IP address"
 msgstr "IP 地址"
 
@@ -281,12 +275,6 @@ msgstr "刷新"
 msgid "Regenerate CA"
 msgstr "重新生成 CA"
 
-msgid "Restart"
-msgstr "重启"
-
-msgid "Restart failed: %s"
-msgstr "重启失败：%s"
-
 msgid "Restore at"
 msgstr "恢复时间"
 
@@ -301,12 +289,6 @@ msgstr "规则已保存并应用。"
 
 msgid "Rules saved but not applied."
 msgstr "规则已保存但未应用。"
-
-msgid "Running"
-msgstr "运行中"
-
-msgid "Running, interception unavailable"
-msgstr "运行中，拦截不可用"
 
 msgid "Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log."
 msgstr "运行时日志已禁用。请在服务设置中启用并点击保存并应用，以开始新的内存日志。"
@@ -361,12 +343,6 @@ msgstr "大小"
 
 msgid "SOCKS5 proxy"
 msgstr "SOCKS5 代理"
-
-msgid "Status"
-msgstr "状态"
-
-msgid "Stopped"
-msgstr "已停止"
 
 msgid "Success"
 msgstr "成功"
@@ -432,8 +408,8 @@ msgstr "请求无效"
 msgid "nftables syntax check failed"
 msgstr "nftables 语法检查失败"
 
-msgid "runtime rule refresh failed; interception is disabled"
-msgstr "运行时规则刷新失败；拦截已禁用"
+msgid "Runtime rule refresh failed"
+msgstr "运行时规则刷新失败"
 
 msgid "service is not running; check the system log"
 msgstr "服务未运行；请查看系统日志"
@@ -443,6 +419,60 @@ msgstr "透明代理路径冲突；重定向的数据包没有到达 WLOC 监听
 
 msgid "unknown method"
 msgstr "未知方法"
+
+msgid "%d APs · listener ready · interception armed"
+msgstr "%d 个 AP · 监听器已就绪 · 拦截已启用"
+
+msgid "Active"
+msgstr "活动"
+
+msgid "Ambiguous"
+msgstr "有歧义"
+
+msgid "Apple WLOC endpoints intercepted by this service."
+msgstr "此服务拦截的 Apple WLOC 端点。"
+
+msgid "Debug: fixed JSON response"
+msgstr "调试：固定 JSON 响应"
+
+msgid "duplicate; cannot be selected"
+msgstr "重复，无法选择"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Firewall rules are not active."
+msgstr "防火墙规则未激活。"
+
+msgid "Intercepted domains"
+msgstr "拦截的域名"
+
+msgid "Interception status"
+msgstr "拦截状态"
+
+msgid "not found"
+msgstr "未找到"
+
+msgid "Offline"
+msgstr "离线"
+
+msgid "offline"
+msgstr "离线"
+
+msgid "Recovering"
+msgstr "恢复中"
+
+msgid "Restart service"
+msgstr "重启服务"
+
+msgid "Retrying interception rules…"
+msgstr "正在重试拦截规则…"
+
+msgid "Traffic conflict"
+msgstr "流量冲突"
+
+msgid "Transparent-proxy traffic is not reaching the WLOC listener."
+msgstr "透明代理流量未到达 WLOC 监听器。"
 
 msgid "WLOC"
 msgstr "WLOC"

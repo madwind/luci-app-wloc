@@ -3,7 +3,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Project-Id-Version: luci-app-wloc\n"
 "POT-Creation-Date: 2026-08-26\n"
-"PO-Revision-Date: 2026-08-26\n"
+"PO-Revision-Date: 2026-08-28\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
 "MIME-Version: 1.0\n"
@@ -166,12 +166,6 @@ msgstr ""
 msgid "iPhone root certificate"
 msgstr ""
 
-msgid "interception is not ready"
-msgstr ""
-
-msgid "Interception is unavailable. Check the runtime log."
-msgstr ""
-
 msgid "IP address"
 msgstr ""
 
@@ -280,12 +274,6 @@ msgstr ""
 msgid "Regenerate CA"
 msgstr ""
 
-msgid "Restart"
-msgstr ""
-
-msgid "Restart failed: %s"
-msgstr ""
-
 msgid "Restore at"
 msgstr ""
 
@@ -299,12 +287,6 @@ msgid "Rules saved and applied."
 msgstr ""
 
 msgid "Rules saved but not applied."
-msgstr ""
-
-msgid "Running"
-msgstr ""
-
-msgid "Running, interception unavailable"
 msgstr ""
 
 msgid "Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log."
@@ -359,12 +341,6 @@ msgid "Size"
 msgstr ""
 
 msgid "SOCKS5 proxy"
-msgstr ""
-
-msgid "Status"
-msgstr ""
-
-msgid "Stopped"
 msgstr ""
 
 msgid "Success"
@@ -430,7 +406,7 @@ msgstr ""
 msgid "nftables syntax check failed"
 msgstr ""
 
-msgid "runtime rule refresh failed; interception is disabled"
+msgid "Runtime rule refresh failed"
 msgstr ""
 
 msgid "service is not running; check the system log"
@@ -440,6 +416,60 @@ msgid "transparent-proxy path conflict; redirected packets are not reaching the 
 msgstr ""
 
 msgid "unknown method"
+msgstr ""
+
+msgid "%d APs · listener ready · interception armed"
+msgstr ""
+
+msgid "Active"
+msgstr ""
+
+msgid "Ambiguous"
+msgstr ""
+
+msgid "Apple WLOC endpoints intercepted by this service."
+msgstr ""
+
+msgid "Debug: fixed JSON response"
+msgstr ""
+
+msgid "duplicate; cannot be selected"
+msgstr ""
+
+msgid "Error"
+msgstr ""
+
+msgid "Firewall rules are not active."
+msgstr ""
+
+msgid "Intercepted domains"
+msgstr ""
+
+msgid "Interception status"
+msgstr ""
+
+msgid "not found"
+msgstr ""
+
+msgid "Offline"
+msgstr ""
+
+msgid "offline"
+msgstr ""
+
+msgid "Recovering"
+msgstr ""
+
+msgid "Restart service"
+msgstr ""
+
+msgid "Retrying interception rules…"
+msgstr ""
+
+msgid "Traffic conflict"
+msgstr ""
+
+msgid "Transparent-proxy traffic is not reaching the WLOC listener."
 msgstr ""
 
 msgid "WLOC"

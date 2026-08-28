@@ -128,11 +128,21 @@ Upgrades migrate the previous `8443`, `58443`, and `28443` defaults while retain
 any other custom port. WLOC checks that the selected port is free before installing
 interception rules and stops safely if another router service already owns it.
 
-The intercepted domains are also configurable in Service settings. The default
-list contains `gs-loc.apple.com` and `gs-loc-cn.apple.com`; additional test
-domains are resolved and intercepted in the same way. The optional debug mode
-returns `{"wloc":"ok"}` for every intercepted HTTPS request without contacting
-the upstream server.
+WLOC intercepts exactly these two fixed Apple WLOC endpoints:
+
+- `gs-loc.apple.com`
+- `gs-loc-cn.apple.com`
+
+They are shown as read-only values in Service settings and are not configurable.
+The optional debug mode returns `{"wloc":"ok"}` for requests to these endpoints
+without contacting the upstream server.
+
+The LuCI **Interception status** reports whether the service is actually usable:
+`Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. After a
+firewall **Save & apply**, WLOC immediately reconciles its dynamic sets when the
+listener is ready; if the daemon or a runtime update is temporarily unavailable,
+the sets remain fail-open and the daemon retries automatically. Normal firewall
+or runtime recovery does not require a manual **Restart service**.
 
 ## License
 
