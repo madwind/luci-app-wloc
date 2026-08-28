@@ -1,6 +1,6 @@
 #!/bin/sh
 
-. /usr/share/libubox/jshn.sh
+. "${WLOC_JSHN_PATH:-/usr/share/libubox/jshn.sh}"
 
 INIT=${WLOC_INIT_PATH:-/etc/init.d/wloc}
 RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
@@ -340,6 +340,7 @@ service_daemon_running() {
 	return 1
 }
 
+if [ "${WLOC_RPC_SOURCE:-0}" -ne 1 ]; then
 case "$1" in
 list)
 	json_init
@@ -404,7 +405,8 @@ call)
 		emit_firewall_apply
 		;;
 	*) echo '{"error":"unknown method"}'; exit 1;;
-	esac
-	;;
+esac
+;;
 *) exit 1;;
 esac
+fi

@@ -13,6 +13,7 @@ INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
+RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
 
 fail() {
 	echo "host tests: FAIL: $*" >&2
@@ -35,6 +36,7 @@ done
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
 [ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
 [ -f "$LIFECYCLE_TEST" ] || fail "WLOC lifecycle test not found"
+[ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
 
 
 echo '==> Shell syntax'
@@ -79,6 +81,20 @@ node "$AP_TEST"
 
 
 echo '==> Service startup behavior'
+
+grep -Fq 'rm -f /tmp/luci-indexcache.*' "$ROOT/Makefile" \
+	|| fail 'package postinst does not clear the LuCI index cache'
+grep -Fq 'rm -rf /tmp/luci-modulecache/' "$ROOT/Makefile" \
+	|| fail 'package postinst does not clear the LuCI module cache'
+grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
+	|| fail 'package postinst does not reload rpcd'
+grep -Fq '/etc/init.d/wloc start' "$ROOT/Makefile" \
+	|| fail 'package postinst does not start wloc without an unnecessary restart'
+if grep -Fq '/etc/init.d/rpcd restart' "$ROOT/Makefile"; then
+	fail 'package postinst still restarts rpcd'
+fi
+grep -Fq 'group: checks-${{ github.workflow }}-${{ github.ref }}' "$ROOT/.github/workflows/ci.yml" \
+	|| fail 'standalone and reusable checks do not have isolated concurrency keys'
 
 grep -Fq 'FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh' "$INIT" \
 	|| fail 'init script does not configure the shared firewall helper'
@@ -174,6 +190,7 @@ fi
 echo '==> WLOC lifecycle behavior'
 
 sh "$LIFECYCLE_TEST"
+sh "$RPC_FIREWALL_TEST"
 
 echo '==> nftables editor behavior'
 
