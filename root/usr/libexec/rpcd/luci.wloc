@@ -139,7 +139,7 @@ package_version() {
 }
 
 emit_status() {
-	local configured enabled version table_dump rules_present attempts intercepted counters conflict daemon_running service_reason
+	local configured enabled version table_dump rules_present firewall_is_active attempts intercepted counters conflict daemon_running service_reason
 	load_runtime_state
 	configured=0
 	uci -q show wloc | grep -q '=wifi$' && configured=1
@@ -147,6 +147,10 @@ emit_status() {
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
 	[ -s "$FIREWALL_RUNTIME" ] && rules_present=1 || rules_present=0
+	firewall_is_active=0
+	if firewall_collect_active "$FIREWALL_RUNTIME" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
+		firewall_is_active=1
+	fi
 	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
 	counters="$(printf '%s\n' "$table_dump" | awk '
 		/wloc owned (AP|ingress) redirect/ {
@@ -192,6 +196,7 @@ emit_status() {
 	json_add_string version "$version"
 	json_add_boolean running "$daemon_running"
 	json_add_boolean rules_present "$rules_present"
+	json_add_boolean firewall_active "$firewall_is_active"
 	json_add_boolean armed "$armed"
 	json_add_int configured_aps "$configured_aps"
 	json_add_int accepted_connections "$accepted_connections"

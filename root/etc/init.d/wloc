@@ -159,13 +159,8 @@ start_service() {
 	[ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
 	[ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules; interception remains disabled'; return $?; }
 
-	# Start with empty short-lived sets. wlocd arms them after its listener is
-	# ready. Dynamic-set maintenance is intentionally non-fatal: wlocd keeps
-	# running and retries it when needed.
-	if ! "$RULES" apply "$listen_port" $domains; then
-		startup_warning \
-			"nftables dynamic-set maintenance could not be completed; service started"
-	fi
+	# Keep all dynamic sets empty until wlocd has bound its listener. The daemon
+	# performs the first reconcile after listener_ready.
 	mkdir -p /etc/wloc
 	chmod 0700 /etc/wloc
 

@@ -87,13 +87,38 @@ if grep -Fq 'ubus -S call luci.wloc firewall_apply' "$INIT"; then
 fi
 grep -Fq 'WLOC_FIREWALL_HELPER_SOURCE=1' "$RPC" \
 	|| fail 'rpcd does not source the shared firewall helper'
+grep -Fq 'firewall_runtime_reconcile' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not support immediate runtime reconciliation'
+grep -Fq 'firewall_runtime_cleanup' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not fail open while wlocd is stopped'
+grep -Fq 'firewall_wloc_ready' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not gate dynamic sets on daemon readiness'
+grep -Fq 'firewall_active' "$RPC" \
+	|| fail 'status RPC does not expose live firewall activity'
 
-grep -Fq 'if ! "$RULES" apply "$listen_port" $domains; then' "$INIT" \
-	|| fail 'nftables health check still blocks service startup'
+grep -Fq 'listener_ready' "$INIT" \
+	|| fail 'service start does not defer dynamic-set population until listener readiness'
+if grep -Fq 'ubus -S call luci.wloc' "$INIT"; then
+	fail 'service start still calls luci.wloc through ubus'
+fi
 grep -Fq 'procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"' "$INIT" \
 	|| fail 'service start still passes a daemon GID'
 if grep -Eq 'gid|GID|--gid' "$INIT"; then
 	fail 'init script still contains daemon GID handling'
+fi
+
+echo '==> WLOC recovery behavior'
+
+grep -Fq 'DNS_RETRY_SECONDS=10' "$RULES" \
+	|| fail 'DNS failures are still throttled for longer than one reconcile interval'
+grep -Fq 'INGRESS_INTERFACE_TIMEOUT=120s' "$RULES" \
+	|| fail 'ingress leases do not tolerate a long reconcile gap'
+grep -Fq 'resolve_hosts ||' "$RULES" \
+	|| fail 'reconcile does not propagate host-set failures'
+grep -Fq 'sync_ingress_interfaces ||' "$RULES" \
+	|| fail 'reconcile does not propagate ingress-set failures'
+if grep -Eq 'ORDER_STATE|ORDER_CHECK_STAMP|PRIORITY_STATE|PRIORITY_DETAILS|analyze_prerouting_proxies|write_priority_details|read_wloc_priority|read_wloc_chain|order_check_due|mark_order_checked|check_prerouting_order' "$RULES"; then
+	fail 'obsolete prerouting priority/order state remains in rules.sh'
 fi
 
 echo '==> nftables editor behavior'

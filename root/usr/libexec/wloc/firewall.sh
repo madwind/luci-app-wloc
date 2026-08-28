@@ -61,6 +61,34 @@ firewall_active() {
 	[ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]
 }
 
+firewall_wloc_ready() {
+	pidof wlocd >/dev/null 2>&1 && [ -s /var/run/wloc/status.json ]
+}
+
+firewall_runtime_reconcile() {
+	local port detail
+	port="$(uci -q get wloc.main.listen_port 2>/dev/null)" || {
+		firewall_error='unable to read the WLOC listen port'
+		return 1
+	}
+	[ -n "$port" ] || {
+		firewall_error='the WLOC listen port is empty'
+		return 1
+	}
+	if ! detail="$("$FIREWALL_RULES" reconcile "$port" 2>&1)"; then
+		firewall_error="WLOC runtime rule refresh failed: ${detail:-unknown error}"
+		return 1
+	fi
+}
+
+firewall_runtime_cleanup() {
+	local detail
+	if ! detail="$("$FIREWALL_RULES" cleanup 2>&1)"; then
+		firewall_error="WLOC dynamic-set cleanup failed: ${detail:-unknown error}"
+		return 1
+	fi
+}
+
 firewall_validate_file() {
 	local source="$1" check detail rc family name tables
 	firewall_error=''
@@ -156,6 +184,11 @@ EOF
 		rm -f "$runtime_tmp"
 		firewall_error='unable to save applied nftables snapshot'
 		return 1
+	fi
+	if firewall_wloc_ready; then
+		firewall_runtime_reconcile || return 1
+	else
+		firewall_runtime_cleanup || return 1
 	fi
 }
 
