@@ -61,7 +61,7 @@ DIST_DIR="$PROJECT/dist/$BUILD_PROFILE"
 ARCHIVE="$DOWNLOAD_DIR/$SDK_FILE"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing build command: $1" >&2; exit 1; }; }
-for command in bash curl sha256sum tar make git file readelf find sed grep awk dd wc nproc stat mktemp; do need "$command"; done
+for command in bash curl sha256sum tar make git file readelf find sed grep awk dd wc nproc stat mktemp chmod; do need "$command"; done
 [ "$(uname -m)" = x86_64 ] || { echo 'the official SDK host requires Linux x86_64' >&2; exit 1; }
 
 mkdir -p "$DOWNLOAD_DIR" "$EXTRACT_DIR" "$DIST_DIR"
@@ -120,6 +120,22 @@ mkdir -p "$PACKAGE_DST"
 cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
 cp -a "$PROJECT/src" "$PROJECT/htdocs" "$PROJECT/root" "$PACKAGE_DST/"
 [ -d "$PROJECT/po" ] && cp -a "$PROJECT/po" "$PACKAGE_DST/"
+
+# WSL/DrvFs exposes files copied from a Windows worktree as 0777 even when
+# Git records the executable bit precisely. Normalize the package source
+# before OpenWrt's install step so APK modes are reproducible on Linux and
+# WSL alike.
+find "$PACKAGE_DST/root" -type d -exec chmod 0755 {} +
+find "$PACKAGE_DST/root" -type f -exec chmod 0644 {} +
+for executable in \
+	etc/init.d/wloc \
+	etc/uci-defaults/luci-app-wloc \
+	usr/libexec/wloc/rules.sh \
+	usr/libexec/wloc/ap-lib.sh \
+	usr/libexec/wloc/wifi-schedule.sh \
+	usr/libexec/rpcd/luci.wloc; do
+	chmod 0755 "$PACKAGE_DST/root/$executable"
+done
 
 echo 'Installing LuCI package definitions'
 (

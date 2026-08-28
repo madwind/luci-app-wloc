@@ -1,16 +1,43 @@
-table inet wloc {
+table bridge wloc {
 	set target_ingress_interfaces {
 		type ifname
 		flags timeout
 	}
 
+	chain mark_prerouting {
+		type filter hook prerouting priority dstnat - 1;
+		policy accept;
+
+		iifname @target_ingress_interfaces tcp flags & (syn | ack) == syn tcp dport 443 counter meta mark set meta mark | 0x80000000 comment "wloc ingress mark"
+	}
+}
+
+table inet wloc {
 	set apple_wloc_v4 {
 		type ipv4_addr
 		flags timeout
 	}
 
+	chain proxy_bypass {
+		type filter hook prerouting priority mangle - 3;
+		policy accept;
+
+		ct mark & 0x00010000 != 0 meta mark set meta mark | 0x00010000 comment "wloc restore xrayt bypass"
+
+		meta mark & 0x80000000 != 0 ip daddr @apple_wloc_v4 tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x00010000 comment "wloc claim connection"
+	}
+
 	chain redirect_prerouting {
-		type nat hook prerouting priority mangle - 2; policy accept;
-		iifname @target_ingress_interfaces ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned ingress redirect"
+		type nat hook prerouting priority dstnat - 1;
+		policy accept;
+
+		meta mark & 0x80000000 != 0 ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned ingress redirect"
+	}
+
+	chain clear_ingress_mark {
+		type filter hook prerouting priority dstnat + 1;
+		policy accept;
+
+		meta mark & 0x80000000 != 0 meta mark set meta mark & 0x7fffffff comment "wloc clear ingress mark"
 	}
 }

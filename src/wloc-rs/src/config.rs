@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::wloc::PatchTarget;
+use crate::DEFAULT_DOMAINS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundProxy {
@@ -64,7 +65,7 @@ impl OutboundProxy {
 pub struct LocationRule {
     pub id: String,
     pub name: String,
-    pub ssid: String,
+    pub iface: String,
     pub target: PatchTarget,
     pub outbound: OutboundProxy,
 }
@@ -86,9 +87,9 @@ impl LocationRule {
 
     pub fn log_context(&self) -> String {
         format!(
-            "rule_name=\"{}\" ssid=\"{}\"",
+            "rule_name=\"{}\" iface=\"{}\"",
             self.safe_log_name(),
-            safe_log_value(&self.ssid)
+            safe_log_value(&self.iface)
         )
     }
 
@@ -100,6 +101,8 @@ impl LocationRule {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_port: u16,
+    pub domains: Vec<String>,
+    pub debug: bool,
     pub runtime_log: bool,
     /// Enabled rules in exact UCI order. Never sort this vector.
     pub rules: Vec<LocationRule>,
@@ -111,7 +114,7 @@ fn parse_target<I>(args: &mut I, flag: &str) -> Result<PatchTarget, String>
 where
     I: Iterator<Item = String>,
 {
-    let missing = || format!("{flag} requires ID SSID LATITUDE LONGITUDE");
+    let missing = || format!("{flag} requires ID IFACE LATITUDE LONGITUDE");
     let latitude = args
         .next()
         .ok_or_else(missing)?
@@ -135,6 +138,12 @@ impl Config {
         I: IntoIterator<Item = String>,
     {
         let mut listen_port = 61520_u16;
+        let mut domains = DEFAULT_DOMAINS
+            .iter()
+            .map(|domain| (*domain).to_owned())
+            .collect::<Vec<_>>();
+        let mut domains_explicit = false;
+        let mut debug = false;
         let mut runtime_log = false;
         let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
@@ -150,21 +159,33 @@ impl Config {
                         .parse()
                         .map_err(|_| "invalid listen port")?
                 }
+                "--domain" => {
+                    let domain = parse_domain(&args.next().ok_or_else(value)?)?;
+                    if !domains_explicit {
+                        domains.clear();
+                        domains_explicit = true;
+                    }
+                    if domains.iter().any(|configured| configured == &domain) {
+                        return Err(format!("duplicate domain: {domain}"));
+                    }
+                    domains.push(domain);
+                }
+                "--debug" => debug = true,
                 "--runtime-log" => runtime_log = true,
                 "--rule" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
                         return Err(format!("duplicate rule ID: {id}"));
                     }
-                    let ssid = parse_ssid(&args.next().ok_or_else(value)?)?;
-                    if rules.iter().any(|rule: &LocationRule| rule.ssid == ssid) {
-                        return Err(format!("duplicate SSID: {ssid}"));
+                    let iface = parse_iface(&args.next().ok_or_else(value)?)?;
+                    if rules.iter().any(|rule: &LocationRule| rule.iface == iface) {
+                        return Err(format!("duplicate interface: {iface}"));
                     }
                     let target = parse_target(&mut args, &flag)?;
                     rules.push(LocationRule {
                         name: id.clone(),
                         id,
-                        ssid,
+                        iface,
                         target,
                         outbound: OutboundProxy::Direct,
                     });
@@ -207,6 +228,8 @@ impl Config {
         }
         Ok(Self {
             listen_port,
+            domains,
+            debug,
             runtime_log,
             rules,
             state_dir,
@@ -215,7 +238,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID SSID LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--runtime-log]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--domain DOMAIN] [--debug] [--runtime-log]"
     }
 }
 
@@ -242,6 +265,25 @@ fn parse_proxy_host(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn parse_domain(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.len() > 253 || value.ends_with('.') {
+        return Err("invalid domain".into());
+    }
+    for label in value.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err("invalid domain".into());
+        }
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
 fn parse_rule_id(value: &str) -> Result<String, String> {
     if value.is_empty()
         || value.len() > 64
@@ -254,9 +296,14 @@ fn parse_rule_id(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn parse_ssid(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.len() > 32 || value.chars().any(char::is_control) {
-        return Err("invalid SSID".into());
+fn parse_iface(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 15
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("invalid interface".into());
     }
     Ok(value.to_owned())
 }
@@ -286,9 +333,11 @@ mod tests {
     #[test]
     fn preserves_rule_order_without_implicit_priority() {
         let config = Config::from_iter(args(&[
-            "--rule", "ap1", "SSID-US", "1", "2", "--rule", "ap2", "SSID-EU", "3", "4",
+            "--rule", "ap1", "phy0-ap0", "1", "2", "--rule", "ap2", "phy1-ap0", "3", "4",
         ]))
         .unwrap();
+        assert_eq!(config.domains, ["gs-loc.apple.com", "gs-loc-cn.apple.com"]);
+        assert!(!config.debug);
         assert_eq!(
             config
                 .rules
@@ -304,7 +353,7 @@ mod tests {
         let config = Config::from_iter(args(&[
             "--rule",
             "ap",
-            "SSID-London",
+            "phy0-ap0",
             "51.5074",
             "-0.1277",
             "--rule-name",
@@ -329,24 +378,59 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_ssids_and_ids() {
-        let duplicate_ssid = Config::from_iter(args(&[
-            "--rule", "first", "SSID-US", "1", "2", "--rule", "second", "SSID-US", "3", "4",
+    fn rejects_duplicate_interfaces_and_ids() {
+        let duplicate_iface = Config::from_iter(args(&[
+            "--rule", "first", "phy0-ap0", "1", "2", "--rule", "second", "phy0-ap0", "3", "4",
         ]));
-        assert!(duplicate_ssid.unwrap_err().contains("duplicate SSID"));
+        assert!(duplicate_iface.unwrap_err().contains("duplicate interface"));
 
         let duplicate_id = Config::from_iter(args(&[
-            "--rule", "same", "SSID-US", "1", "2", "--rule", "same", "SSID-EU", "3", "4",
+            "--rule", "same", "phy0-ap0", "1", "2", "--rule", "same", "phy1-ap0", "3", "4",
         ]));
         assert!(duplicate_id.unwrap_err().contains("duplicate rule ID"));
     }
 
     #[test]
-    fn ssid_is_exact_and_preserves_case_and_spaces() {
-        let config = Config::from_iter(args(&["--rule", "diablo", "Home WiFi", "1", "2"])).unwrap();
-        assert_eq!(config.rules[0].ssid, "Home WiFi");
+    fn interface_name_is_exact_and_validated() {
+        let config = Config::from_iter(args(&["--rule", "diablo", "phy0-ap0", "1", "2"])).unwrap();
+        assert_eq!(config.rules[0].iface, "phy0-ap0");
         assert!(Config::from_iter(args(&["--rule", "bad", "", "1", "2"])).is_err());
-        assert!(Config::from_iter(args(&["--rule", "bad", "Home\nWiFi", "1", "2"])).is_err());
-        assert!(Config::from_iter(args(&["--rule", "bad", &"x".repeat(33), "1", "2"])).is_err());
+        assert!(Config::from_iter(args(&["--rule", "bad", "phy 0-ap0", "1", "2"])).is_err());
+        assert!(Config::from_iter(args(&["--rule", "bad", &"x".repeat(16), "1", "2"])).is_err());
+    }
+
+    #[test]
+    fn parses_custom_domains_and_debug_mode() {
+        let config = Config::from_iter(args(&[
+            "--rule",
+            "ap",
+            "phy0-ap0",
+            "1",
+            "2",
+            "--domain",
+            "Test.Example.com",
+            "--domain",
+            "wloc.test",
+            "--debug",
+        ]))
+        .unwrap();
+        assert_eq!(config.domains, ["test.example.com", "wloc.test"]);
+        assert!(config.debug);
+    }
+
+    #[test]
+    fn rejects_invalid_domains() {
+        for domain in [
+            "",
+            ".example.com",
+            "example..com",
+            "-example.com",
+            "example-.com",
+        ] {
+            assert!(Config::from_iter(args(&[
+                "--rule", "ap", "phy0-ap0", "1", "2", "--domain", domain,
+            ]))
+            .is_err());
+        }
     }
 }

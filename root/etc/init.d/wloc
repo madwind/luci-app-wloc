@@ -11,18 +11,39 @@ START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
 wifi_sections=''
+domains=''
 
 collect_wifi() {
 	wifi_sections="$wifi_sections $1"
 }
 
+collect_domain() {
+	domains="${domains}${domains:+ }$1"
+}
+
+valid_domain() {
+	local domain label oldifs
+	domain="$1"
+	case "$domain" in ''|*[!A-Za-z0-9.-]*) return 1;; esac
+	[ "${#domain}" -le 253 ] || return 1
+	case "$domain" in .*|*..|*.) return 1;; esac
+	oldifs="$IFS"
+	IFS=.
+	set -- $domain
+	IFS="$oldifs"
+	for label in "$@"; do
+		[ -n "$label" ] && [ "${#label}" -le 63 ] || return 1
+		case "$label" in -*|*-) return 1;; esac
+	done
+}
+
 validate_wifi() {
-	local section enabled name ssid schedule_enabled latitude longitude proxy_type proxy_host proxy_port
+	local section enabled name iface schedule_enabled latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get ssid "$section" ssid ''
-	name="$ssid"
+	config_get iface "$section" iface ''
+	name="$iface"
 	config_get_bool schedule_enabled "$section" schedule_enabled 0
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
@@ -32,10 +53,10 @@ validate_wifi() {
 	[ -n "$latitude" ] && [ -n "$longitude" ] || {
 		rule_error="incomplete location parameters for AP: $name"; return 0;
 	}
-	[ -n "$ssid" ] || { rule_error='SSID is required for every enabled WLOC rule'; return 0; }
+	[ -n "$iface" ] || { rule_error='interface is required for every enabled WLOC rule'; return 0; }
 	. "$AP_LIB"
-	if ! wloc_ap_find_section_by_ssid "$ssid" >/dev/null; then
-		rule_error="SSID \"$ssid\" cannot be resolved"; return 0
+	if ! wloc_ap_find_section_by_ifname "$iface" >/dev/null; then
+		rule_error="interface \"$iface\" cannot be resolved"; return 0
 	fi
 	case "$proxy_type" in
 		direct) ;;
@@ -54,18 +75,18 @@ validate_wifi() {
 }
 
 append_rule_for_wifi() {
-	local section enabled name ssid latitude longitude proxy_type proxy_host proxy_port
+	local section enabled name iface latitude longitude proxy_type proxy_host proxy_port
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get ssid "$section" ssid ''
-	name="$ssid"
+	config_get iface "$section" iface ''
+	name="$iface"
 	config_get latitude "$section" latitude
 	config_get longitude "$section" longitude
 	config_get proxy_type "$section" proxy_type direct
 	config_get proxy_host "$section" proxy_host
 	config_get proxy_port "$section" proxy_port
-	procd_append_param command --rule "$section" "$ssid" "$latitude" "$longitude"
+	procd_append_param command --rule "$section" "$iface" "$latitude" "$longitude"
 	procd_append_param command --rule-name "$section" "$name"
 	[ "$proxy_type" = direct ] || \
 		procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
@@ -78,12 +99,19 @@ startup_failure() {
 	return 1
 }
 
+startup_warning() {
+	local reason="$1"
+	printf '%s\n' "$reason" >"$START_ERROR"
+	logger -t wlocd "WARNING: $reason"
+}
+
 start_service() {
 	mkdir -p /var/run/wloc
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
 		/var/run/wloc/package.version "$START_ERROR"
-	# Apply the user-managed nftables configuration. The required WLOC table is
-	# validated below before the interception daemon starts.
+	# Apply the user-managed nftables configuration before the daemon starts.
+	# The daemon also retries this operation after its listener is ready, so a
+	# stale or temporarily unavailable optional set must not prevent startup.
 	ubus -S call luci.wloc firewall_apply '{}' >/dev/null 2>&1 || true
 	config_load wloc
 
@@ -99,7 +127,11 @@ start_service() {
 
 	config_get_bool enabled main enabled 0
 	config_get listen_port main listen_port 61520
+	config_get_bool debug main debug 0
 	config_get_bool runtime_log main runtime_log 0
+	domains=''
+	config_list_foreach main domain collect_domain
+	[ -n "$domains" ] || domains='gs-loc.apple.com gs-loc-cn.apple.com'
 
 	"$RULES" cleanup
 	[ "$enabled" -eq 1 ] || return 0
@@ -107,6 +139,12 @@ start_service() {
 	[ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
 		startup_failure 'invalid local listen port; interception remains disabled'; return $?;
 	}
+	for domain in $domains; do
+		valid_domain "$domain" || {
+			startup_failure "invalid interception domain: $domain; interception remains disabled"
+			return 1
+		}
+	done
 	rule_count=0
 	rule_error=''
 	wifi_sections=''
@@ -118,17 +156,22 @@ start_service() {
 	[ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
 	[ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules; interception remains disabled'; return $?; }
 
-	# Start with empty short-lived sets. wlocd arms them after its listener is ready.
-	"$RULES" apply "$listen_port" || {
-		startup_failure \
-			"WLOC nftables table is missing, incompatible, or does not redirect to local port $listen_port; interception remains disabled"
-		return $?
-	}
+	# Start with empty short-lived sets. wlocd arms them after its listener is
+	# ready. Dynamic-set maintenance is intentionally non-fatal: wlocd keeps
+	# running and retries it when needed.
+	if ! "$RULES" apply "$listen_port" $domains; then
+		startup_warning \
+			"nftables dynamic-set maintenance could not be completed; service started"
+	fi
 	mkdir -p /etc/wloc
 	chmod 0700 /etc/wloc
 
 	procd_open_instance
 	procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"
+	for domain in $domains; do
+		procd_append_param command --domain "$domain"
+	done
+	[ "$debug" -eq 1 ] && procd_append_param command --debug
 	[ "$runtime_log" -eq 1 ] && procd_append_param command --runtime-log
 	for wifi in $wifi_sections; do
 		append_rule_for_wifi "$wifi"

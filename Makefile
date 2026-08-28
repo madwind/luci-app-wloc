@@ -23,7 +23,7 @@ LUCI_EXTRA_DEPENDS:= \
 	ip-full (>=0), \
 	jshn (>=0)
 
-LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per unique configured SSID. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
+LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per fixed wireless interface. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 

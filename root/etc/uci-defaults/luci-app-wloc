@@ -13,20 +13,39 @@ warn_migration() {
 	logger -t wloc-migrate "location $1: $2; original binding was preserved" 2>/dev/null || true
 }
 
-ssid_match_count() {
-	local wanted="$1" count
+collect_legacy_ssid_match() {
+	local section mode candidate candidate_ifname
+	section="$1"
+	config_get mode "$section" mode ap
+	case "$mode" in
+		ap|ap-wds) ;;
+		*) return 0;;
+	esac
+	config_get candidate "$section" ssid ''
+	config_get candidate_ifname "$section" ifname ''
+	[ "$candidate" = "$WLOC_LEGACY_SSID" ] &&
+		wloc_ap_valid_ifname "$candidate_ifname" &&
+		WLOC_LEGACY_MATCHES="$WLOC_LEGACY_MATCHES $candidate_ifname"
+}
+
+legacy_iface_for_ssid() {
+	local ssid="$1" iface count candidate
+	WLOC_LEGACY_SSID="$ssid"
+	WLOC_LEGACY_MATCHES=''
+	config_foreach collect_legacy_ssid_match wifi-iface
 	count=0
-	while IFS= read -r section; do
-		[ -n "$section" ] || continue
+	iface=''
+	for candidate in $WLOC_LEGACY_MATCHES; do
 		count=$((count + 1))
-	done <<EOF
-$(wloc_ap_find_sections_by_ssid "$wanted")
-EOF
-	printf '%s\n' "$count"
+		iface="$candidate"
+	done
+	[ "$count" -eq 1 ] || return 1
+	printf '%s\n' "$iface"
 }
 
 cleanup_legacy_fields() {
 	local section="$1"
+	uci -q delete "wloc.$section.ssid"
 	uci -q delete "wloc.$section.bridge"
 	uci -q delete "wloc.$section.wireless_section"
 	uci -q delete "wloc.$section.bssid"
@@ -36,53 +55,56 @@ cleanup_legacy_fields() {
 }
 
 migrate_location() {
-	local section ssid wireless_section count
+	local section iface ssid wireless_section
 	section="$1"
-	ssid="$(uci -q get "wloc.$section.ssid" 2>/dev/null || true)"
-	if [ -n "$ssid" ]; then
+	iface="$(uci -q get "wloc.$section.iface" 2>/dev/null || true)"
+	if [ -n "$iface" ]; then
 		cleanup_legacy_fields "$section"
 		return 0
 	fi
 
+	# Convert the previous section-based binding to the fixed interface identity.
 	wireless_section="$(uci -q get "wloc.$section.wireless_section" 2>/dev/null || true)"
 	if ! valid_section "$wireless_section"; then
-		uci -q set "wloc.$section.migration_pending=1"
-		warn_migration "$section" 'wireless section is missing or invalid'
-		return 0
+		wireless_section=''
 	fi
-	if ! uci -q get "wireless.$wireless_section" >/dev/null 2>&1; then
+	if [ -n "$wireless_section" ] && uci -q get "wireless.$wireless_section" >/dev/null 2>&1; then
+		config_get iface "$wireless_section" ifname ''
+		if wloc_ap_valid_ifname "$iface"; then
+			uci -q set "wloc.$section.iface=$iface"
+			cleanup_legacy_fields "$section"
+			return 0
+		fi
+	fi
+
+	ssid="$(uci -q get "wloc.$section.ssid" 2>/dev/null || true)"
+	if [ -z "$ssid" ] || ! iface="$(legacy_iface_for_ssid "$ssid")"; then
 		uci -q set "wloc.$section.migration_pending=1"
-		warn_migration "$section" "wireless section $wireless_section was not found"
+		warn_migration "$section" 'legacy SSID binding could not be mapped to one fixed interface'
 		return 0
 	fi
 
-	config_get ssid "$wireless_section" ssid ''
-	if [ -z "$ssid" ]; then
-		uci -q set "wloc.$section.migration_pending=1"
-		warn_migration "$section" 'wireless SSID is empty'
-		return 0
-	fi
-	count="$(ssid_match_count "$ssid")"
-	if [ "$count" -ne 1 ]; then
-		uci -q set "wloc.$section.migration_pending=1"
-		warn_migration "$section" "SSID \"$ssid\" is not unique"
-		return 0
-	fi
-
-	uci -q set "wloc.$section.ssid=$ssid"
+	uci -q set "wloc.$section.iface=$iface"
 	cleanup_legacy_fields "$section"
 }
 
 # Seed only missing values so upgrades never overwrite an already configured
-# instance. Schema 3 means runtime code accepts only SSID as rule identity.
+# instance. Schema 6 stores the fixed interface as the WLOC rule identity and
+# no longer exposes a configurable daemon GID.
 uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
 uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 listen_port="$(uci -q get wloc.main.listen_port 2>/dev/null || true)"
 case "$listen_port" in
 	''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
 esac
+uci -q delete wloc.main.gid
+uci -q get wloc.main.domain >/dev/null || {
+	uci -q add_list wloc.main.domain='gs-loc.apple.com'
+	uci -q add_list wloc.main.domain='gs-loc-cn.apple.com'
+}
+uci -q get wloc.main.debug >/dev/null || uci -q set wloc.main.debug='0'
 uci -q get wloc.main.runtime_log >/dev/null || uci -q set wloc.main.runtime_log='0'
-uci -q set wloc.main.schema_version='3'
+uci -q set wloc.main.schema_version='6'
 
 wloc_sections=''
 collect_wloc_section() {

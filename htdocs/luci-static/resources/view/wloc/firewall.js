@@ -25,7 +25,7 @@ function formatNftables(source) {
 
 	function flush() {
 		var value = line.trim();
-		if (value) lines.push('\t'.repeat(indent) + value);
+		if (value) lines.push('    '.repeat(indent) + value);
 		line = '';
 	}
 
@@ -209,14 +209,14 @@ return view.extend({
 
 		var root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-			E('div', { 'class': 'cbi-map-descr' }, _('Edit the complete WLOC nftables ruleset. An empty file means that no interception rules are loaded.')),
+			E('div', { 'class': 'cbi-map-descr' }, _('Enter any valid nftables ruleset. WLOC does not require a particular table, chain, priority, or redirect rule. An empty file means that no custom rules are loaded.')),
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', { 'class': 'cbi-section-title' }, _('Firewall file')),
 				statusTable,
-				E('div', { 'class': 'cbi-section-descr' }, _('The dynamic IP set name is apple_wloc_v4 and it must use type ipv4_addr with the timeout flag. WLOC refreshes it immediately when rules are applied and every five minutes afterward.')),
+				E('div', { 'class': 'cbi-section-descr' }, _('WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged.')),
 				E('label', { 'class': 'cbi-section-descr', 'for': 'wloc-firewall-editor' }, _('nftables ruleset')),
 				editor,
-				E('div', { 'class': 'cbi-section-descr' }, _('Save & apply validates and loads the configured nftables tables.')),
+				E('div', { 'class': 'cbi-section-descr' }, _('Save & apply checks nftables syntax and loads the ruleset. No WLOC rule layout is enforced.')),
 				E('div', { 'class': 'cbi-page-actions' }, [ formatButton, checkButton, saveButton, applyButton, refreshButton ]),
 				feedback
 			]),

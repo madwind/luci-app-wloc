@@ -6,7 +6,9 @@ ROOTFS="$ROOT/root"
 HTDOCS="$ROOT/htdocs"
 
 RULES="$ROOTFS/usr/libexec/wloc/rules.sh"
+RPC="$ROOTFS/usr/libexec/rpcd/luci.wloc"
 SCHEDULE="$ROOTFS/usr/libexec/wloc/wifi-schedule.sh"
+INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 
@@ -72,6 +74,30 @@ echo '==> JavaScript behavior'
 node "$AP_TEST"
 
 
+echo '==> Service startup behavior'
+
+grep -Fq 'if ! "$RULES" apply "$listen_port" $domains; then' "$INIT" \
+	|| fail 'nftables health check still blocks service startup'
+grep -Fq 'procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"' "$INIT" \
+	|| fail 'service start still passes a daemon GID'
+if grep -Eq 'gid|GID|--gid' "$INIT"; then
+	fail 'init script still contains daemon GID handling'
+fi
+
+echo '==> nftables editor behavior'
+
+if grep -Fq 'Only top-level table declarations are allowed.' "$RPC"; then
+	fail 'nftables editor still rejects valid top-level commands'
+fi
+grep -F 'nft --check --file' "$RPC" >/dev/null \
+	|| fail 'nftables editor no longer performs a syntax-only check'
+grep -F "'    '.repeat(indent)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+	|| fail 'nftables editor formatter does not use four-space indentation'
+if grep -Fq "'\\t'.repeat(indent)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
+	fail 'nftables editor formatter still emits tabs'
+fi
+
+
 echo '==> AP resolver behavior'
 
 sh "$AP_RESOLVER_TEST"
@@ -107,81 +133,47 @@ if valid_port abc; then
 fi
 
 
-echo '  -> interface-name validation'
-
-valid_ifname 'br-wloc-us' \
-	|| fail 'valid_ifname rejected a valid bridge'
+echo '  -> fixed interface-name validation'
 
 valid_ifname 'phy0-ap0' \
-	|| fail 'valid_ifname rejected a valid bridge member'
+	|| fail 'valid_ifname rejected a valid fixed AP interface'
 
-if valid_ifname 'br wloc'; then
+if valid_ifname 'phy 0-ap0'; then
 	fail 'valid_ifname accepted whitespace'
 fi
 
-if valid_ifname 'br/wloc'; then
+if valid_ifname 'phy0/ap0'; then
 	fail 'valid_ifname accepted a slash'
 fi
 
-if valid_ifname 'br-1234567890123'; then
+if valid_ifname 'phy-1234567890123'; then
 	fail 'valid_ifname accepted an overlong interface name'
 fi
 
 
-echo '  -> nftables table health'
+echo '  -> unrestricted nftables rules'
 
-empty_host_set_fixture='table inet wloc {
-	set target_ingress_interfaces {
-		type ifname
-		flags timeout
-	}
-
-	set apple_wloc_v4 {
-		type ipv4_addr
-		flags timeout
-	}
-
-	chain redirect_prerouting {
-		type nat hook prerouting priority mangle - 2; policy accept;
-		iifname @target_ingress_interfaces ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned ingress redirect"
-	}
-}'
-
-printf '%s\n' "$empty_host_set_fixture" \
-	| table_healthy 61520 \
-	|| fail 'table_healthy rejected a valid table with an empty host set'
-
-if printf '%s\n' "$empty_host_set_fixture" \
-	| table_healthy 61521; then
-	fail 'table_healthy accepted the wrong redirect port'
+if grep -Eq 'table_healthy|bridge_table_healthy|ensure_table_healthy' "$RULES"; then
+	fail 'rules.sh still enforces a fixed nftables table layout'
 fi
 
-if printf '%s\n' "$empty_host_set_fixture" \
-	| sed 's/ counter / /' \
-	| table_healthy 61520; then
-	fail 'table_healthy accepted a redirect rule without counter'
-fi
-
-if printf '%s\n' "$empty_host_set_fixture" \
-	| sed '/flags timeout/d' \
-	| table_healthy 61520; then
-	fail 'table_healthy accepted sets without timeout'
-fi
-
-if printf '%s\n' "$empty_host_set_fixture" \
-	| sed '/wloc owned ingress redirect/d' \
-	| table_healthy 61520; then
-	fail 'table_healthy accepted a missing redirect rule'
-fi
+grep -F 'refresh_hosts "$@"' "$RULES" >/dev/null \
+	|| fail 'rules.sh no longer maintains the optional host set'
+grep -F 'active_ingress_set' "$RULES" >/dev/null \
+	|| fail 'rules.sh no longer maintains the optional ingress set'
 
 
-echo '  -> SSID-resolved ingress synchronization'
+echo '  -> fixed-interface ingress synchronization'
 
 fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
 mkdir -p "$fixture_root/br-lan/brif"
+: >"$fixture_root/br-lan/brif/lan2"
+: >"$fixture_root/br-lan/brif/lan3"
+: >"$fixture_root/br-lan/brif/lan4"
 : >"$fixture_root/br-lan/brif/phy0-ap0"
 : >"$fixture_root/br-lan/brif/phy1-ap0"
+: >"$fixture_root/br-lan/brif/phy0-ap1"
 export WLOC_SYS_CLASS_NET="$fixture_root"
 
 nft() {
@@ -190,6 +182,7 @@ nft() {
 		return 0
 	fi
 	if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ]; then
+		printf '%s\n' 'type ifname' 'flags timeout'
 		return 0
 	fi
 	return 1
@@ -200,17 +193,16 @@ printf '%s\n' \
 	'config_load() { resolver_config="$1"; }' \
 	'config_foreach() {' \
 	'  if [ "$resolver_config" = wloc ]; then "$1" location_us; "$1" location_jp;' \
-	'  elif [ "$resolver_config" = wireless ]; then "$1" wifi_us; "$1" wifi_jp;' \
+	'  elif [ "$resolver_config" = wireless ]; then "$1" wifi_us; "$1" wifi_jp; "$1" wifi_unfixed;' \
 	'  fi' \
 	'}' \
 	'config_get() {' \
 	'  local destination="$1" section="$2" option="$3" value="${4:-}"' \
 	'  case "$section:$option" in' \
 	'    location_us:enabled|location_jp:enabled) value=1;;' \
-	'    location_us:ssid) value=SSID-US;; location_jp:ssid) value=SSID-JP;;' \
+	'    location_us:iface) value=phy0-ap0;; location_jp:iface) value=phy1-ap0;;' \
 	'    wifi_us:mode|wifi_jp:mode) value=ap;;' \
-	'    wifi_us:ssid) value=SSID-US;; wifi_jp:ssid) value=SSID-JP;;' \
-	'    wifi_us:network|wifi_jp:network) value=lan;;' \
+	'    wifi_us:ifname) value=phy0-ap0;; wifi_jp:ifname) value=phy1-ap0;;' \
 	'  esac' \
 	'  eval "$destination=\$value"' \
 	'}' \
@@ -222,22 +214,22 @@ AP_LIB="$WLOC_AP_LIB_PATH"
 uci() {
 	[ "${1:-}" = '-q' ] && shift
 	[ "${1:-}" = get ] || return 1
-	case "${2:-}" in
-		network.lan.device) printf '%s\n' br-lan;;
-		*) return 1;;
-	esac
+	return 1
 }
 load_ap_lib
 
-expected_ingress_batch='flush set inet wloc target_ingress_interfaces
-add element inet wloc target_ingress_interfaces { "br-lan" timeout 30s }
-add element inet wloc target_ingress_interfaces { "phy0-ap0" timeout 30s }
-add element inet wloc target_ingress_interfaces { "phy1-ap0" timeout 30s }'
+expected_ingress_batch='flush set bridge wloc target_ingress_interfaces
+add element bridge wloc target_ingress_interfaces { "phy0-ap0" timeout 30s }
+add element bridge wloc target_ingress_interfaces { "phy1-ap0" timeout 30s }'
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
-	|| fail 'SSID-resolved ingress synchronization generated an unexpected batch'
+	|| fail 'fixed-interface ingress synchronization generated an unexpected batch'
 
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
-	|| fail 'reconcile was not idempotent or did not deduplicate shared bridge interfaces'
+	|| fail 'reconcile was not idempotent or did not deduplicate configured AP interfaces'
+
+nft() { return 1; }
+[ -z "$(sync_ingress_interfaces)" ] \
+	|| fail 'missing optional ingress set prevented reconciliation'
 
 
 if grep -Eq 'rule\.bridge|duplicate bridge' \
@@ -245,22 +237,34 @@ if grep -Eq 'rule\.bridge|duplicate bridge' \
 	fail 'bridge identity or duplicate-bridge validation remains in core WLOC code'
 fi
 
-if grep -Eq 'find_wireless_by_bssid|resolve_old_wireless_section|network_bridge' \
-	"$ROOTFS/etc/uci-defaults/luci-app-wloc"; then
-	fail 'SSID migration still contains a BSSID/bridge fallback'
+if grep -Eq 'resolve_ingress_interfaces|/brif/' "$RULES"; then
+	fail 'ingress synchronization still scans bridge members'
 fi
 
-grep -F 'wloc_ap_find_section_by_ssid' "$RULES" >/dev/null \
-	|| fail 'rules.sh does not resolve ingress from configured SSIDs'
+if grep -Eq 'find_wireless_by_bssid|resolve_old_wireless_section|network_bridge' \
+	"$ROOTFS/etc/uci-defaults/luci-app-wloc"; then
+	fail 'interface migration still contains a BSSID/bridge fallback'
+fi
 
-grep -F 'json_add_boolean unique' "$ROOTFS/usr/libexec/rpcd/luci.wloc" >/dev/null \
-	|| fail 'RPC AP discovery does not expose SSID uniqueness'
+grep -F 'wloc_ap_find_section_by_ifname' "$RULES" >/dev/null \
+	|| fail 'rules.sh does not resolve ingress from configured interfaces'
+
+grep -F 'wloc_ap_valid_ifname' "$ROOTFS/usr/libexec/rpcd/luci.wloc" >/dev/null \
+	|| fail 'RPC AP discovery does not filter missing fixed ifnames'
+
+grep -F 'json_add_string iface' "$ROOTFS/usr/libexec/rpcd/luci.wloc" >/dev/null \
+	|| fail 'RPC AP discovery does not expose fixed interfaces'
+
+if grep -Eq 'json_add_(string|boolean) (network|device|radio|bssid|unique|ambiguous)' \
+	"$ROOTFS/usr/libexec/rpcd/luci.wloc"; then
+	fail 'RPC AP discovery still exposes removed AP metadata'
+fi
 
 
-echo '  -> SSID-based schedule synchronization'
+echo '  -> fixed-interface schedule synchronization'
 
-if grep -Eq 'runtime_bssid_for_ifname|wireless_ifname|network.*bssid' "$SCHEDULE"; then
-	fail 'wifi schedule still contains a BSSID or runtime-interface fallback'
+if grep -Eq 'ssid|bssid|wireless_ifname|network' "$SCHEDULE"; then
+	fail 'wifi schedule still contains SSID or obsolete AP metadata'
 fi
 
 schedule_lib="$fixture_root/schedule-lib.sh"
@@ -279,9 +283,9 @@ printf '%s\n' \
 	'    schedule_enabled) value="$schedule_enabled_value";;' \
 	'    schedule_start) value=00:00;;' \
 	'    schedule_end) value=00:00;;' \
-	'    ssid) value=WLOC-US;;' \
+	'    iface) value=phy0-ap0;;' \
 	'    mode) value=ap;;' \
-	'    network) value=lan;;' \
+	'    ifname) value=phy0-ap0;;' \
 	'  esac' \
 	'  eval "$destination=\$value"' \
 	'}' \
@@ -324,7 +328,7 @@ wifi() { reload_count=$((reload_count + 1)); }
 logger() { :; }
 
 reconcile
-[ "$fake_disabled" = 1 ] || fail 'schedule did not disable the SSID-resolved wireless section'
+[ "$fake_disabled" = 1 ] || fail 'schedule did not disable the fixed-interface wireless section'
 [ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|0' ] \
 	|| fail 'schedule did not record the original disabled value'
 [ "$reload_count" -eq 1 ] || fail 'schedule did not reload WiFi after disabling'
@@ -338,8 +342,8 @@ reconcile
 	schedule_enabled_value=1
 fake_wireless_exists=0
 reconcile
-[ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing SSID'
-[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing SSID'
+[ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing interface'
+[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing interface'
 
 
 echo 'host tests: PASS'

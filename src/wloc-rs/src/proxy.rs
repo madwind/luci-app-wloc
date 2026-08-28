@@ -109,6 +109,8 @@ pub struct Proxy {
     acceptor: TlsAcceptor,
     connector: TlsConnector,
     rules: Vec<LocationRule>,
+    domains: Vec<String>,
+    debug: bool,
     arp_path: PathBuf,
     dhcp_leases_path: PathBuf,
     peer_cache: Arc<tokio::sync::Mutex<HashMap<Ipv4Addr, PeerCacheEntry>>>,
@@ -127,6 +129,8 @@ impl Proxy {
         client: rustls::ClientConfig,
         rules: Vec<LocationRule>,
         listen_port: u16,
+        domains: Vec<String>,
+        debug: bool,
         status: Arc<Status>,
     ) -> Self {
         let followers = rules
@@ -142,6 +146,8 @@ impl Proxy {
             acceptor: TlsAcceptor::from(Arc::new(server)),
             connector: TlsConnector::from(Arc::new(client)),
             rules,
+            domains,
+            debug,
             arp_path: std::env::var_os("WLOC_ARP_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/proc/net/arp")),
@@ -229,7 +235,7 @@ impl Proxy {
             &self.rules,
             access_point
                 .as_ref()
-                .map(|access_point| access_point.ssid.as_str()),
+                .map(|access_point| access_point.iface.as_str()),
         )
         .cloned())
     }
@@ -298,7 +304,9 @@ impl Proxy {
             .await
             .map_err(|_| ProxyError::ClientTls("client_hello_timeout".into()))?
             .map_err(|e| ProxyError::ClientTls(format!("client_hello_{e:?}")))?;
-        let approved = sni.as_deref().is_some_and(crate::approved_host);
+        let approved = sni
+            .as_deref()
+            .is_some_and(|host| crate::approved_host(host, &self.domains));
         self.status.update_detail(
             "client_hello",
             &self.rule_detail(
@@ -447,7 +455,7 @@ impl Proxy {
             .await
             .map_err(|_| ProxyError::Protocol("response_timeout".into()))??;
         }
-        if delivered_wloc {
+        if delivered_wloc || response_mode == "debug" {
             self.status.update_detail(
                     "response_delivered",
                     &self.rule_detail(
@@ -464,6 +472,8 @@ impl Proxy {
                     |c| {
                         if let Some(target) = patched_target {
                             c.delivered_for(client, target.latitude, target.longitude);
+                        } else if response_mode == "debug" {
+                            c.delivered();
                         }
                     },
                 );
@@ -512,7 +522,9 @@ impl Proxy {
             .authority()
             .map(|a| a.host())
             .ok_or_else(|| ProxyError::Protocol("missing_authority".into()))?;
-        if !crate::approved_host(authority) || !authority.eq_ignore_ascii_case(tls_sni) {
+        if !crate::approved_host(authority, &self.domains)
+            || !authority.eq_ignore_ascii_case(tls_sni)
+        {
             return Err(ProxyError::Protocol("authority_sni_mismatch".into()));
         }
         let method = request.method().clone();
@@ -546,6 +558,19 @@ impl Proxy {
             None,
             |_| {},
         );
+        if self.debug {
+            self.status.update_detail(
+                "debug_response",
+                &self.rule_detail(
+                    client,
+                    ip,
+                    format!("rule={client} host={tls_sni} action=fixed_json"),
+                ),
+                None,
+                |_| {},
+            );
+            return Ok(debug_response());
+        }
         if is_wloc {
             let request_kind = crate::wloc::request_kind(&body)
                 .map(|kind| kind.to_string())
@@ -943,9 +968,9 @@ async fn remove_h2_generation(
 
 fn first_matching_rule<'a>(
     rules: &'a [LocationRule],
-    ssid: Option<&str>,
+    iface: Option<&str>,
 ) -> Option<&'a LocationRule> {
-    ssid.and_then(|ssid| rules.iter().find(|rule| rule.ssid == ssid))
+    iface.and_then(|iface| rules.iter().find(|rule| rule.iface == iface))
 }
 
 fn arp_mac_for(path: &Path, address: Ipv4Addr) -> Option<MacAddress> {
@@ -1066,6 +1091,23 @@ fn neighbor_mac_for(
                 )
             })
         })
+}
+
+fn debug_response() -> UpstreamResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "content-type",
+        http::HeaderValue::from_static("application/json"),
+    );
+    UpstreamResponse {
+        status: StatusCode::OK,
+        headers,
+        body: br#"{"wloc":"ok"}"#.to_vec(),
+        wloc: false,
+        response_mode: "debug",
+        request_kind: None,
+        patched_target: None,
+    }
 }
 
 async fn exchange_h2(
@@ -1222,56 +1264,50 @@ mod peer_identity_tests {
     use super::{dhcp_lease_identity_from, first_matching_rule, unmatched_context};
     use std::net::Ipv4Addr;
 
-    use crate::config::{LocationRule, MacAddress, OutboundProxy};
+    use crate::config::{LocationRule, OutboundProxy};
     use crate::wloc::PatchTarget;
 
-    fn rule(id: &str, ssid: &str) -> LocationRule {
+    fn rule(id: &str, iface: &str) -> LocationRule {
         LocationRule {
             id: id.into(),
             name: id.into(),
-            ssid: ssid.into(),
+            iface: iface.into(),
             target: PatchTarget::new(1.0, 2.0).unwrap(),
             outbound: OutboundProxy::Direct,
         }
     }
 
     #[test]
-    fn matches_exact_ssid_and_not_a_different_case() {
-        let rules = vec![rule("home", "Home"), rule("guest", "Guest")];
+    fn matches_exact_interface_and_not_a_different_case() {
+        let rules = vec![rule("home", "phy0-ap0"), rule("guest", "phy1-ap0")];
         assert_eq!(
-            first_matching_rule(&rules, Some("Home")).unwrap().id,
+            first_matching_rule(&rules, Some("phy0-ap0")).unwrap().id,
             "home"
         );
-        assert!(first_matching_rule(&rules, Some("home")).is_none());
-        assert!(first_matching_rule(&rules, Some("Home-5G")).is_none());
+        assert!(first_matching_rule(&rules, Some("PHY0-AP0")).is_none());
+        assert!(first_matching_rule(&rules, Some("phy0-ap1")).is_none());
     }
 
     #[test]
-    fn bssid_and_ifname_changes_do_not_change_ssid_match() {
-        let rules = vec![rule("home", "Home")];
-        for (bssid, interface) in [
-            ("aa:bb:cc:dd:ee:01", "phy0-ap0"),
-            ("aa:bb:cc:dd:ee:02", "phy0-ap2"),
-        ] {
-            assert!(MacAddress::parse(bssid).is_ok());
-            assert!(!interface.is_empty());
-            assert_eq!(
-                first_matching_rule(&rules, Some("Home")).unwrap().id,
-                "home"
-            );
-        }
-    }
-
-    #[test]
-    fn shared_bridge_is_irrelevant_when_ssids_differ() {
-        let rules = vec![rule("ssid_a", "SSID-A"), rule("ssid_b", "SSID-B")];
+    fn a_different_interface_does_not_match_the_rule() {
+        let rules = vec![rule("home", "phy0-ap0")];
         assert_eq!(
-            first_matching_rule(&rules, Some("SSID-A")).unwrap().id,
-            "ssid_a"
+            first_matching_rule(&rules, Some("phy0-ap0")).unwrap().id,
+            "home"
+        );
+        assert!(first_matching_rule(&rules, Some("phy0-ap1")).is_none());
+    }
+
+    #[test]
+    fn shared_ssid_is_irrelevant_when_interfaces_differ() {
+        let rules = vec![rule("ap_a", "phy0-ap0"), rule("ap_b", "phy0-ap1")];
+        assert_eq!(
+            first_matching_rule(&rules, Some("phy0-ap0")).unwrap().id,
+            "ap_a"
         );
         assert_eq!(
-            first_matching_rule(&rules, Some("SSID-B")).unwrap().id,
-            "ssid_b"
+            first_matching_rule(&rules, Some("phy0-ap1")).unwrap().id,
+            "ap_b"
         );
         assert!(first_matching_rule(&rules, Some("Ethernet")).is_none());
     }

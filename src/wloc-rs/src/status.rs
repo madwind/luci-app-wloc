@@ -313,6 +313,9 @@ impl Counters<'_> {
     pub fn patched(&mut self) {
         self.snapshot.patched_responses += 1;
     }
+    pub fn delivered(&mut self) {
+        self.snapshot.delivered_responses += 1;
+    }
     pub fn delivered_for(&mut self, ap_id: &str, latitude: f64, longitude: f64) {
         self.snapshot.delivered_responses += 1;
         let now = epoch_seconds();

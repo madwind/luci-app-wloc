@@ -16,7 +16,8 @@ ORDER_CHECK_STAMP=/var/run/wloc/order-checked
 PRIORITY_STATE=/var/run/wloc/prerouting.priority
 PRIORITY_DETAILS=/var/run/wloc/prerouting.details
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
-HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
+DEFAULT_HOSTS='gs-loc.apple.com gs-loc-cn.apple.com'
+HOSTS="$DEFAULT_HOSTS"
 HOST_TIMEOUT=15m
 DNS_SAMPLES=1
 DNS_REFRESH_SECONDS=300
@@ -24,35 +25,52 @@ DNS_RETRY_SECONDS=60
 ORDER_CHECK_SECONDS=60
 INGRESS_INTERFACE_TIMEOUT=30s
 
-redirect_uses_set() {
-	local wanted="$1" table_dump
-	table_dump="${2:-}"
-	printf '%s\n' "$table_dump" | awk -v wanted="$wanted" '
-		$1 == "chain" { in_redirect = ($2 == "redirect_prerouting") }
-		in_redirect && index($0, "iifname @" wanted) { found = 1 }
-		END { exit !found }
-	'
+append_configured_host() {
+	[ -n "$1" ] || return 0
+	HOSTS="${HOSTS}${HOSTS:+ }$1"
+}
+
+load_configured_hosts() {
+	HOSTS=''
+	if [ -r /lib/functions.sh ]; then
+		# OpenWrt's helper reads this installer-only variable directly. Keep
+		# strict mode enabled while making runtime invocations safe.
+		IPKG_INSTROOT=${IPKG_INSTROOT:-}
+		CONFIG_LIST_STATE=${CONFIG_LIST_STATE:-}
+		NO_CALLBACK=${NO_CALLBACK:-}
+		. /lib/functions.sh
+		config_load wloc 2>/dev/null || true
+		config_list_foreach main domain append_configured_host
+	fi
+	[ -n "$HOSTS" ] || HOSTS="$DEFAULT_HOSTS"
+}
+
+set_hosts() {
+	if [ "$#" -gt 0 ]; then
+		HOSTS="$*"
+	else
+		load_configured_hosts
+	fi
 }
 
 active_ingress_set() {
-	local table_dump
-	table_dump="$(nft list table inet "$TABLE" 2>/dev/null || true)"
-	if redirect_uses_set "$INGRESS_SET" "$table_dump" &&
-		nft list set inet "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
-		printf '%s\n' "$INGRESS_SET"
-		return 0
-	fi
-	if nft list set inet "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
-		printf '%s\n' "$INGRESS_SET"
-		return 0
-	fi
+	local family
+	for family in bridge inet; do
+		if nft list set "$family" "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
+			printf '%s %s\n' "$family" "$INGRESS_SET"
+			return 0
+		fi
+	done
 	return 1
 }
 
 clear_ingress_interfaces() {
-	local set
-	set="$(active_ingress_set)" || return 0
-	nft flush set inet "$TABLE" "$set" >/dev/null 2>&1 || return 1
+	local family set
+	read -r family set <<EOF
+$(active_ingress_set)
+EOF
+	[ -n "$family" ] && [ -n "$set" ] || return 0
+	nft flush set "$family" "$TABLE" "$set" >/dev/null 2>&1 || return 1
 }
 
 cleanup() {
@@ -89,26 +107,20 @@ host_set_targets() {
 					if (words[first] == "table") {
 						family = words[first + 1]
 						table_name = words[first + 2]
+					} else if (words[first] == "add" && words[first + 1] == "table") {
+						family = words[first + 2]
+						table_name = words[first + 3]
 					} else if (words[first] == "set" && words[first + 1] == host_set \
 						&& family != "" && table_name != "") {
 						print family, table_name
+					} else if (words[first] == "add" && words[first + 1] == "set" \
+						&& words[first + 2] == host_set) {
+						print words[first + 3], words[first + 4]
 					}
 				}
 			}
 		' "$CUSTOM_FIREWALL"
 	} | awk '!seen[$0]++'
-}
-
-host_set_populated() {
-	local family table_name
-	while read -r family table_name; do
-		[ -n "$family" ] || continue
-		nft list set "$family" "$table_name" "$HOST_SET" 2>/dev/null \
-			| grep -q 'elements = {' && return 0
-	done <<EOF
-$(host_set_targets)
-EOF
-	return 1
 }
 
 host_set_available() {
@@ -133,8 +145,7 @@ resolve_hosts() {
 	[ $((now - last)) -ge "$DNS_REFRESH_SECONDS" ] || return 0
 	attempt="$(cat "$DNS_ATTEMPT_STAMP" 2>/dev/null || echo 0)"
 	if [ $((now - attempt)) -lt "$DNS_RETRY_SECONDS" ]; then
-		host_set_populated
-		return $?
+		return 0
 	fi
 	printf '%s\n' "$now" >"$DNS_ATTEMPT_STAMP"
 	addresses=''
@@ -157,11 +168,9 @@ resolve_hosts() {
 		done
 	done
 	if [ -z "$addresses" ]; then
-		# A short DNS outage must not tear down otherwise valid interception.
-		# Existing CDN addresses have their own timeout and remain safe to use;
-		# retry on the bounded failure cadence until it recovers.
-		host_set_populated && return 0
-		return 1
+		# A short DNS outage must not reject otherwise valid custom rules. Existing
+		# CDN addresses keep their own timeout and are left untouched.
+		return 0
 	fi
 	# Keep a rolling address pool instead of flushing it on every DNS answer.
 	# CDN answers and a client-facing proxy resolver can legitimately rotate
@@ -169,21 +178,20 @@ resolve_hosts() {
 	while read -r family table_name; do
 		[ -n "$family" ] || continue
 		# A configured custom table becomes a DNS target only when it declares
-		# its own ipv4_addr set named apple_wloc_v4.
+		# its own compatible ipv4_addr set named apple_wloc_v4. An unrelated set
+		# with the same name is valid nftables and is simply not maintained.
 		set_dump="$(nft list set "$family" "$table_name" "$HOST_SET" 2>/dev/null)" || continue
 		printf '%s\n' "$set_dump" | grep -q 'type ipv4_addr' \
-			&& printf '%s\n' "$set_dump" | grep -Eq 'flags timeout|^[[:space:]]*timeout[[:space:]]' || {
-			echo "wloc: $family/$table_name set $HOST_SET must use type ipv4_addr and flags timeout" >&2
-			return 1
-		}
+			&& printf '%s\n' "$set_dump" | grep -Eq 'flags timeout|^[[:space:]]*timeout[[:space:]]' \
+			|| continue
 		for resolved_ip in $addresses; do
 			if nft get element "$family" "$table_name" "$HOST_SET" "{ $resolved_ip }" >/dev/null 2>&1; then
-				nft -f - <<EOF
+				nft -f - <<EOF || true
 delete element $family $table_name $HOST_SET { $resolved_ip }
 add element $family $table_name $HOST_SET { $resolved_ip timeout $HOST_TIMEOUT }
 EOF
 			else
-				nft add element "$family" "$table_name" "$HOST_SET" "{ $resolved_ip timeout $HOST_TIMEOUT }"
+				nft add element "$family" "$table_name" "$HOST_SET" "{ $resolved_ip timeout $HOST_TIMEOUT }" || true
 			fi
 		done
 	done <<EOF
@@ -193,61 +201,9 @@ EOF
 }
 
 refresh_hosts() {
+	set_hosts "$@"
 	rm -f "$STAMP" "$DNS_ATTEMPT_STAMP"
 	resolve_hosts
-}
-
-table_healthy() {
-	awk \
-		-v ingress_set="$INGRESS_SET" \
-		-v host_set="$HOST_SET" \
-		-v port="$1" '
-		$1 == "set" {
-			current_set = $2
-			if ($2 == ingress_set) new_ingress = 1
-			if ($2 == host_set) host = 1
-		}
-		current_set == ingress_set {
-			if ($1 == "type" && $2 == "ifname") ingress_type = 1
-			if ($1 == "flags" && $2 == "timeout") ingress_timeout = 1
-		}
-		current_set == host_set && $1 == "type" && $2 == "ipv4_addr" { host_type = 1 }
-		current_set == host_set && $1 == "flags" && $2 == "timeout" { host_timeout = 1 }
-		$1 == "chain" {
-			current_set = ""
-			in_redirect = ($2 == "redirect_prerouting")
-			if (in_redirect) redirect_chain = 1
-		}
-		in_redirect && /type[[:space:]]+nat[[:space:]]+hook[[:space:]]+prerouting/ { redirect_hook = 1 }
-		in_redirect && index($0, "iifname @" ingress_set) { redirect_set = ingress_set }
-		in_redirect && (index($0, "iifname @" ingress_set)) \
-			&& index($0, "ip daddr @" host_set) \
-			&& index($0, "tcp dport 443") \
-			&& index($0, "counter") \
-			&& index($0, "redirect to :" port) \
-			&& index($0, "comment \"wloc owned ingress redirect\"") { ingress_redirect = 1 }
-		END {
-			exit !(new_ingress && ingress_type && ingress_timeout \
-			&& host && host_type && host_timeout && redirect_chain \
-			&& redirect_hook && ingress_redirect \
-			&& redirect_set == ingress_set)
-		}
-	'
-}
-
-ensure_table_healthy() {
-	local port table_dump
-
-	port="$1"
-	table_dump="$(nft list table inet "$TABLE" 2>/dev/null)" || {
-		echo "wloc: table inet $TABLE is not loaded" >&2
-		return 1
-	}
-
-	printf '%s\n' "$table_dump" | table_healthy "$port" || {
-		echo "wloc: table inet $TABLE does not match the required WLOC layout or redirect port $port" >&2
-		return 1
-	}
 }
 
 analyze_prerouting_proxies() {
@@ -499,10 +455,12 @@ EOF
 apply_rules() {
 	local port
 	port="$1"
+	shift
+	set_hosts "$@"
 	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
-	ensure_table_healthy "$port" || return 1
-	refresh_hosts || return 1
-	check_prerouting_order || true
+	# The editor owns the complete nftables program. WLOC only attempts to
+	# refresh its documented dynamic set when that set is present.
+	refresh_hosts "$@"
 }
 
 valid_ifname() {
@@ -517,88 +475,84 @@ load_ap_lib() {
 reconcile() {
 	local port
 	port="$1"
+	shift
+	set_hosts "$@"
 	valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
-	ensure_table_healthy "$port" || return 1
-	resolve_hosts || return 1
-	if order_check_due; then check_prerouting_order || true; fi
-	load_ap_lib || { echo 'wloc: AP resolver is unavailable' >&2; return 1; }
+	resolve_hosts
 	sync_ingress_interfaces
 }
 
-resolve_ingress_interfaces() {
-	local bridge="$1" member sys_class_net
-	valid_ifname "$bridge" || return 1
-	sys_class_net="${WLOC_SYS_CLASS_NET:-/sys/class/net}"
-	[ -e "$sys_class_net/$bridge" ] || return 0
-	printf '%s\n' "$bridge"
-	for member in "$sys_class_net/$bridge"/brif/*; do
-		[ -e "$member" ] || continue
-		member="${member##*/}"
-		valid_ifname "$member" && printf '%s\n' "$member"
-	done
-}
-
 collect_wloc_ingress() {
-	local section enabled ssid wireless_section network device interface
+	local section enabled iface
 	section="$1"
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
-	config_get ssid "$section" ssid ''
-	[ -n "$ssid" ] || {
-		WLOC_RESOLVE_ERROR="SSID is missing from enabled rule $section"
+	config_get iface "$section" iface ''
+	[ -n "$iface" ] || {
+		WLOC_RESOLVE_ERROR="interface is missing from enabled rule $section"
 		return 0
 	}
-	if ! wireless_section="$(wloc_ap_find_section_by_ssid "$ssid")"; then
-		WLOC_RESOLVE_ERROR="cannot resolve configured SSID \"$ssid\""
+	if ! wloc_ap_find_section_by_ifname "$iface" >/dev/null; then
+		WLOC_RESOLVE_ERROR="cannot resolve configured interface \"$iface\""
 		return 0
 	fi
-	if ! network="$(wloc_ap_get_network "$wireless_section")"; then
-		WLOC_RESOLVE_ERROR="SSID \"$ssid\" has no valid network mapping"
+	# The rule already stores the fixed wifi-iface name. Use it directly so
+	# startup does not need to scan runtime interfaces or expand a bridge.
+	valid_ifname "$iface" || {
+		WLOC_RESOLVE_ERROR="invalid configured interface \"$iface\""
 		return 0
-	fi
-	if ! device="$(wloc_ap_get_network_device "$network")"; then
-		WLOC_RESOLVE_ERROR="SSID \"$ssid\" network \"$network\" has no valid device"
-		return 0
-	fi
-	while IFS= read -r interface; do
-		[ -n "$interface" ] || continue
-		case " $WLOC_INGRESS_INTERFACES " in
-			*" $interface "*) ;;
-			*) WLOC_INGRESS_INTERFACES="$WLOC_INGRESS_INTERFACES $interface" ;;
-		esac
-	done <<EOF
-$(resolve_ingress_interfaces "$device")
-EOF
+	}
+	case " $WLOC_INGRESS_INTERFACES " in
+		*" $iface "*) ;;
+		*) WLOC_INGRESS_INTERFACES="$WLOC_INGRESS_INTERFACES $iface" ;;
+	esac
 }
 
 sync_ingress_interfaces() {
-	local interface interfaces set
+	local interface interfaces family set
 	WLOC_RESOLVE_ERROR=''
 	WLOC_INGRESS_INTERFACES=''
-	config_load wloc || return 1
+	read -r family set <<EOF
+$(active_ingress_set)
+EOF
+	# A custom ruleset may not use WLOC's optional interface set at all.
+	# Leave it untouched and consider synchronization successful in that case.
+	[ -n "$family" ] && [ -n "$set" ] || return 0
+	if ! nft list set "$family" "$TABLE" "$set" 2>/dev/null \
+		| grep -q 'type ifname'; then
+		return 0
+	fi
+	if ! nft list set "$family" "$TABLE" "$set" 2>/dev/null \
+		| grep -Eq 'flags timeout|^[[:space:]]*timeout[[:space:]]'; then
+		return 0
+	fi
+	load_ap_lib || return 0
+	config_load wloc || return 0
 	config_foreach collect_wloc_ingress wifi
 	[ -z "$WLOC_RESOLVE_ERROR" ] || {
-		echo "wloc: $WLOC_RESOLVE_ERROR" >&2
-		return 1
+		echo "wloc: warning: $WLOC_RESOLVE_ERROR; interface set was not changed" >&2
+		return 0
 	}
 	interfaces="$WLOC_INGRESS_INTERFACES"
-	set="$(active_ingress_set)" || {
-		echo "wloc: no compatible ingress interface set is loaded" >&2
-		return 1
-	}
 
 	{
-		printf 'flush set inet %s %s\n' \
-			"$TABLE" "$set"
+		printf 'flush set %s %s %s\n' \
+			"$family" "$TABLE" "$set"
 		for interface in $interfaces; do
-			printf 'add element inet %s %s { "%s" timeout %s }\n' \
-				"$TABLE" "$set" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
+			printf 'add element %s %s %s { "%s" timeout %s }\n' \
+			"$family" "$TABLE" "$set" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
 		done
-	} | nft -f -
+	} | nft -f - || {
+		echo "wloc: warning: unable to refresh $family/$TABLE/$set; custom rules were left unchanged" >&2
+	}
 }
 
 case "${1:-}" in
-	apply) apply_rules "${2:-}";;
+	apply)
+		port="${2:-}"
+		shift 2
+		apply_rules "$port" "$@"
+		;;
 	reconcile)
 		port="${2:-}"
 		shift 2
@@ -608,8 +562,14 @@ case "${1:-}" in
 	status)
 		nft list table inet "$TABLE" 2>/dev/null
 		;;
-	check-order) check_prerouting_order;;
-	resolve-hosts) resolve_hosts;;
-	refresh-hosts) refresh_hosts;;
-	*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|check-order|resolve-hosts|refresh-hosts}' >&2; exit 2;;
+	resolve-hosts)
+		shift
+		set_hosts "$@"
+		resolve_hosts
+		;;
+	refresh-hosts)
+		shift
+		refresh_hosts "$@"
+		;;
+	*) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|resolve-hosts|refresh-hosts}' >&2; exit 2;;
 esac

@@ -15,9 +15,7 @@ const UBUS_TIMEOUT_SECONDS: &str = "1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessPoint {
-    pub ssid: String,
-    pub bssid: MacAddress,
-    pub interface: String,
+    pub iface: String,
 }
 
 #[derive(Clone)]
@@ -188,30 +186,20 @@ fn has_client(value: &Value, mac: MacAddress) -> bool {
 }
 
 fn access_point_from_status(object: &str, value: &Value) -> Result<AccessPoint, String> {
-    let bssid = value
-        .get("bssid")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("{object}.get_status omitted BSSID"))?;
-    let interface = ["interface", "ifname"]
+    let iface = ["interface", "ifname"]
         .iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| object.trim_start_matches("hostapd."));
-    if interface.is_empty()
-        || !interface
+    if iface.is_empty()
+        || !iface
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
         return Err(format!("{object}.get_status returned an invalid interface"));
     }
     Ok(AccessPoint {
-        ssid: value
-            .get("ssid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        bssid: MacAddress::parse(bssid)?,
-        interface: interface.to_owned(),
+        iface: iface.to_owned(),
     })
 }
 
@@ -230,14 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn status_exposes_bssid_and_ssid_for_runtime_matching() {
-        let value: Value = serde_json::from_str(
-            r#"{"ssid":"Shared name","bssid":"AA:BB:CC:DD:EE:02","ifname":"wlan1"}"#,
-        )
-        .unwrap();
+    fn status_exposes_the_runtime_interface_for_matching() {
+        let value: Value = serde_json::from_str(r#"{"ifname":"wlan1"}"#).unwrap();
         let access_point = access_point_from_status("hostapd.wlan1", &value).unwrap();
-        assert_eq!(access_point.ssid, "Shared name");
-        assert_eq!(access_point.bssid.label(), "aa:bb:cc:dd:ee:02");
-        assert_eq!(access_point.interface, "wlan1");
+        assert_eq!(access_point.iface, "wlan1");
     }
 }

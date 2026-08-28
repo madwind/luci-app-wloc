@@ -34,7 +34,7 @@ msgstr ""
 msgid "1 min ago"
 msgstr ""
 
-msgid "Access Point / SSID"
+msgid "Interface"
 msgstr ""
 
 msgid "Action failed: %s"
@@ -49,16 +49,13 @@ msgstr ""
 msgid "Active state"
 msgstr ""
 
-msgid "Actually disable the selected SSID during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing SSID never falls back to another AP or the whole radio."
+msgid "Actually disable the selected interface during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing interface never falls back to another AP or the whole wireless configuration."
 msgstr ""
 
 msgid "Add AP"
 msgstr ""
 
 msgid "After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings."
-msgstr ""
-
-msgid "AP discovery"
 msgstr ""
 
 msgid "AP location"
@@ -100,7 +97,7 @@ msgstr ""
 msgid "Download CA profile"
 msgstr ""
 
-msgid "Edit the complete WLOC nftables ruleset. An empty file means that no interception rules are loaded."
+msgid "Enter any valid nftables ruleset. WLOC does not require a particular table, chain, priority, or redirect rule. An empty file means that no custom rules are loaded."
 msgstr ""
 
 msgid "Editor state"
@@ -143,9 +140,6 @@ msgid "Format"
 msgstr ""
 
 msgid "Generated on first start"
-msgstr ""
-
-msgid "Hidden SSID"
 msgstr ""
 
 msgid "Hostname or IP address of the outbound proxy. DNS for the Apple destination is resolved by the proxy."
@@ -205,7 +199,7 @@ msgstr ""
 msgid "Latitude"
 msgstr ""
 
-msgid "Live AP status is not ready; configured SSIDs remain selectable."
+msgid "Live AP status is not ready; configured interfaces remain selectable."
 msgstr ""
 
 msgid "Loaded"
@@ -241,7 +235,7 @@ msgstr ""
 msgid "nftables ruleset"
 msgstr ""
 
-msgid "No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule."
+msgid "No configured AP was found in wireless. Add a wifi-iface with a fixed ifname before creating a WLOC rule."
 msgstr ""
 
 msgid "No events in this session yet."
@@ -253,7 +247,7 @@ msgstr ""
 msgid "none"
 msgstr ""
 
-msgid "Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Interception remains disabled if the daemon cannot bind the selected port or the redirect port does not match."
+msgid "Normally this should not be changed. If your custom nftables rules redirect traffic to WLOC, use the same port. WLOC does not inspect or enforce redirect rules; a mismatched rule simply will not send traffic to the listener."
 msgstr ""
 
 msgid "not currently active"
@@ -283,12 +277,6 @@ msgstr ""
 msgid "Refresh"
 msgstr ""
 
-msgid "Live BSSID"
-msgstr ""
-
-msgid "Refresh AP list"
-msgstr ""
-
 msgid "Regenerate CA"
 msgstr ""
 
@@ -298,13 +286,7 @@ msgstr ""
 msgid "Restart failed: %s"
 msgstr ""
 
-msgid "Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s"
-msgstr ""
-
 msgid "Restore at"
-msgstr ""
-
-msgid "Refresh the configured AP inventory after wireless configuration has changed or the router has restarted."
 msgstr ""
 
 msgid "Root CA SHA-256: "
@@ -334,7 +316,7 @@ msgstr ""
 msgid "Save & apply"
 msgstr ""
 
-msgid "Save & apply validates and loads the configured nftables tables."
+msgid "Save & apply checks nftables syntax and loads the ruleset. No WLOC rule layout is enforced."
 msgstr ""
 
 msgid "Saved"
@@ -349,22 +331,19 @@ msgstr ""
 msgid "Scheduled disable"
 msgstr ""
 
-msgid "Select an exact configured SSID and assign one virtual location to clients connected through that AP."
+msgid "Select an exact fixed interface and assign one virtual location to clients connected through that AP."
 msgstr ""
 
-msgid "Select the exact, case-sensitive SSID configured in wireless. Runtime interfaces, BSSIDs and devices are discovered automatically."
+msgid "Select the exact fixed interface name from a wifi-iface. Interfaces without a fixed ifname are not shown."
 msgstr ""
 
-msgid "Configured SSID \"%s\" was not found."
+msgid "Configured interface \"%s\" was not found."
 msgstr ""
 
-msgid "SSID \"%s\" is used by multiple APs and cannot be selected by WLOC."
+msgid "Interface \"%s\" is used by multiple APs and cannot be selected by WLOC."
 msgstr ""
 
-msgid "Runtime interface"
-msgstr ""
-
-msgid "Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s."
+msgid "SSID"
 msgstr ""
 
 msgid "Service settings"
@@ -397,7 +376,7 @@ msgstr ""
 msgid "The configured tables currently loaded in the kernel."
 msgstr ""
 
-msgid "The dynamic IP set name is apple_wloc_v4 and it must use type ipv4_addr with the timeout flag. WLOC refreshes it immediately when rules are applied and every five minutes afterward."
+msgid "WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged."
 msgstr ""
 
 msgid "The nftables syntax check passed."
@@ -433,19 +412,13 @@ msgstr ""
 msgid "unknown interface"
 msgstr ""
 
-msgid "Unnamed AP"
-msgstr ""
-
 msgid "Unsaved changes"
 msgstr ""
 
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr ""
 
-msgid "Version %s · Bind each Apple WLOC location to one unique configured SSID."
-msgstr ""
-
-msgid "Custom tables were applied, but Apple WLOC addresses could not be refreshed."
+msgid "Version %s · Bind each Apple WLOC location to one fixed interface."
 msgstr ""
 
 msgid "Failed to apply nftables rules."
@@ -457,19 +430,13 @@ msgstr ""
 msgid "nftables syntax check failed"
 msgstr ""
 
-msgid "Only top-level table declarations are allowed."
-msgstr ""
-
-msgid "runtime interception rules are missing"
-msgstr ""
-
 msgid "runtime rule refresh failed; interception is disabled"
 msgstr ""
 
 msgid "service is not running; check the system log"
 msgstr ""
 
-msgid "transparent-proxy rule order conflict; see the runtime log"
+msgid "transparent-proxy path conflict; redirected packets are not reaching the WLOC listener"
 msgstr ""
 
 msgid "unknown method"

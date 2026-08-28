@@ -7,52 +7,49 @@ nftables rules, UCI/procd integration, RPC support, and a LuCI interface.
 
 ![WLOC LuCI dashboard](docs/images/wloc-dashboard.png)
 
-Each entry binds one exact, case-sensitive configured SSID to one virtual
-location and optional outbound proxy. SSID is the only persistent AP identity.
-At runtime WLOC resolves it through `/etc/config/wireless` to the current
-wireless section, network, bridge/device, interfaces, and hostapd state; those
-values are metadata and are never used as the rule identity. Each SSID may be
-used by only one WLOC entry, while different SSIDs may share the same bridge.
-Requests whose client cannot be associated with a matching hostapd SSID pass
-through unchanged. Use this package only on devices you own or are authorized
-to test.
+Each entry binds one exact configured wireless interface to one virtual
+location and optional outbound proxy. The selected `iface` is the fixed
+`ifname` from a `wifi-iface`; wireless sections without one are not shown in
+LuCI and are ignored by WLOC. The configured SSID is displayed for reference
+only and does not identify a rule. The wireless `disabled` state does not hide
+a fixed interface. Requests whose client cannot be associated with a matching
+hostapd interface pass through unchanged. Use this package only on devices
+you own or are authorized to test.
 
-Each SSID can also be given a daily disable window in router local time. During
-the window, WLOC resolves the SSID to its current `wifi-iface`, applies a
-temporary runtime `disabled` override, and reloads WiFi; the original wireless
-UCI value is restored when the window ends and is never committed by WLOC.
+Each interface can also be given a daily disable window in router local time.
+During the window, WLOC resolves the interface to its configured `wifi-iface`,
+applies a temporary runtime `disabled` override, and reloads WiFi; the
+original wireless UCI value is restored when the window ends and is never
+committed by WLOC.
 Equal start and end times mean all day, and an end time earlier than the start
-crosses midnight. If the SSID is missing or ambiguous, WLOC records a warning
-and leaves every other AP unchanged; it never falls back to another AP or the
-whole radio.
+crosses midnight. If the fixed interface is missing or ambiguous, WLOC records
+a warning and leaves every other AP unchanged; it never falls back to another
+AP or the whole wireless configuration.
 
-The nftables rules resolve each configured SSID to its network device and
-current bridge members, place those runtime ingress interfaces in a short-lived
-interface set, and then match the resolved IPv4 addresses of both Apple WLOC
-hostnames and TCP/443. Different configured SSIDs can therefore share `br-lan`;
-the ingress set is deduplicated. This may capture traffic from other APs or
-wired clients on that bridge, but WLOC confirms the client through
-IP-to-MAC-to-hostapd-to-SSID discovery before applying a location rule, so
-unconfigured SSIDs and wired clients pass through.
+The nftables editor accepts any ruleset accepted by `nft`; WLOC does not require
+specific tables, chains, priorities, comments, or redirect forms. WLOC only
+maintains two optional sets when they are declared with the expected types:
+`apple_wloc_v4` (`ipv4_addr`, `flags timeout`) receives resolved Apple host
+addresses, and `target_ingress_interfaces` (`ifname`, `flags timeout`) receives
+the configured AP interfaces. Other rules and sets are left unchanged. If a
+set is absent or has another type, WLOC skips its maintenance without rejecting
+the rest of the ruleset.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
 ```text
-SSID-US      ─┐
-SSID-JP      ─┼─ br-lan
-SSID-NORMAL  ─┘
+phy0-ap0      ─┐
+phy0-ap1      ─┼─ br-lan
+phy1-ap0      ─┘
 ```
 
-Binding `SSID-US` to Los Angeles and `SSID-JP` to Tokyo affects only clients
-whose hostapd association reports the corresponding SSID; `SSID-NORMAL` and
+Binding `phy0-ap0` to Los Angeles and `phy0-ap1` to Tokyo affects only clients
+whose hostapd association reports the corresponding interface; `phy1-ap0` and
 wired clients pass through unless they receive their own WLOC rule.
 
-WLOC uses the prerouting priority configured in its nftables table. The default
-configuration uses `mangle - 2` (`-152`). At runtime, WLOC scans other
-IPv4-capable prerouting chains for reachable `REDIRECT` or `TPROXY` paths and
-compares their priorities with the active WLOC chain. WLOC no longer rewrites
-its own priority automatically. Conflicts or unparseable priorities are
-reported through runtime state, system logs, and LuCI.
+WLOC does not inspect or rewrite nftables rule priority. The relationship between
+custom rules and the WLOC listener is entirely controlled by the ruleset you
+enter.
 
 WLOC does not install a TPROXY stage, policy route, or OUTPUT hook. The client
 connection is redirected to WLOC first. After WLOC handles it, the daemon's
@@ -100,13 +97,15 @@ Copy the APK for your architecture to the router and install it:
 apk add --allow-untrusted ./luci-app-wloc-*.apk
 ```
 
-Open **Services > WLOC** in LuCI, add an AP, select its exact configured SSID,
+Open **Services > WLOC** in LuCI, add an AP, select its exact fixed interface,
 and enter its fixed WGS84 latitude and longitude baseline, then save and apply.
-WLOC stores only the SSID. Wireless sections, network bridges, runtime
-interfaces, and BSSIDs are rediscovered as needed, so changing a BSSID,
-interface name, or wireless section does not invalidate the rule. Renaming the
-SSID intentionally breaks the binding: WLOC reports that the configured SSID
-was not found, and you must select the renamed SSID in the rule. On every
+Add a fixed `option ifname` to each selected `wifi-iface` in
+`/etc/config/wireless`. WLOC stores the fixed interface, shows its configured
+SSID as a third-column reference, and adds the interface directly; it does not
+scan the bridge or runtime interfaces. A missing fixed name means the AP is
+not shown and cannot be selected. Changing the SSID does not affect the rule;
+changing or removing the fixed interface requires selecting the new interface
+in the rule. On every
 service start, the first real location establishes the reference. Every later
 response uses the fixed virtual baseline plus the difference between the
 current and previous real location. The upstream accuracy is preserved
@@ -121,10 +120,19 @@ Because a sysupgrade backup therefore contains the private CA key, store backup
 archives securely. The downloadable mobileconfig uses stable identifiers and is
 rewritten only when its CA changes.
 
-The default local listener is TCP port `61520`. Upgrades migrate the previous
-`8443`, `58443`, and `28443` defaults while retaining any other custom port. WLOC checks
-that the selected port is free before installing interception rules and stops
-safely if another router service already owns it.
+The default local listener is TCP port `61520` and can be changed in LuCI under
+Service settings. WLOC runs with the service's existing user and group
+identity; it does not change the daemon GID. The daemon starts independently of
+the nftables layout and periodically retries only the optional set maintenance.
+Upgrades migrate the previous `8443`, `58443`, and `28443` defaults while retaining
+any other custom port. WLOC checks that the selected port is free before installing
+interception rules and stops safely if another router service already owns it.
+
+The intercepted domains are also configurable in Service settings. The default
+list contains `gs-loc.apple.com` and `gs-loc-cn.apple.com`; additional test
+domains are resolved and intercepted in the same way. The optional debug mode
+returns `{"wloc":"ok"}` for every intercepted HTTPS request without contacting
+the upstream server.
 
 ## License
 

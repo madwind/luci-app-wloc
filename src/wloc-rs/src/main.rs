@@ -40,26 +40,24 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16) -> Result<(), String> {
-    run_rules(helper, "reconcile", &[port.to_string()])
+fn reconcile_rules(helper: &Path, port: u16, domains: &[String]) -> Result<(), String> {
+    let mut selectors = vec![port.to_string()];
+    selectors.extend(domains.iter().cloned());
+    run_rules(helper, "reconcile", &selectors)
 }
 
-async fn reconcile_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port))
+async fn reconcile_rules_async(
+    helper: PathBuf,
+    port: u16,
+    domains: Vec<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &domains))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
 
 async fn cleanup_rules_async(helper: PathBuf) {
     let _ = tokio::task::spawn_blocking(move || run_rules(&helper, "cleanup", &[])).await;
-}
-
-fn runtime_file(path: &str) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn record_startup_error(error: &str) {
@@ -116,7 +114,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut server = rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
         .with_protocol_versions(&versions)?
         .with_no_client_auth()
-        .with_cert_resolver(Arc::new(ca.resolver()?));
+        .with_cert_resolver(Arc::new(ca.resolver(config.domains.clone())?));
     server.alpn_protocols = vec![b"h2".to_vec()];
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -164,30 +162,50 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-        reconcile_rules_async(
+        let initially_armed = match reconcile_rules_async(
             config.rules_helper.clone(),
             config.listen_port,
+            config.domains.clone(),
         )
         .await
-        .map_err(std::io::Error::other)?;
-        status.update_detail(
-            "interception_armed",
-            &format!(
-                "rules={} matching=first hosts=gs-loc.apple.com,gs-loc-cn.apple.com protocol=tcp/443 priority={} detected_proxy_priorities={}",
-                config.rules.len(),
-                runtime_file("/var/run/wloc/prerouting.priority"),
-                runtime_file("/var/run/wloc/prerouting.details"),
-            ),
-            None,
-            |c| c.armed(true),
-        );
-        eprintln!("wlocd: daemon=ready interception=true ca_generated={generated}");
+        {
+            Ok(()) => {
+                status.update_detail(
+                    "interception_armed",
+                    &format!(
+                        "rules={} hosts={} protocol=tcp/443 dynamic_sets=optional",
+                        config.rules.len(),
+                        config.domains.join(",")
+                    ),
+                    None,
+                    |c| c.armed(true),
+                );
+                true
+            }
+            Err(error) => {
+                cleanup_rules_async(config.rules_helper.clone()).await;
+                status.update_detail(
+                    "lease_failed",
+                    "action=rules_removed fail_open=true retry_seconds=10 phase=initial_start",
+                    Some(&error),
+                    |c| c.armed(false),
+                );
+                eprintln!(
+                    "wlocd: daemon=ready interception=false error=initial_rules phase=start retry_seconds=10 ca_generated={generated}"
+                );
+                false
+            }
+        };
+        if initially_armed {
+            eprintln!("wlocd: daemon=ready interception=true ca_generated={generated}");
+        }
 
-        let armed = Arc::new(AtomicBool::new(true));
+        let armed = Arc::new(AtomicBool::new(initially_armed));
         let lease_armed = Arc::clone(&armed);
         let lease_status = Arc::clone(&status);
         let lease_helper = config.rules_helper.clone();
         let lease_port = config.listen_port;
+        let lease_domains = config.domains.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -196,6 +214,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if let Err(error) = reconcile_rules_async(
                     lease_helper.clone(),
                     lease_port,
+                    lease_domains.clone(),
                 )
                 .await
                 {
@@ -227,6 +246,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             client,
             config.rules,
             config.listen_port,
+            config.domains,
+            config.debug,
             Arc::clone(&status),
         ));
         let connection_limit = Arc::new(tokio::sync::Semaphore::new(16));

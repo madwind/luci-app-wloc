@@ -18,9 +18,10 @@ config_foreach() {
 config_get() {
 	local destination="$1" section="$2" option="$3" value="${4:-}"
 	case "$section:$option" in
-		wifi0:mode) value=ap;; wifi0:ssid) value="$ssid0";; wifi0:network) value=lan;;
-		wifi1:mode) value=ap;; wifi1:ssid) value="$ssid1";; wifi1:network) value=lan;;
-		wifi2:mode) value=ap;; wifi2:ssid) value=Home;; wifi2:network) value=lan;;
+		wifi0:mode|wifi1:mode|wifi2:mode) value=ap;;
+		wifi0:ifname) value=phy0-ap0;;
+		wifi1:ifname) value=phy0-ap1;;
+		wifi2:ifname) value=phy1-ap0;;
 	esac
 	eval "$destination=\$value"
 }
@@ -28,34 +29,24 @@ EOF
 
 export WLOC_LIB_FUNCTIONS="$lib_functions"
 export WLOC_AP_LIB_LOADED=0
-ssid0='SSID-A'
-ssid1='Home'
 uci() {
 	[ "${1:-}" = -q ] && shift
-	[ "${1:-}" = get ] || return 1
-	case "${2:-}" in
-		network.lan.device) printf '%s\n' br-lan;;
-		*) return 1;;
-	esac
+	return 1
 }
 ubus() { return 1; }
 
-eval "$(sed '/^wloc_ap_get_runtime_ifname()/,$d' "$AP_LIB")"
+eval "$(sed '/^wloc_ap_get_hostapd_status()/,$d' "$AP_LIB")"
 
-[ "$(wloc_ap_find_section_by_ssid 'SSID-A')" = wifi0 ]
-if wloc_ap_find_section_by_ssid 'ssid-a' >/dev/null 2>"$fixture_root/error"; then
-	echo 'case-sensitive SSID lookup unexpectedly succeeded' >&2
+[ "$(wloc_ap_find_section_by_ifname 'phy0-ap0')" = wifi0 ]
+if wloc_ap_find_section_by_ifname 'PHY0-AP0' >/dev/null 2>"$fixture_root/error"; then
+	echo 'case-sensitive interface lookup unexpectedly succeeded' >&2
 	exit 1
 fi
-grep -F 'SSID "ssid-a" was not found in wireless configuration' "$fixture_root/error" >/dev/null
+grep -F 'interface "PHY0-AP0" was not found in wireless configuration' "$fixture_root/error" >/dev/null
 
-if wloc_ap_find_section_by_ssid Home >/dev/null 2>"$fixture_root/error"; then
-	echo 'duplicate SSID lookup unexpectedly succeeded' >&2
+if wloc_ap_find_section_by_ifname '' >/dev/null 2>"$fixture_root/error"; then
+	echo 'empty interface lookup unexpectedly succeeded' >&2
 	exit 1
 fi
-[ "$(cat "$fixture_root/error")" = 'SSID "Home" matches multiple wireless interfaces' ]
-
-[ "$(wloc_ap_get_network wifi0)" = lan ]
-[ "$(wloc_ap_get_network_device lan)" = br-lan ]
 
 echo 'AP resolver tests: PASS'

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Temporarily disables the wireless UCI section resolved from each WLOC SSID.
+# Temporarily disables the wireless UCI section resolved from each WLOC iface.
 # Changes are kept in UCI's runtime delta and are never committed to wireless.
 
 STATE_DIR="${WLOC_SCHEDULE_STATE_DIR:-/var/run/wloc}"
@@ -68,12 +68,12 @@ reload_wifi() {
 	wifi reload >/dev/null 2>&1 || logger -t wloc-schedule 'wifi reload failed; scheduled AP state may be delayed'
 }
 
-warn_unresolved_ssid() {
-	logger -t wloc-schedule "SSID \"$1\" is unavailable; scheduled state was not changed" 2>/dev/null || true
+warn_unresolved_iface() {
+	logger -t wloc-schedule "interface \"$1\" is unavailable; scheduled state was not changed" 2>/dev/null || true
 }
 
 collect_active_wifi() {
-	local section="$1" enabled schedule_enabled start end ssid wireless_section
+	local section="$1" enabled schedule_enabled start end iface wireless_section
 	case "$section" in ''|*[!A-Za-z0-9_-]*) return 0;; esac
 	config_get_bool enabled "$section" enabled 1
 	[ "$enabled" -eq 1 ] || return 0
@@ -83,15 +83,15 @@ collect_active_wifi() {
 	config_get end "$section" schedule_end ''
 	valid_time "$start" && valid_time "$end" || return 0
 	window_active "$start" "$end" || return 0
-	config_get ssid "$section" ssid ''
-	[ -n "$ssid" ] || {
-		warn_unresolved_ssid '<empty>'
+	config_get iface "$section" iface ''
+	[ -n "$iface" ] || {
+		warn_unresolved_iface '<empty>'
 		return 0
 	}
 	load_ap_lib
-	wireless_section="$(wloc_ap_find_section_by_ssid "$ssid" 2>/dev/null || true)"
+	wireless_section="$(wloc_ap_find_section_by_ifname "$iface" 2>/dev/null || true)"
 	[ -n "$wireless_section" ] || {
-		warn_unresolved_ssid "$ssid"
+		warn_unresolved_iface "$iface"
 		return 0
 	}
 	desired_add "$wireless_section"

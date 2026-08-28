@@ -13,9 +13,27 @@ var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca',
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
 var AP_DISCOVERY_ATTEMPTS = 6;
 var AP_DISCOVERY_RETRY_MS = 1500;
+var DOMAIN_PATTERN = /^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/;
 
 function truthy(value) {
 	return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function validDomainList(value) {
+	var domains = Array.isArray(value) ? value : [value];
+	return domains.length > 0 && domains.every(function(value) {
+		return DOMAIN_PATTERN.test(String(value || ''));
+	});
+}
+
+function validDomainInput(value) {
+	// DynamicList also validates its value-less container. An empty value
+	// means that no new item is being entered, not that a domain is invalid.
+	return value === '' || validDomainList(value);
+}
+
+function validIfname(value) {
+	return /^[A-Za-z0-9_.-]{1,15}$/.test(String(value || ''));
 }
 
 function actionButton(label, className, handler) {
@@ -134,34 +152,25 @@ return view.extend({
 
 		function addConfiguredWireless(source) {
 			var ssid = String(source && source.ssid || '');
-			var bssid = String(source && source.bssid || '').toUpperCase();
 			var section = String(source && source.section || '');
-			var interfaceName = String(source && (source.ifname || source.interface) || '');
-			var device = String(source && source.device || '');
+			var iface = String(source && (source.iface || source.ifname) || '');
 			var key = section;
-			if (!section || configuredWirelessKeys[key])
+			if (!section || !validIfname(iface) || configuredWirelessKeys[key])
 				return;
 			configuredWirelessKeys[key] = true;
 			configuredWireless.push({
 				ssid: ssid,
-				bssid: bssid,
 				section: section,
-				radio: String(source && source.radio || ''),
-				network: String(source && source.network || ''),
-				device: device,
-				mappingError: String(source && source.mapping_error || ''),
-				interface: interfaceName,
+				iface: iface,
 				disabled: truthy(source && source.disabled),
 				active: truthy(source && (source.active || source.up)),
-				unique: source && source.unique !== undefined ? truthy(source.unique) : true,
-				ambiguous: truthy(source && source.ambiguous),
 				missing: truthy(source && source.missing)
 			});
 		}
 
 		accessPoints.forEach(addConfiguredWireless);
 		// Keep a local fallback visible if rpcd is temporarily unavailable. The
-		// SSID remains the only value that can be saved.
+		// fixed interface remains the only value that can be saved.
 		uci.sections('wireless', 'wifi-iface').forEach(function(wifi) {
 			var mode = String(wifi.mode || 'ap');
 			if ([ 'ap', 'ap-wds' ].indexOf(mode) < 0 || configuredWirelessKeys[wifi['.name']])
@@ -169,11 +178,9 @@ return view.extend({
 			addConfiguredWireless({
 				section: wifi['.name'],
 				ssid: wifi.ssid,
-				network: wifi.network,
-				device: '',
+				ifname: wifi.ifname,
 				disabled: wifi.disabled,
 				active: false,
-				unique: true
 			});
 		});
 
@@ -188,7 +195,7 @@ return view.extend({
 		}
 
 		var map = new form.Map('wloc', _('WLOC'),
-			_('Version %s · Bind each Apple WLOC location to one unique configured SSID.').format(initialStatus.version || _('unknown')));
+			_('Version %s · Bind each Apple WLOC location to one fixed interface.').format(initialStatus.version || _('unknown')));
 
 		var profileUrl = '/wloc-ca.mobileconfig';
 		var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
@@ -203,14 +210,10 @@ return view.extend({
 			return E('div', {}, [
 				statusNode,
 				actionButton.call(this, _('Restart'), 'cbi-button-action', function() {
-					return notifyAction(callRestart(), function(status) {
-						var priority = status.prerouting_priority;
-						var found = status.detected_priorities || _('none');
-						if (priority && truthy(status.running) && !status.service_reason)
-							return _('Service restarted. WLOC prerouting priority: %s. Found proxy priorities: %s.').format(priority, found);
-						if (priority)
-							return _('Restart incomplete. WLOC prerouting priority: %s. Found proxy priorities: %s. Reason: %s').format(priority, found, status.service_reason || _('interception is not ready'));
-						return _('Restart failed: %s').format(status.service_reason || _('interception is not ready'));
+					return callRestart().then(function() {
+						return refresh();
+					}).catch(function(error) {
+						ui.addNotification(null, E('p', {}, _('Action failed: %s').format(error.message || error)), 'error');
 					});
 				})
 			]);
@@ -219,24 +222,26 @@ return view.extend({
 		option.datatype = 'port';
 		option.default = '61520';
 		option.rmempty = false;
-		option.description = _('Normally this should not be changed. If changed, the WLOC redirect rule in the nftables editor must use the same port. Interception remains disabled if the daemon cannot bind the selected port or the redirect port does not match.');
+		option.description = _('Normally this should not be changed. If your custom nftables rules redirect traffic to WLOC, use the same port. WLOC does not inspect or enforce redirect rules; a mismatched rule simply will not send traffic to the listener.');
+		var domainOption = settings.option(form.DynamicList, 'domain', _('Intercepted domains'));
+		domainOption.rmempty = false;
+		// LuCI validates the DynamicList container as well as each input item;
+		// the container has no value and must therefore be optional.
+		domainOption.optional = true;
+		domainOption.placeholder = 'gs-loc.apple.com';
+		domainOption.description = _('DNS names whose IPv4 addresses are redirected to WLOC and whose HTTPS requests can be intercepted. Add a test domain here when needed.');
+		domainOption.validate = function(sectionId, value) {
+			return validDomainInput(value)
+				? true : _('Enter a valid domain name.');
+		};
+		option = settings.option(form.Flag, 'debug', _('Debug: fixed JSON response'));
+		option.default = '0';
+		option.rmempty = false;
+		option.description = _('When enabled, every request to an intercepted domain returns {"wloc":"ok"} without contacting the upstream server.');
 		option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
 		option.default = '0';
 		option.rmempty = false;
 		option.description = _('Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates.');
-		var refreshAccessPointsOption = settings.option(form.Button, '_refresh_access_points', _('AP discovery'));
-		refreshAccessPointsOption.inputtitle = _('Refresh AP list');
-		refreshAccessPointsOption.inputstyle = 'apply';
-	refreshAccessPointsOption.description = _('Refresh the configured AP inventory after wireless configuration has changed or the router has restarted.');
-		refreshAccessPointsOption.onclick = function() {
-			return callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS).then(function(result) {
-				if (!(result.access_points || []).length) {
-					ui.addNotification(null, E('p', {}, _('No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule.')), 'warning');
-					return;
-				}
-				window.location.reload();
-			});
-		};
 		var caOption = settings.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
 		caOption.rmempty = true;
 		caOption.cfgvalue = function() { return 'certificate'; };
@@ -254,90 +259,79 @@ return view.extend({
 		};
 
 	var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
-		_('Select an exact configured SSID and assign one virtual location to clients connected through that AP.'));
-		wifiSections.anonymous = true;
-		wifiSections.addremove = true;
-		wifiSections.sortable = true;
-		wifiSections.nodescriptions = true;
+		_('Select an exact fixed interface and assign one virtual location to clients connected through that AP.'));
+	wifiSections.anonymous = true;
+	wifiSections.addremove = true;
+	wifiSections.sortable = true;
+	wifiSections.nodescriptions = true;
 	wifiSections.addbtntitle = _('Add AP');
-	wifiSections.sectiontitle = function(sectionId) {
-		return uci.get('wloc', sectionId, 'ssid') || _('Unnamed AP');
-	};
 
-		option = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
-		option.default = '1';
-		option.rmempty = false;
-
-	var ssidOption = wifiSections.option(form.ListValue, 'ssid', _('Access Point / SSID'));
-	ssidOption.modalonly = true;
-	ssidOption.rmempty = false;
-	ssidOption.description = _('Select the exact, case-sensitive SSID configured in wireless. Runtime interfaces, BSSIDs and devices are discovered automatically.');
+	var ifaceOption = wifiSections.option(form.ListValue, 'iface', _('Interface'));
+	// Keep the interface selector in both the table and the Add/Edit modal.
+	ifaceOption.modalonly = null;
+	ifaceOption.rmempty = false;
+	ifaceOption.description = _('Select the exact fixed interface name from a wifi-iface. Interfaces without a fixed ifname are not shown.');
 	if (!accessPoints.length && configuredWireless.length)
-		ssidOption.description = _('Live AP status is not ready; configured SSIDs remain selectable.');
+		ifaceOption.description = _('Live AP status is not ready; configured interfaces remain selectable.');
 	if (!configuredWireless.length)
-		ssidOption.description = _('No configured AP was found in wireless. Add a wifi-iface before creating a WLOC rule.');
-	var knownSsids = [];
-	var ssidCounts = {};
+		ifaceOption.description = _('No configured AP was found in wireless. Add a wifi-iface with a fixed ifname before creating a WLOC rule.');
+	var knownIfaces = [];
+	var ifaceCounts = {};
 	configuredWireless.forEach(function(ap) {
-		if (ap.ssid)
-			ssidCounts[ap.ssid] = (ssidCounts[ap.ssid] || 0) + 1;
+		ifaceCounts[ap.iface] = (ifaceCounts[ap.iface] || 0) + 1;
 	});
-	function addSsidChoice(ap) {
-		var ssid = String(ap && ap.ssid || '');
-		if (!ssid || knownSsids.indexOf(ssid) >= 0)
+	function addIfaceChoice(ap) {
+		var iface = String(ap && ap.iface || '');
+		if (!iface || knownIfaces.indexOf(iface) >= 0)
 			return;
-		knownSsids.push(ssid);
-		var label = ssid;
+		knownIfaces.push(iface);
+		var label = iface;
 		if (ap.missing)
 			label += ' (' + _('not found') + ')';
-		else if (ssidCounts[ssid] > 1 || ap.ambiguous)
+		else if (ifaceCounts[iface] > 1)
 			label += ' — ' + _('duplicate; cannot be selected');
 		else if (!ap.active)
 			label += ' (' + _('offline') + ')';
-		ssidOption.value(ssid, label);
+		ifaceOption.value(iface, label);
 	}
-	configuredWireless.forEach(addSsidChoice);
+	configuredWireless.forEach(addIfaceChoice);
 	uci.sections('wloc', 'wifi').forEach(function(wifi) {
-		var ssid = String(wifi.ssid || '');
-		if (ssid && knownSsids.indexOf(ssid) < 0)
-			addSsidChoice({ ssid: ssid, active: false, unique: false, missing: true });
+		var iface = String(wifi.iface || '');
+		if (iface && knownIfaces.indexOf(iface) < 0)
+			addIfaceChoice({ iface: iface, active: false, missing: true });
 	});
-	ssidOption.cfgvalue = function(sectionId) {
-		return String(uci.get('wloc', sectionId, 'ssid') || '');
+	ifaceOption.cfgvalue = function(sectionId) {
+		return String(uci.get('wloc', sectionId, 'iface') || '');
 	};
-	ssidOption.write = function(sectionId, value) {
+	ifaceOption.write = function(sectionId, value) {
 		value = String(value || '');
-		uci.set('wloc', sectionId, 'ssid', value);
-		uci.unset('wloc', sectionId, 'bridge');
-		uci.unset('wloc', sectionId, 'network');
-		uci.unset('wloc', sectionId, 'wireless_section');
-		uci.unset('wloc', sectionId, 'bssid');
-		uci.unset('wloc', sectionId, 'wireless_ifname');
+		uci.set('wloc', sectionId, 'iface', value);
+		uci.unset('wloc', sectionId, 'ssid');
 		uci.unset('wloc', sectionId, 'migration_pending');
 	};
-	ssidOption.validate = function(sectionId, value) {
+	ifaceOption.validate = function(sectionId, value) {
 		value = String(value || '');
-		var matches = configuredWireless.filter(function(candidate) { return candidate.ssid === value; });
+		var matches = configuredWireless.filter(function(candidate) { return candidate.iface === value; });
 		if (!matches.length || matches.some(function(candidate) { return candidate.missing; }))
-			return _('Configured SSID "%s" was not found.').format(value);
-		if (matches.length > 1 || matches.some(function(candidate) { return candidate.ambiguous || candidate.unique === false; }))
-			return _('SSID "%s" is used by multiple APs and cannot be selected by WLOC.').format(value);
+			return _('Configured interface "%s" was not found.').format(value);
+		if (matches.length > 1)
+			return _('Interface "%s" is used by multiple APs and cannot be selected by WLOC.').format(value);
 		return true;
 	};
 
 	function accessPointForRule(sectionId) {
-		var ssid = String(uci.get('wloc', sectionId, 'ssid') || '');
-		return configuredWireless.find(function(candidate) { return candidate.ssid === ssid; });
+		var iface = String(uci.get('wloc', sectionId, 'iface') || '');
+		return configuredWireless.find(function(candidate) { return candidate.iface === iface; });
 	}
 
 	var wifiStateOption = wifiSections.option(form.DummyValue, '_wifi_state', _('AP status'));
 	wifiStateOption.modalonly = false;
 	wifiStateOption.cfgvalue = wifiStateOption.textvalue = function(sectionId) {
-		var ssid = String(uci.get('wloc', sectionId, 'ssid') || '');
+		var iface = String(uci.get('wloc', sectionId, 'iface') || '');
 		var ap = accessPointForRule(sectionId);
 		if (!ap)
-			return ssid ? _('Configured SSID "%s" was not found.').format(ssid) : _('Unavailable');
-		if (ap.ambiguous)
+			return iface ? _('Configured interface "%s" was not found.').format(iface) : _('Unavailable');
+		if (ifaceCounts[iface] > 1)
 			return _('Ambiguous');
 		if (ap.active && !ap.disabled)
 			return _('On');
@@ -346,46 +340,23 @@ return view.extend({
 		return _('Offline');
 	};
 
-	var radioStatusOption = wifiSections.option(form.DummyValue, '_radio', _('Radio'));
-	radioStatusOption.modalonly = false;
-	radioStatusOption.cfgvalue = radioStatusOption.textvalue = function(sectionId) {
+	var ssidOption = wifiSections.option(form.DummyValue, '_ssid', _('SSID'));
+	ssidOption.modalonly = false;
+	ssidOption.cfgvalue = ssidOption.textvalue = function(sectionId) {
 		var ap = accessPointForRule(sectionId);
-		return ap && ap.radio ? ap.radio : _('Unavailable');
+		return ap && ap.ssid ? ap.ssid : _('Unavailable');
 	};
 
-	var interfaceStatusOption = wifiSections.option(form.DummyValue, '_runtime_interface', _('Runtime interface'));
-	interfaceStatusOption.modalonly = false;
-	interfaceStatusOption.cfgvalue = interfaceStatusOption.textvalue = function(sectionId) {
-		var ap = accessPointForRule(sectionId);
-		return ap && ap.interface ? ap.interface : _('Unavailable');
-	};
-
-	var networkStatusOption = wifiSections.option(form.DummyValue, '_network', _('Network'));
-	networkStatusOption.modalonly = false;
-	networkStatusOption.cfgvalue = networkStatusOption.textvalue = function(sectionId) {
-		var ap = accessPointForRule(sectionId);
-		return ap && ap.network ? ap.network : _('Unavailable');
-	};
-
-	var deviceStatusOption = wifiSections.option(form.DummyValue, '_device', _('Device'));
-	deviceStatusOption.modalonly = false;
-	deviceStatusOption.cfgvalue = deviceStatusOption.textvalue = function(sectionId) {
-		var ap = accessPointForRule(sectionId);
-		return ap && ap.device ? ap.device : _('Unavailable');
-	};
-
-	var liveBssidOption = wifiSections.option(form.DummyValue, '_live_bssid', _('Live BSSID'));
-	liveBssidOption.modalonly = false;
-	liveBssidOption.cfgvalue = liveBssidOption.textvalue = function(sectionId) {
-		var ap = accessPointForRule(sectionId);
-		return ap && ap.bssid ? ap.bssid.toUpperCase() : _('Unavailable');
-	};
+	var enabledOption = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
+	enabledOption.modalonly = true;
+	enabledOption.default = '1';
+	enabledOption.rmempty = false;
 
 		var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
 		scheduleEnabledOption.modalonly = true;
 		scheduleEnabledOption.default = '0';
 		scheduleEnabledOption.rmempty = false;
-	scheduleEnabledOption.description = _('Actually disable the selected SSID during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing SSID never falls back to another AP or the whole radio.');
+	scheduleEnabledOption.description = _('Actually disable the selected interface during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing interface never falls back to another AP or the whole wireless configuration.');
 
 		function scheduleTimeValidator(sectionId, value) {
 			return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))

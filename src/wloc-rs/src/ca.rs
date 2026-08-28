@@ -16,8 +16,6 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
-use crate::APPROVED_HOSTS;
-
 pub struct CaBundle {
     params: CertificateParams,
     cert_der: Vec<u8>,
@@ -104,9 +102,6 @@ impl CaBundle {
         &self,
         hostname: &str,
     ) -> Result<CertifiedKey, Box<dyn std::error::Error + Send + Sync>> {
-        if !APPROVED_HOSTS.contains(&hostname) {
-            return Err("hostname is not approved".into());
-        }
         let mut params = CertificateParams::new(vec![hostname.to_owned()])?;
         params.is_ca = IsCa::NoCa;
         params.key_usages = vec![
@@ -137,9 +132,10 @@ impl CaBundle {
 
     pub fn resolver(
         self: &Arc<Self>,
+        domains: Vec<String>,
     ) -> Result<ApprovedResolver, Box<dyn std::error::Error + Send + Sync>> {
         let mut leaves = HashMap::new();
-        for host in APPROVED_HOSTS {
+        for host in &domains {
             leaves.insert(
                 host.to_owned(),
                 CachedLeaf {
@@ -150,6 +146,7 @@ impl CaBundle {
         }
         Ok(ApprovedResolver {
             ca: Arc::clone(self),
+            domains,
             leaves: Mutex::new(leaves),
         })
     }
@@ -266,6 +263,7 @@ pub fn write_mobileconfig(
 
 pub struct ApprovedResolver {
     ca: Arc<CaBundle>,
+    domains: Vec<String>,
     leaves: Mutex<HashMap<String, CachedLeaf>>,
 }
 
@@ -284,7 +282,7 @@ impl ResolvesServerCert for ApprovedResolver {
             .server_name()?
             .trim_end_matches('.')
             .to_ascii_lowercase();
-        if !APPROVED_HOSTS.contains(&host.as_str()) {
+        if !crate::approved_host(&host, &self.domains) {
             return None;
         }
         let mut leaves = self

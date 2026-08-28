@@ -2,18 +2,6 @@
 
 . /usr/share/libubox/jshn.sh
 
-json_value() (
-	local data="$1"
-	local key="$2"
-	local value
-
-	[ -n "$data" ] || return 1
-	json_load "$data" 2>/dev/null || return 1
-	json_get_var value "$key"
-
-	printf '%s' "$value"
-)
-
 INIT=/etc/init.d/wloc
 RULES=/usr/libexec/wloc/rules.sh
 STATE=/var/run/wloc/status.json
@@ -26,9 +14,11 @@ AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 
 firewall_tables() {
 	awk '
-		$1 == "table" {
-			if ($2 !~ /^(ip|ip6|inet|arp|bridge|netdev)$/ || $3 !~ /^[A-Za-z0-9_.-]+$/) exit 2
+		$1 == "table" && $2 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $3 ~ /^[A-Za-z0-9_.-]+$/ {
 			print $2, $3
+		}
+		$1 == "add" && $2 == "table" && $3 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $4 ~ /^[A-Za-z0-9_.-]+$/ {
+			print $3, $4
 		}
 	' "$1"
 }
@@ -69,24 +59,23 @@ firewall_request_config() {
 	[ "${#firewall_config}" -le 1048576 ]
 }
 
+firewall_is_command_script() {
+	grep -Eq '^[[:space:]]*(flush|add|delete|destroy|insert|replace|reset|include)([[:space:]]|$)' "$1"
+}
+
 firewall_validate_file() {
 	local source="$1" check detail rc family name tables
-	if grep -Eq '^[[:space:]]*(flush|add|delete|destroy|insert|replace|reset|include|define|redefine|undefine)([[:space:]]|$)' "$source"; then
-		firewall_error='Only top-level table declarations are allowed.'
-		return 1
-	fi
-	tables="$(firewall_tables "$source")" || {
-		firewall_error='A table family or name is not supported by this editor.'
-		return 1
-	}
 	check="$(mktemp /var/run/wloc/firewall-check.XXXXXX)" || return 1
 	: >"$check"
-	while read -r family name; do
-		[ -n "$family" ] || continue
-		nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$check"
-	done <<EOF
+	if ! firewall_is_command_script "$source"; then
+		tables="$(firewall_tables "$source")"
+		while read -r family name; do
+			[ -n "$family" ] || continue
+			nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$check"
+		done <<EOF
 $tables
 EOF
+	fi
 	cat "$source" >>"$check"
 	detail="$(nft --check --file "$check" 2>&1)" && rc=0 || rc=$?
 	rm -f "$check"
@@ -136,13 +125,15 @@ emit_firewall_apply() {
 	mkdir -p /var/run/wloc
 	transaction="$(mktemp /var/run/wloc/firewall-apply.XXXXXX)" || exit 1
 	: >"$transaction"
-	tables="$( { firewall_tables "$FIREWALL_RUNTIME" 2>/dev/null || true; firewall_tables "$FIREWALL" 2>/dev/null || true; } | awk '!seen[$0]++')"
-	while read -r family name; do
-		[ -n "$family" ] || continue
-		nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$transaction"
-	done <<EOF
+	if ! firewall_is_command_script "$FIREWALL"; then
+		tables="$( { firewall_tables "$FIREWALL_RUNTIME" 2>/dev/null || true; firewall_tables "$FIREWALL" 2>/dev/null || true; } | awk '!seen[$0]++')"
+		while read -r family name; do
+			[ -n "$family" ] || continue
+			nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$transaction"
+		done <<EOF
 $tables
 EOF
+	fi
 	cat "$FIREWALL" >>"$transaction"
 	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
 	rm -f "$transaction"
@@ -157,10 +148,7 @@ EOF
 	chmod 0600 "$runtime_tmp"
 	mv -f "$runtime_tmp" "$FIREWALL_RUNTIME"
 	if ! refresh_detail="$("$RULES" refresh-hosts 2>&1)"; then
-		json_init; json_add_boolean ok 0
-		json_add_string error 'Custom tables were applied, but Apple WLOC addresses could not be refreshed.'
-		json_add_string detail "$refresh_detail"; json_dump
-		return
+		logger -t wlocd "WARNING: optional nftables set maintenance failed: $refresh_detail" 2>/dev/null || true
 	fi
 	firewall_response
 }
@@ -222,14 +210,15 @@ package_version() {
 }
 
 emit_status() {
-	local configured enabled version table_dump rules_present attempts intercepted counters conflict order_conflict prerouting_priority detected_priorities daemon_running service_reason
+	local configured enabled version table_dump rules_present attempts intercepted counters conflict daemon_running service_reason
 	load_runtime_state
 	configured=0
 	uci -q show wloc | grep -q '=wifi$' && configured=1
 	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
-	table_dump="$(nft list table inet wloc 2>/dev/null)" && rules_present=1 || rules_present=0
+	[ -s "$FIREWALL_RUNTIME" ] && rules_present=1 || rules_present=0
+	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
 	counters="$(printf '%s\n' "$table_dump" | awk '
 		/wloc owned (AP|ingress) redirect/ {
 			if (match($0, /counter packets [0-9]+/)) {
@@ -245,14 +234,12 @@ emit_status() {
 	case "$intercepted" in ''|*[!0-9]*) intercepted=0;; esac
 	conflict=0
 	[ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
-	order_conflict="$(cat /var/run/wloc/order-conflict 2>/dev/null || true)"
-	case "$order_conflict" in 1|unknown) conflict=1;; esac
-	prerouting_priority="$(cat /var/run/wloc/prerouting.priority 2>/dev/null || true)"
-	case "$prerouting_priority" in -[0-9]*|[0-9]*) :;; *) prerouting_priority='';; esac
-	detected_priorities="$(cat /var/run/wloc/prerouting.details 2>/dev/null || true)"
-	service_reason="$(cat /var/run/wloc/start-error 2>/dev/null || true)"
 	daemon_running=0
 	pidof wlocd >/dev/null 2>&1 && daemon_running=1
+	service_reason=''
+	if [ "$daemon_running" -eq 0 ]; then
+		service_reason="$(cat /var/run/wloc/start-error 2>/dev/null || true)"
+	fi
 	if [ "$daemon_running" -eq 0 ] && [ "$enabled" -eq 1 ] && [ -z "$service_reason" ]; then
 		service_reason='service is not running; check the system log'
 	fi
@@ -263,10 +250,8 @@ emit_status() {
 				[ -z "$last_error" ] || service_reason="$service_reason: $last_error"
 				;;
 			esac
-	elif [ "$daemon_running" -eq 1 ] && [ "$rules_present" -eq 0 ]; then
-		service_reason='runtime interception rules are missing'
 	elif [ "$daemon_running" -eq 1 ] && [ "$conflict" -eq 1 ]; then
-		service_reason='transparent-proxy rule order conflict; see the runtime log'
+		service_reason='transparent-proxy path conflict; redirected packets are not reaching the WLOC listener'
 	fi
 	if [ -z "$ca_fingerprint" ] && [ -s "$CAINFO" ]; then
 		json_load_file "$CAINFO" 2>/dev/null && json_get_var ca_fingerprint fingerprint_sha256
@@ -297,10 +282,6 @@ emit_status() {
 	json_add_int interception_attempts "$attempts"
 	json_add_int intercepted_packets "$intercepted"
 	json_add_boolean path_conflict "$conflict"
-	json_add_boolean order_conflict "$([ "$order_conflict" = 1 ] && echo 1 || echo 0)"
-	json_add_string order_state "${order_conflict:-missing}"
-	json_add_string prerouting_priority "$prerouting_priority"
-	json_add_string detected_priorities "$detected_priorities"
 	json_add_string fingerprint "$ca_fingerprint"
 	json_add_string profile_url '/wloc-ca.mobileconfig'
 	json_add_array ap_activity
@@ -323,147 +304,43 @@ EOF
 	json_dump
 }
 
-WIRELESS_RUNTIME=/var/run/wloc/rpc-wireless-runtime.$$
-
-load_wireless_runtime() {
-	local status radio index section ifname radio_keys interface_keys hostapd_status bssid ssid
-	mkdir -p /var/run/wloc
-	: >"$WIRELESS_RUNTIME"
-	status="$(ubus -S -t 3 call network.wireless status 2>/dev/null || true)"
-	[ -n "$status" ] || return 0
-	json_load "$status" 2>/dev/null || return 0
-	radio_keys=''
-	json_get_keys radio_keys
-	for radio in $radio_keys; do
-		json_select "$radio" || continue
-		json_select interfaces || { json_select ..; continue; }
-		interface_keys=''
-		json_get_keys interface_keys
-		for index in $interface_keys; do
-			json_select "$index" || continue
-			section=''
-			ifname=''
-			json_get_var section section
-			json_get_var ifname ifname
-			case "$section:$ifname" in
-				''|*:|:*|*[!A-Za-z0-9_.:-]*) ;;
-				*)
-					hostapd_status="$(ubus -S -t 3 call "hostapd.$ifname" get_status '{}' 2>/dev/null || true)"
-					[ -n "$hostapd_status" ] || { json_select ..; continue; }
-					bssid="$(json_value "$hostapd_status" bssid || true)"
-					ssid="$(json_value "$hostapd_status" ssid || true)"
-					printf '%s|%s|%s|%s|%s\n' "$section" "$radio" "$ifname" "$bssid" "$ssid" >>"$WIRELESS_RUNTIME"
-					;;
-			esac
-			json_select ..
-		done
-		json_select ..
-		json_select ..
-	done
-}
-
-runtime_for_section() {
-	local wanted="$1" runtime_section runtime_radio runtime_ifname runtime_bssid runtime_ssid
-	runtime_radio=''
-	runtime_ifname=''
-	runtime_bssid=''
-	runtime_ssid=''
-	while IFS='|' read -r runtime_section runtime_radio runtime_ifname runtime_bssid runtime_ssid; do
-		[ "$runtime_section" = "$wanted" ] || continue
-		printf '%s|%s|%s|%s\n' "$runtime_radio" "$runtime_ifname" "$runtime_bssid" "$runtime_ssid"
-		return 0
-	done <"$WIRELESS_RUNTIME"
-}
-
 emit_configured_access_points() {
-	local section mode ssid network device mapping_error disabled runtime active radio ifname bssid runtime_ssid
-	local unique ambiguous
+	local section mode ssid disabled active ifname hostapd_status
 	. /lib/functions.sh
 	. "$AP_LIB"
-	load_wireless_runtime
-	SSID_INVENTORY=/var/run/wloc/rpc-wireless-ssids.$$
-	: >"$SSID_INVENTORY"
-	collect_configured_ssid() {
-		local candidate_mode candidate_ssid
-		candidate_mode=''
-		candidate_ssid=''
-		config_get candidate_mode "$1" mode ap
-		case "$candidate_mode" in
-			ap|ap-wds) ;;
-			*) return 0;;
-		esac
-		config_get candidate_ssid "$1" ssid ''
-		[ -n "$candidate_ssid" ] && printf '%s\n' "$candidate_ssid" >>"$SSID_INVENTORY"
-	}
-	ssid_is_ambiguous() {
-		[ "$(grep -F -x -c -- "$1" "$SSID_INVENTORY" 2>/dev/null || true)" -gt 1 ]
-	}
 
 	json_init
 	json_add_array access_points
 	append_configured_access_point() {
 		section="$1"
+		config_get ifname "$section" ifname ''
+		wloc_ap_valid_ifname "$ifname" || return 0
 		config_get mode "$section" mode ap
 		case "$mode" in
 			ap|ap-wds) ;;
 			*) return 0;;
 		esac
 		config_get ssid "$section" ssid ''
-		config_get network "$section" network ''
 		config_get_bool disabled "$section" disabled 0
-		device=''
-		mapping_error=''
-		if [ -z "$ssid" ]; then
-			mapping_error='SSID is empty'
-		elif ssid_is_ambiguous "$ssid"; then
-			mapping_error="SSID \"$ssid\" is used by multiple APs and cannot be selected by WLOC."
-		fi
-		if [ -z "$network" ]; then
-			mapping_error='network is not configured'
-		else
-			device="$(wloc_ap_get_network_device "$network" 2>/dev/null || true)"
-			[ -n "$device" ] || mapping_error='network device unavailable'
-		fi
-		interface=''
-		radio=''
-		bssid=''
-		runtime_ssid=''
-		runtime="$(runtime_for_section "$section")"
-		if [ -n "$runtime" ]; then
-			radio="${runtime%%|*}"
-			runtime="${runtime#*|}"
-			interface="${runtime%%|*}"
-			runtime="${runtime#*|}"
-			bssid="${runtime%%|*}"
-			runtime_ssid="${runtime#*|}"
+		hostapd_status="$(wloc_ap_get_hostapd_status "$ifname" 2>/dev/null || true)"
+		if [ -n "$hostapd_status" ]; then
 			active=1
 		else
 			active=0
 		fi
-		if [ -z "$ssid" ]; then unique=0; else unique=1; fi
-		if ssid_is_ambiguous "$ssid"; then unique=0; ambiguous=1; else ambiguous=0; fi
 		json_add_object
 		json_add_string section "$section"
+		json_add_string iface "$ifname"
 		json_add_string ssid "$ssid"
-		json_add_string network "$network"
-		json_add_string device "$device"
-		json_add_string mapping_error "$mapping_error"
-		json_add_boolean unique "$unique"
-		json_add_boolean ambiguous "$ambiguous"
 		json_add_boolean disabled "$disabled"
 		json_add_boolean active "$active"
 		json_add_boolean up "$active"
-		json_add_string radio "$radio"
-		json_add_string ifname "$interface"
-		json_add_string bssid "$bssid"
 		json_close_object
 	}
 	config_load wireless
-	config_foreach collect_configured_ssid wifi-iface
 	config_foreach append_configured_access_point wifi-iface
 	json_close_array
 	json_dump
-	rm -f "$WIRELESS_RUNTIME" "$SSID_INVENTORY"
 }
 
 case "$1" in
