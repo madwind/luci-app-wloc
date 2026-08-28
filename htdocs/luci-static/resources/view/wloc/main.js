@@ -13,27 +13,51 @@ var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca',
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
 var AP_DISCOVERY_ATTEMPTS = 6;
 var AP_DISCOVERY_RETRY_MS = 1500;
-var DOMAIN_PATTERN = /^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/;
 
 function truthy(value) {
 	return value === true || value === 1 || value === '1' || value === 'true';
 }
 
-function validDomainList(value) {
-	var domains = Array.isArray(value) ? value : [value];
-	return domains.length > 0 && domains.every(function(value) {
-		return DOMAIN_PATTERN.test(String(value || ''));
-	});
-}
-
-function validDomainInput(value) {
-	// DynamicList also validates its value-less container. An empty value
-	// means that no new item is being entered, not that a domain is invalid.
-	return value === '' || validDomainList(value);
-}
-
 function validIfname(value) {
 	return /^[A-Za-z0-9_.-]{1,15}$/.test(String(value || ''));
+}
+
+function interceptionState(status) {
+	status = status || {};
+	if (!truthy(status.enabled))
+		return { label: 'Disabled', tone: 'neutral', detail: 'none' };
+	if (truthy(status.path_conflict))
+		return {
+			label: 'Traffic conflict',
+			tone: 'error',
+			detail: 'Transparent-proxy traffic is not reaching the WLOC listener.'
+		};
+	if (!truthy(status.running))
+		return {
+			label: 'Error',
+			tone: 'error',
+			detail: status.service_reason || status.last_error ||
+				'The service is not running. Check the system log for the startup error.'
+		};
+	if (!truthy(status.armed))
+		return {
+			label: 'Recovering',
+			tone: 'warning',
+			detail: 'Retrying interception rules…',
+			reason: status.service_reason || status.last_error || ''
+		};
+	if (!truthy(status.firewall_active))
+		return {
+			label: 'Error',
+			tone: 'error',
+			detail: status.service_reason || 'Firewall rules are not active.'
+		};
+	return {
+		label: 'Active',
+		tone: 'success',
+		detail: 'active',
+		configured_aps: Number(status.configured_aps) || 0
+	};
 }
 
 function actionButton(label, className, handler) {
@@ -203,13 +227,16 @@ return view.extend({
 		var option = settings.option(form.Flag, 'enabled', _('Enable location interception'));
 		option.default = '0';
 		option.rmempty = false;
-		var serviceStatusOption = settings.option(form.DummyValue, '_service_status', _('Status'));
+		var serviceStatusOption = settings.option(form.DummyValue, '_service_status', _('Interception status'));
 		serviceStatusOption.rmempty = true;
 		serviceStatusOption.cfgvalue = function() { return 'status'; };
 		serviceStatusOption.renderWidget = function() {
-			return E('div', {}, [
+			return E('div', {
+				'class': 'wloc-status-row',
+				'style': 'display: flex; align-items: flex-start; gap: 1em; flex-wrap: wrap;'
+			}, [
 				statusNode,
-				actionButton.call(this, _('Restart'), 'cbi-button-action', function() {
+				actionButton.call(this, _('Restart service'), 'cbi-button', function() {
 					return callRestart().then(function() {
 						return refresh();
 					}).catch(function(error) {
@@ -223,21 +250,21 @@ return view.extend({
 		option.default = '61520';
 		option.rmempty = false;
 		option.description = _('Normally this should not be changed. If your custom nftables rules redirect traffic to WLOC, use the same port. WLOC does not inspect or enforce redirect rules; a mismatched rule simply will not send traffic to the listener.');
-		var domainOption = settings.option(form.DynamicList, 'domain', _('Intercepted domains'));
-		domainOption.rmempty = false;
-		// LuCI validates the DynamicList container as well as each input item;
-		// the container has no value and must therefore be optional.
-		domainOption.optional = true;
-		domainOption.placeholder = 'gs-loc.apple.com';
-		domainOption.description = _('DNS names whose IPv4 addresses are redirected to WLOC and whose HTTPS requests can be intercepted. Add a test domain here when needed.');
-		domainOption.validate = function(sectionId, value) {
-			return validDomainInput(value)
-				? true : _('Enter a valid domain name.');
+		var domainsOption = settings.option(form.DummyValue, '_intercepted_domains', _('Intercepted domains'));
+		domainsOption.rmempty = true;
+		domainsOption.cfgvalue = function() { return 'gs-loc.apple.com\ngs-loc-cn.apple.com'; };
+		domainsOption.renderWidget = function() {
+			return E('div', { 'class': 'wloc-fixed-domains' }, [
+				E('code', {}, 'gs-loc.apple.com'),
+				E('br'),
+				E('code', {}, 'gs-loc-cn.apple.com')
+			]);
 		};
+		domainsOption.description = _('Apple WLOC endpoints intercepted by this service.');
 		option = settings.option(form.Flag, 'debug', _('Debug: fixed JSON response'));
 		option.default = '0';
 		option.rmempty = false;
-		option.description = _('When enabled, every request to an intercepted domain returns {"wloc":"ok"} without contacting the upstream server.');
+		option.description = _('When enabled, requests to the fixed Apple WLOC endpoints return {"wloc":"ok"} without contacting the upstream server.');
 		option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
 		option.default = '0';
 		option.rmempty = false;
@@ -498,7 +525,10 @@ return view.extend({
 			return node;
 		};
 
-		var statusNode = E('div', { 'class': 'cbi-section-descr' });
+		var statusNode = E('div', {
+			'class': 'cbi-section-descr wloc-status-copy',
+			'style': 'display: flex; flex: 1 1 auto; flex-direction: column; gap: 0.25em; margin: 0;'
+		});
 		var fingerprintNode = E('div', { 'class': 'cbi-section-descr' });
 		var logNode = E('textarea', {
 			'class': 'cbi-input-text',
@@ -536,27 +566,19 @@ return view.extend({
 			return translated !== key ? translated + rest : reason;
 		}
 
-		function serviceReason(status, running, healthy) {
-			if (status.service_reason)
-				return translateReason(status.service_reason);
-			if (!running && truthy(status.enabled))
-				return _('The service is not running. Check the system log for the startup error.');
-			if (running && !healthy)
-				return translateReason(status.last_error) || _('Interception is unavailable. Check the runtime log.');
-			return '';
-		}
-
 		function renderStatus(status) {
-			var armed = truthy(status.armed);
-			var conflict = truthy(status.path_conflict);
-			var running = truthy(status.running);
-			var healthy = running && armed && truthy(status.rules_present) && !conflict;
-			var state = running ? (healthy ? _('Running') : _('Running, interception unavailable'))
-				: (truthy(status.enabled) ? _('Stopped') : _('Disabled'));
-			var reason = serviceReason(status, running, healthy);
-			statusNode.replaceChildren(E('span', { 'class': healthy ? 'success' : 'warning' }, state));
-			if (reason)
-				statusNode.appendChild(E('div', { 'class': 'alert-message warning' }, _('Reason: %s').format(reason)));
+			var state = interceptionState(status);
+			var label = state.label === 'Disabled'
+				? _('Disabled') : '● ' + _(state.label);
+			var detail = state.detail === 'active'
+				? _('%d APs · listener ready · interception armed').format(state.configured_aps)
+				: _(state.detail);
+			var badge = E('span', { 'class': 'wloc-status-badge ' + state.tone }, label);
+			statusNode.replaceChildren(badge);
+			if (detail && state.detail !== 'none')
+				statusNode.appendChild(E('div', { 'class': 'wloc-status-detail ' + state.tone }, detail));
+			if (state.reason)
+				statusNode.appendChild(E('div', { 'class': 'wloc-status-reason' }, translateReason(state.reason)));
 			fingerprintNode.replaceChildren(
 				E('strong', {}, _('Root CA SHA-256: ')),
 				E('span', {}, status.fingerprint || _('Generated on first start'))

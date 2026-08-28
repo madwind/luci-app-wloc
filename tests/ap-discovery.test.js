@@ -8,8 +8,7 @@ const sourcePath = path.join(__dirname, '..', 'htdocs',
     'luci-static', 'resources', 'view', 'wloc', 'main.js');
 const source = fs.readFileSync(sourcePath, 'utf8').replace(
     'return view.extend({',
-    'testExports.validDomainList = validDomainList;\n' +
-    'testExports.validDomainInput = validDomainInput;\n' +
+    'testExports.interceptionState = interceptionState;\n' +
     'testExports.callWirelessAccessPoints = callWirelessAccessPoints;\n' +
     'testExports.constants = { attempts: AP_DISCOVERY_ATTEMPTS, retryMs: AP_DISCOVERY_RETRY_MS };\n' +
     'return view.extend({'
@@ -112,18 +111,33 @@ assert.ok(source.indexOf("form.DummyValue, '_wifi_state', _('AP status')") <
     source.indexOf("form.DummyValue, '_ssid', _('SSID')"));
 assert.ok(source.includes('ifaceOption.modalonly = null;'));
 assert.ok(!source.includes('wifiSections.sectiontitle'));
-const domainHarness = loadDiscovery({});
-assert.strictEqual(domainHarness.api.validDomainList('baidu.com'), true);
-assert.strictEqual(domainHarness.api.validDomainInput(''), true);
-assert.strictEqual(domainHarness.api.validDomainInput('baidu.com'), true);
-assert.strictEqual(domainHarness.api.validDomainInput('baidu..com'), false);
-assert.strictEqual(domainHarness.api.validDomainList([
-    'gs-loc.apple.com', 'gs-loc-cn.apple.com', 'baidu.com'
-]), true);
-assert.strictEqual(domainHarness.api.validDomainList(['baidu.com', 'baidu..com']), false);
-assert.strictEqual(domainHarness.api.validDomainList([]), false);
+assert.ok(source.includes("form.DummyValue, '_intercepted_domains', _('Intercepted domains')"));
+assert.ok(source.includes('gs-loc.apple.com'));
+assert.ok(source.includes('gs-loc-cn.apple.com'));
+assert.ok(source.includes("Apple WLOC endpoints intercepted by this service."));
+assert.ok(!source.includes('form.DynamicList'));
+assert.ok(!source.includes('DOMAIN_PATTERN'));
+assert.ok(!source.includes('validDomainList'));
+assert.ok(!source.includes('validDomainInput'));
+assert.ok(!source.includes('Add a test domain here when needed.'));
+assert.ok(source.includes("form.DummyValue, '_service_status', _('Interception status')"));
+assert.ok(source.includes("Restart service"));
+assert.ok(source.includes('display: flex'));
+const statusHarness = loadDiscovery({});
+assert.strictEqual(statusHarness.api.interceptionState({ enabled: 0 }).label, 'Disabled');
+assert.strictEqual(statusHarness.api.interceptionState({
+    enabled: 1, running: 1, armed: 1, firewall_active: 1, configured_aps: 2
+}).label, 'Active');
+assert.strictEqual(statusHarness.api.interceptionState({
+    enabled: 1, running: 1, armed: 0
+}).label, 'Recovering');
+assert.strictEqual(statusHarness.api.interceptionState({
+    enabled: 1, running: 0
+}).label, 'Error');
+assert.strictEqual(statusHarness.api.interceptionState({
+    enabled: 1, running: 1, armed: 1, firewall_active: 1, path_conflict: 1
+}).label, 'Traffic conflict');
 assert.ok(!source.includes("'gid'"));
-assert.ok(source.includes('domainOption.optional = true;'));
 assert.ok(source.includes('return callRestart().then(function()'));
 assert.ok(!source.includes("_('Service restarted.')"));
 assert.ok(!source.includes('WLOC prerouting priority:'));

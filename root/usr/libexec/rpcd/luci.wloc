@@ -179,7 +179,7 @@ emit_status() {
 	if [ "$daemon_running" -eq 1 ] && [ "$armed" -eq 0 ]; then
 		case "$last_event" in
 			lease_failed)
-				service_reason='runtime rule refresh failed; interception is disabled'
+				service_reason='Runtime rule refresh failed'
 				[ -z "$last_error" ] || service_reason="$service_reason: $last_error"
 				;;
 			esac
