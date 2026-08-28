@@ -7,6 +7,7 @@ HTDOCS="$ROOT/htdocs"
 
 RULES="$ROOTFS/usr/libexec/wloc/rules.sh"
 RPC="$ROOTFS/usr/libexec/rpcd/luci.wloc"
+FIREWALL_HELPER="$ROOTFS/usr/libexec/wloc/firewall.sh"
 SCHEDULE="$ROOTFS/usr/libexec/wloc/wifi-schedule.sh"
 INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
@@ -29,6 +30,7 @@ done
 [ -d "$ROOTFS" ] || fail "root directory not found"
 [ -d "$HTDOCS" ] || fail "htdocs directory not found"
 [ -f "$RULES" ] || fail "rules.sh not found"
+[ -f "$FIREWALL_HELPER" ] || fail "firewall.sh not found"
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
 [ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
 
@@ -75,6 +77,16 @@ node "$AP_TEST"
 
 
 echo '==> Service startup behavior'
+
+grep -Fq 'FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh' "$INIT" \
+	|| fail 'init script does not configure the shared firewall helper'
+grep -Fq '"$FIREWALL_HELPER" apply "$FIREWALL"' "$INIT" \
+	|| fail 'service start does not invoke the shared firewall helper'
+if grep -Fq 'ubus -S call luci.wloc firewall_apply' "$INIT"; then
+	fail 'service start still depends on the luci.wloc RPC'
+fi
+grep -Fq 'WLOC_FIREWALL_HELPER_SOURCE=1' "$RPC" \
+	|| fail 'rpcd does not source the shared firewall helper'
 
 grep -Fq 'if ! "$RULES" apply "$listen_port" $domains; then' "$INIT" \
 	|| fail 'nftables health check still blocks service startup'

@@ -5,6 +5,8 @@ START=95
 STOP=10
 
 RULES=/usr/libexec/wloc/rules.sh
+FIREWALL=/etc/wloc/firewall.nft
+FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
 AP_LIB=/usr/libexec/wloc/ap-lib.sh
 START_ERROR=/var/run/wloc/start-error
@@ -110,9 +112,10 @@ start_service() {
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
 		/var/run/wloc/package.version "$START_ERROR"
 	# Apply the user-managed nftables configuration before the daemon starts.
-	# The daemon also retries this operation after its listener is ready, so a
-	# stale or temporarily unavailable optional set must not prevent startup.
-	ubus -S call luci.wloc firewall_apply '{}' >/dev/null 2>&1 || true
+	# This direct helper keeps service startup independent of rpcd availability.
+	if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$FIREWALL" 2>&1)"; then
+		startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}"
+	fi
 	config_load wloc
 
 	# Keep WiFi/AP schedules independent from the WLOC interception daemon.

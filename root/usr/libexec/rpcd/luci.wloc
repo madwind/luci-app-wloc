@@ -4,6 +4,7 @@
 
 INIT=/etc/init.d/wloc
 RULES=/usr/libexec/wloc/rules.sh
+FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
 STATE=/var/run/wloc/status.json
 RUNTIME_LOG=/var/run/wloc/runtime.log
 CAINFO=/etc/wloc/ca.info.json
@@ -12,42 +13,19 @@ FIREWALL=/etc/wloc/firewall.nft
 FIREWALL_RUNTIME=/var/run/wloc/firewall.applied.nft
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 
-firewall_tables() {
-	awk '
-		$1 == "table" && $2 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $3 ~ /^[A-Za-z0-9_.-]+$/ {
-			print $2, $3
-		}
-		$1 == "add" && $2 == "table" && $3 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $4 ~ /^[A-Za-z0-9_.-]+$/ {
-			print $3, $4
-		}
-	' "$1"
-}
+WLOC_FIREWALL_HELPER_SOURCE=1
+. "$FIREWALL_HELPER"
 
 firewall_response() {
-	local active family name table_count active_count table_dump
-	active=''
-	table_count=0
-	active_count=0
-	while read -r family name; do
-		[ -n "$family" ] || continue
-		table_count=$((table_count + 1))
-		if table_dump="$(nft list table "$family" "$name" 2>/dev/null)"; then
-			active_count=$((active_count + 1))
-			active="${active}${active:+
-
-}${table_dump}"
-		fi
-	done <<EOF
-$(firewall_tables "$FIREWALL" 2>/dev/null || true)
-EOF
+	firewall_collect_active "$FIREWALL"
 	json_init
 	json_add_boolean ok 1
 	json_add_string path "$FIREWALL"
 	json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
-	json_add_string active "${active:-# No custom nftables tables are active.}"
-	[ "$table_count" -eq "$active_count" ] && json_add_boolean active_found 1 || json_add_boolean active_found 0
-	json_add_int table_count "$table_count"
-	json_add_int active_table_count "$active_count"
+	json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
+	json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
+	json_add_int table_count "$FIREWALL_TABLE_COUNT"
+	json_add_int active_table_count "$FIREWALL_ACTIVE_TABLE_COUNT"
 	json_dump
 }
 
@@ -57,32 +35,6 @@ firewall_request_config() {
 	json_load "$request" 2>/dev/null || return 1
 	json_get_var firewall_config config
 	[ "${#firewall_config}" -le 1048576 ]
-}
-
-firewall_is_command_script() {
-	grep -Eq '^[[:space:]]*(flush|add|delete|destroy|insert|replace|reset|include)([[:space:]]|$)' "$1"
-}
-
-firewall_validate_file() {
-	local source="$1" check detail rc family name tables
-	check="$(mktemp /var/run/wloc/firewall-check.XXXXXX)" || return 1
-	: >"$check"
-	if ! firewall_is_command_script "$source"; then
-		tables="$(firewall_tables "$source")"
-		while read -r family name; do
-			[ -n "$family" ] || continue
-			nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$check"
-		done <<EOF
-$tables
-EOF
-	fi
-	cat "$source" >>"$check"
-	detail="$(nft --check --file "$check" 2>&1)" && rc=0 || rc=$?
-	rm -f "$check"
-	[ "$rc" -eq 0 ] || {
-		firewall_error="${detail:-nftables syntax check failed}"
-		return 1
-	}
 }
 
 emit_firewall_validate() {
@@ -121,34 +73,11 @@ emit_firewall_save() {
 }
 
 emit_firewall_apply() {
-	local transaction detail rc family name tables refresh_detail runtime_tmp
-	mkdir -p /var/run/wloc
-	transaction="$(mktemp /var/run/wloc/firewall-apply.XXXXXX)" || exit 1
-	: >"$transaction"
-	if ! firewall_is_command_script "$FIREWALL"; then
-		tables="$( { firewall_tables "$FIREWALL_RUNTIME" 2>/dev/null || true; firewall_tables "$FIREWALL" 2>/dev/null || true; } | awk '!seen[$0]++')"
-		while read -r family name; do
-			[ -n "$family" ] || continue
-			nft list table "$family" "$name" >/dev/null 2>&1 && printf 'delete table %s %s\n' "$family" "$name" >>"$transaction"
-		done <<EOF
-$tables
-EOF
-	fi
-	cat "$FIREWALL" >>"$transaction"
-	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
-	rm -f "$transaction"
-	if [ "$rc" -ne 0 ]; then
+	if ! firewall_apply_file "$FIREWALL"; then
 		json_init; json_add_boolean ok 0
 		json_add_string error 'Failed to apply nftables rules.'
-		json_add_string detail "$detail"; json_dump
+		json_add_string detail "$firewall_error"; json_dump
 		return
-	fi
-	runtime_tmp="$(mktemp /var/run/wloc/firewall-applied.XXXXXX)" || exit 1
-	cp "$FIREWALL" "$runtime_tmp"
-	chmod 0600 "$runtime_tmp"
-	mv -f "$runtime_tmp" "$FIREWALL_RUNTIME"
-	if ! refresh_detail="$("$RULES" refresh-hosts 2>&1)"; then
-		logger -t wlocd "WARNING: optional nftables set maintenance failed: $refresh_detail" 2>/dev/null || true
 	fi
 	firewall_response
 }
