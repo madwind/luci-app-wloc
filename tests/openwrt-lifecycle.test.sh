@@ -11,7 +11,7 @@ if [ -z "${WLOC_OPENWRT_IMAGE:-}" ] || [ -z "${WLOC_OPENWRT_APK:-}" ] || [ -z "$
 	exit 0
 fi
 
-for command in basename grep qemu-system-x86_64 scp ssh; do
+for command in basename grep qemu-system-x86_64 scp ssh seq sleep; do
 	command -v "$command" >/dev/null 2>&1 \
 		|| fail "required command not found: $command"
 done
@@ -23,6 +23,7 @@ SSH_PORT=${WLOC_OPENWRT_SSH_PORT:-22022}
 MEMORY=${WLOC_OPENWRT_MEMORY:-256M}
 SSH_TARGET="root@127.0.0.1"
 SSH_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -p $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SCP_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 CONSOLE_LOG="$(mktemp)"
 QEMU_PID=''
 
@@ -39,6 +40,53 @@ ssh_cmd() {
 	ssh $SSH_OPTIONS "$SSH_TARGET" "$@"
 }
 
+service_value() {
+	local path="$1"
+	ssh_cmd "ubus call service list '{\"name\":\"wloc\"}' | jsonfilter -e '$path'"
+}
+
+instance_running() {
+	local instance="$1" value
+	value="$(service_value "@.wloc.instances.${instance}.running" 2>/dev/null || true)"
+	case "$value" in
+		true|1|yes) return 0;;
+		*) return 1;;
+	esac
+}
+
+daemon_pid() {
+	service_value '@.wloc.instances.daemon.pid'
+}
+
+rpc_value() {
+	local command="$1" path="$2"
+	ssh_cmd "$command | jsonfilter -e '$path'"
+}
+
+wait_for_ssh() {
+	local attempt
+	for attempt in $(seq 1 60); do
+		if ssh_cmd true >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	return 1
+}
+
+reboot_guest() {
+	ssh_cmd reboot >/dev/null 2>&1 || true
+	sleep 5
+	wait_for_ssh || fail 'OpenWrt SSH did not return after reboot'
+	for attempt in $(seq 1 30); do
+		if instance_running daemon && instance_running schedule; then
+			return 0
+		fi
+		sleep 1
+	done
+	fail 'WLOC procd instances did not start after reboot'
+}
+
 apk_name="$(basename "$WLOC_OPENWRT_APK")"
 qemu-system-x86_64 \
 	-machine q35 \
@@ -46,43 +94,78 @@ qemu-system-x86_64 \
 	-nographic \
 	-snapshot \
 	-drive "file=$WLOC_OPENWRT_IMAGE,format=raw,if=virtio" \
-	-netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
+	-netdev "user,id=net0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22" \
 	-device virtio-net-pci,netdev=net0 \
 	>"$CONSOLE_LOG" 2>&1 &
 QEMU_PID=$!
 
 echo '  -> wait for OpenWrt SSH'
-ready=0
-for attempt in $(seq 1 60); do
-	if ssh_cmd true >/dev/null 2>&1; then
-		ready=1
-		break
-	fi
-	sleep 2
-done
-[ "$ready" -eq 1 ] || fail 'OpenWrt SSH did not become ready'
+wait_for_ssh || fail 'OpenWrt SSH did not become ready'
+ssh_cmd "command -v ubus >/dev/null && command -v jsonfilter >/dev/null" \
+	|| fail 'OpenWrt does not provide ubus and jsonfilter'
 
 echo '  -> install package and create a deterministic test rule'
-scp $SSH_OPTIONS "$WLOC_OPENWRT_APK" "$SSH_TARGET:/tmp/$apk_name" >/dev/null \
+scp $SCP_OPTIONS "$WLOC_OPENWRT_APK" "$SSH_TARGET:/tmp/$apk_name" >/dev/null \
 	|| fail 'unable to copy the WLOC APK to OpenWrt'
 ssh_cmd "apk add --allow-untrusted /tmp/$apk_name" >/dev/null \
 	|| fail 'apk could not install luci-app-wloc'
+ssh_cmd "command -v rpcd >/dev/null && [ -x /etc/init.d/wloc ]" \
+	|| fail 'package install did not provide rpcd or the wloc init script'
 ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci commit wireless; uci commit wloc" \
 	|| fail 'could not create the deterministic WLOC test rule'
 ssh_cmd /etc/init.d/wloc enable >/dev/null \
 	|| fail 'wloc could not be enabled'
+ssh_cmd /etc/init.d/wloc enabled \
+	|| fail 'wloc did not report enabled after enable'
 ssh_cmd /etc/init.d/wloc start >/dev/null \
 	|| fail 'wloc could not be started'
 
-service_json="$(ssh_cmd "ubus call service list '{\"name\":\"wloc\"}'")" \
-	|| fail 'ubus service list did not return'
-printf '%s\n' "$service_json" \
-	| grep -Eq '"daemon"[[:space:]]*:[[:space:]]*\{[^}]*"running"[[:space:]]*:[[:space:]]*true' \
+instance_running daemon \
 	|| fail 'procd daemon instance is not running'
+instance_running schedule \
+	|| fail 'procd schedule instance is not running'
 ssh_cmd ubus call luci.wloc status >/dev/null \
 	|| fail 'luci.wloc status RPC failed'
 
-daemon_pid="$(ssh_cmd "jsonfilter -e '@.wloc.instances.daemon.pid'" 2>/dev/null || true)"
+echo '  -> Apply and reboot without Save restores persistent rules'
+persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
+FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; } }'
+APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
+case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
+	true|1) ;;
+	*) fail 'firewall Apply did not return ok=true';;
+esac
+ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+	|| fail 'applied firewall candidate is not active'
+[ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
+	|| fail 'Apply changed the persistent firewall file'
+reboot_guest
+[ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
+	|| fail 'reboot without Save did not restore the persistent firewall file'
+if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
+	fail 'unsaved firewall candidate survived reboot'
+fi
+
+echo '  -> Apply and Save persists the candidate across reboot'
+case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
+	true|1) ;;
+	*) fail 'second firewall Apply did not return ok=true';;
+esac
+SAVE_COMMAND='ubus call luci.wloc firewall_save'
+case "$(rpc_value "$SAVE_COMMAND" '@.ok')" in
+	true|1) ;;
+	*) fail 'firewall Save did not return ok=true';;
+esac
+persistent_b="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
+[ "$persistent_b" != "$persistent_a" ] \
+	|| fail 'Save did not replace the persistent firewall file'
+reboot_guest
+[ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_b" ] \
+	|| fail 'saved firewall candidate did not survive reboot'
+ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+	|| fail 'saved firewall table was not restored after reboot'
+
+daemon_pid="$(daemon_pid 2>/dev/null || true)"
 case "$daemon_pid" in
 	*[!0-9]*|'') fail 'could not find the procd-managed wlocd PID';;
 esac
@@ -92,27 +175,42 @@ ssh_cmd "kill -9 $daemon_pid" >/dev/null \
 	|| fail 'could not terminate the procd-managed daemon'
 recovered=0
 for attempt in $(seq 1 30); do
-	new_pid="$(ssh_cmd "jsonfilter -e '@.wloc.instances.daemon.pid'" 2>/dev/null || true)"
-	if [ "$new_pid" != "$daemon_pid" ] && printf '%s' "$new_pid" | grep -Eq '^[0-9]+$'; then
+	new_pid="$(daemon_pid 2>/dev/null || true)"
+	if instance_running daemon && [ "$new_pid" != "$daemon_pid" ] && printf '%s' "$new_pid" | grep -Eq '^[0-9]+$'; then
 		recovered=1
 		break
 	fi
 	sleep 1
 done
 [ "$recovered" -eq 1 ] || fail 'procd did not respawn wlocd'
-ssh_cmd logread -e wlocd | grep -q 'wlocd:' \
+ssh_cmd "logread -e wlocd" | grep -q 'wlocd:' \
 	|| fail 'wlocd stderr was not visible in logread'
 
-echo '  -> service reload and stop'
+echo '  -> service reload'
+reload_pid="$new_pid"
 ssh_cmd "uci set wloc.main.debug=1; uci commit wloc; ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"wloc\"}}'" \
 	|| fail 'service config reload failed'
+reloaded=0
+for attempt in $(seq 1 30); do
+	new_reload_pid="$(daemon_pid 2>/dev/null || true)"
+	if instance_running daemon && [ "$new_reload_pid" != "$reload_pid" ]; then
+		reloaded=1
+		break
+	fi
+	sleep 1
+done
+[ "$reloaded" -eq 1 ] || fail 'wloc daemon did not reload after config change'
+ssh_cmd ubus call luci.wloc status >/dev/null \
+	|| fail 'status RPC failed after service reload'
+
+echo '  -> service stop removes all managed instances and dynamic state'
 ssh_cmd /etc/init.d/wloc stop >/dev/null \
 	|| fail 'wloc could not be stopped'
-service_json="$(ssh_cmd "ubus call service list '{\"name\":\"wloc\"}'")" \
-	|| fail 'ubus service list failed after stop'
-if printf '%s\n' "$service_json" \
-	| grep -Eq '"(daemon|schedule)"[[:space:]]*:[[:space:]]*\{[^}]*"running"[[:space:]]*:[[:space:]]*true'; then
+if instance_running daemon || instance_running schedule; then
 	fail 'a WLOC procd instance remained running after stop'
+fi
+if ssh_cmd "nft list set inet wloc_lifecycle apple_wloc_v4 2>/dev/null | grep -Eq 'elements[[:space:]]*=[[:space:]]*\\{[^}0-9]*[0-9]'"; then
+	fail 'WLOC dynamic host-set elements remained after stop'
 fi
 
 echo 'OpenWrt lifecycle tests: PASS'

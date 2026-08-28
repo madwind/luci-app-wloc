@@ -163,6 +163,10 @@ is necessarily best-effort.
 For a real-system lifecycle check, provide an OpenWrt x86_64 QEMU image with
 root SSH key access and run the optional test:
 
+The release workflow runs the same check in a dedicated **OpenWrt x86_64
+lifecycle** job after the x86_64 APK build. It verifies package hooks,
+procd instance recovery, firewall Apply/Save reboot behavior, and stop cleanup.
+
 ```sh
 WLOC_OPENWRT_IMAGE=/path/to/openwrt.img \
 WLOC_OPENWRT_APK=/path/to/luci-app-wloc-x86_64.apk \

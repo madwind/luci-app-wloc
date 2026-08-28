@@ -16,6 +16,7 @@ LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
 FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
+QEMU_TEST="$ROOT/tests/openwrt-lifecycle.test.sh"
 
 fail() {
 	echo "host tests: FAIL: $*" >&2
@@ -41,6 +42,7 @@ done
 [ -f "$FIREWALL_REMOVE_TEST" ] || fail "WLOC firewall removal test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
+[ -f "$QEMU_TEST" ] || fail "OpenWrt lifecycle test not found"
 
 
 echo '==> Shell syntax'
@@ -94,6 +96,22 @@ grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
 if grep -Eq '/etc/init.d/wloc (enable|start|disable|stop)' "$ROOT/Makefile"; then
 	fail 'package hooks still duplicate standard service lifecycle actions'
 fi
+grep -Fq 'SCP_OPTIONS=' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not separate scp options'
+grep -Fq -- '-P $SSH_PORT' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not use scp -P for the SSH port'
+if grep -Fq 'scp $SSH_OPTIONS' "$QEMU_TEST"; then
+	fail 'QEMU lifecycle test still passes SSH options to scp'
+fi
+grep -Fq 'ubus call service list' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not query procd through ubus'
+grep -Fq "jsonfilter -e '@.wloc.instances.daemon.pid'" "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not read the daemon PID with jsonfilter'
+if grep -Fq '"daemon"' "$QEMU_TEST" || grep -Fq '"schedule"' "$QEMU_TEST"; then
+	fail 'QEMU lifecycle test still parses procd JSON with grep'
+fi
+grep -Fq 'OpenWrt x86_64 lifecycle' "$ROOT/.github/workflows/openwrt-build.yml" \
+	|| fail 'release workflow does not include the OpenWrt lifecycle job'
 grep -Fq 'group: checks-${{ github.workflow }}-${{ github.ref }}' "$ROOT/.github/workflows/ci.yml" \
 	|| fail 'standalone and reusable checks do not have isolated concurrency keys'
 
