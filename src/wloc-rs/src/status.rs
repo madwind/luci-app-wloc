@@ -397,6 +397,18 @@ mod tests {
         panic!("status snapshot did not reach event {event}");
     }
 
+    fn read_log_until(path: &PathBuf, marker: &str) -> String {
+        for _ in 0..200 {
+            if let Ok(log) = std::fs::read_to_string(path) {
+                if log.contains(marker) {
+                    return log;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("runtime log did not reach marker {marker}");
+    }
+
     #[test]
     fn a_new_session_replaces_old_runtime_logs() {
         let path = std::env::temp_dir().join(format!(
@@ -498,5 +510,104 @@ mod tests {
         assert_eq!(recovered["ap_activity"][0]["success"], true);
         assert_eq!(recovered["ap_activity"][0]["last_error"], "");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn runtime_log_stays_within_line_and_byte_limits() {
+        let path = std::env::temp_dir().join(format!(
+            "luci-app-wloc-status-bounded-{}-{}.json",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let log_path = path.with_extension("log");
+        let status = Status::new(
+            path.clone(),
+            log_path.clone(),
+            1,
+            true,
+            "fingerprint".into(),
+        )
+        .unwrap();
+
+        for index in 0..(MAX_LOG_LINES + 32) {
+            status.update_detail("bounded_lines", &format!("index={index}"), None, |_| {});
+        }
+        let last_line = format!("index={}", MAX_LOG_LINES + 31);
+        let log = read_log_until(&log_path, &last_line);
+        assert!(log.lines().count() <= MAX_LOG_LINES);
+        assert!(log.lines().any(|line| line.contains(&last_line)));
+
+        for index in 0..MAX_LOG_LINES {
+            let detail = format!("byte_marker={index} {}", "x".repeat(MAX_LOG_LINE_CHARS));
+            status.update_detail("bounded_bytes", &detail, None, |_| {});
+        }
+        let last_bytes = format!("byte_marker={}", MAX_LOG_LINES - 1);
+        let log = read_log_until(&log_path, &last_bytes);
+        assert!(log.lines().count() <= MAX_LOG_LINES);
+        assert!(log.len() <= MAX_LOG_BYTES);
+        assert!(log.contains(&last_bytes));
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(log_path);
+    }
+
+    #[test]
+    fn runtime_log_revision_advances_for_each_runtime_event() {
+        let path = std::env::temp_dir().join(format!(
+            "luci-app-wloc-status-revision-{}-{}.json",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let log_path = path.with_extension("log");
+        let status = Status::new(
+            path.clone(),
+            log_path.clone(),
+            1,
+            true,
+            "fingerprint".into(),
+        )
+        .unwrap();
+
+        status.update_detail("revision_one", "", None, |_| {});
+        let first = read_snapshot(&path, "revision_one");
+        assert_eq!(first["runtime_log_revision"], 2);
+
+        status.update_detail("revision_two", "", None, |_| {});
+        let second = read_snapshot(&path, "revision_two");
+        assert_eq!(second["runtime_log_revision"], 3);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(log_path);
+    }
+
+    #[test]
+    fn rapid_status_updates_keep_snapshots_valid() {
+        let path = std::env::temp_dir().join(format!(
+            "luci-app-wloc-status-atomic-{}-{}.json",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let log_path = path.with_extension("log");
+        let status = Status::new(
+            path.clone(),
+            log_path.clone(),
+            1,
+            true,
+            "fingerprint".into(),
+        )
+        .unwrap();
+
+        for index in 0..128 {
+            status.update_detail("atomic_update", &format!("index={index}"), None, |_| {});
+            if let Ok(data) = std::fs::read(&path) {
+                serde_json::from_slice::<serde_json::Value>(&data)
+                    .expect("status snapshot must always be valid JSON");
+            }
+        }
+        let snapshot = read_snapshot(&path, "atomic_update");
+        assert!(snapshot["runtime_log_revision"].as_u64().unwrap() >= 129);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(log_path);
     }
 }
