@@ -120,6 +120,12 @@ Because a sysupgrade backup therefore contains the private CA key, store backup
 archives securely. The downloadable mobileconfig uses stable identifiers and is
 rewritten only when its CA changes.
 
+Upgrades and reinstalls, as well as the package's ordinary uninstall hook, do
+not delete the user-generated CA state under `/etc/wloc`. If you intentionally
+want to reset trust, stop WLOC and remove `ca.key`, `ca.der`, `ca.pem`,
+`ca.info.json`, and `/www/wloc-ca.mobileconfig` explicitly before generating a
+new CA.
+
 The default local listener is TCP port `61520` and can be changed in LuCI under
 Service settings. WLOC runs with the service's existing user and group
 identity; it does not change the daemon GID. The daemon starts independently of

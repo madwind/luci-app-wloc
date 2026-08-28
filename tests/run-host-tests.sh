@@ -100,6 +100,10 @@ grep -Fq 'firewall_active' "$RPC" \
 
 grep -Fq 'listener_ready' "$INIT" \
 	|| fail 'service start does not defer dynamic-set population until listener readiness'
+grep -Fq 'firewall.applied.nft' "$INIT" \
+	|| fail 'service start does not clear the volatile applied firewall snapshot'
+grep -Fq 'firewall.candidate.nft' "$INIT" \
+	|| fail 'service start does not clear the volatile candidate firewall snapshot'
 grep -Fq 'procd_open_instance daemon' "$INIT" \
 	|| fail 'daemon procd instance is not explicitly named'
 grep -Fq 'procd_open_instance schedule' "$INIT" \

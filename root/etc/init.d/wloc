@@ -7,6 +7,8 @@ STOP=10
 RULES=/usr/libexec/wloc/rules.sh
 FIREWALL=/etc/wloc/firewall.nft
 FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
+FIREWALL_RUNTIME=/var/run/wloc/firewall.applied.nft
+FIREWALL_CANDIDATE=/var/run/wloc/firewall.candidate.nft
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
 AP_LIB=/usr/libexec/wloc/ap-lib.sh
 START_ERROR=/var/run/wloc/start-error
@@ -89,7 +91,8 @@ startup_warning() {
 start_service() {
 	mkdir -p /var/run/wloc
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
-		/var/run/wloc/package.version "$START_ERROR"
+		/var/run/wloc/package.version "$START_ERROR" \
+		"$FIREWALL_RUNTIME" "$FIREWALL_CANDIDATE"
 	# Apply the user-managed nftables configuration before the daemon starts.
 	# This direct helper keeps service startup independent of rpcd availability.
 	if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$FIREWALL" 2>&1)"; then

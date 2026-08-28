@@ -137,7 +137,8 @@ return view.extend({
 		function updateStates() {
 			var editorHash = contentHash(editor.value);
 			var matchesApplied = loaded && appliedPresent && editorHash === appliedHash;
-			var matchesSaved = matchesApplied && persistentPresent && editorHash === savedHash;
+			var appliedMatchesSaved = loaded && appliedPresent && persistentPresent && appliedHash === savedHash;
+			var matchesSaved = matchesApplied && appliedMatchesSaved;
 			if (!loaded) {
 				dirty.textContent = _('Not loaded');
 				runtimeState.textContent = _('Loading');
@@ -147,7 +148,7 @@ return view.extend({
 					? (matchesSaved ? _('Matches saved rules') : _('Matches applied rules; not saved'))
 					: _('Modified; apply before saving');
 				runtimeState.textContent = appliedPresent ? _('Applied') : _('Not applied');
-				persistentState.textContent = matchesSaved ? _('Saved') : _('Not saved');
+				persistentState.textContent = appliedMatchesSaved ? _('Saved') : _('Not saved');
 			}
 			saveButton.wlocStateDisabled = !matchesApplied || matchesSaved;
 			if (!saveButton.wlocBusy)
@@ -273,6 +274,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', { 'class': 'cbi-section-title' }, _('Firewall file')),
 				statusTable,
+				E('div', { 'class': 'alert-message warning' }, _('This is a full nftables editor. An invalid or logically unsafe ruleset can interrupt network access, LuCI, or SSH. Apply is temporary; rebooting without Save restores the last saved rules.')),
 				E('div', { 'class': 'cbi-section-descr' }, _('WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged.')),
 				E('label', { 'class': 'cbi-section-descr', 'for': 'wloc-firewall-editor' }, _('nftables ruleset')),
 				editor,
