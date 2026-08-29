@@ -110,6 +110,8 @@ grep -Fq 'SCP_OPTIONS=' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not separate scp options'
 grep -Fq 'SCP_OPTIONS="-O ' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not force legacy scp protocol'
+grep -Fq 'touch /etc/config/wireless' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not create the wireless UCI fixture'
 grep -Fq -- '-P $SSH_PORT' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not use scp -P for the SSH port'
 if grep -Fq 'scp $SSH_OPTIONS' "$QEMU_TEST"; then

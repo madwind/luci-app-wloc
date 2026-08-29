@@ -131,7 +131,7 @@ if instance_running daemon; then
     fail 'WLOC daemon started while main.enabled was still 0'
 fi
 
-ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
+ssh_cmd "touch /etc/config/wireless; uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
     || fail 'could not create the deterministic WLOC test rule'
 ssh_cmd /etc/init.d/wloc restart >/dev/null \
     || fail 'wloc could not be restarted after enabling the daemon'
