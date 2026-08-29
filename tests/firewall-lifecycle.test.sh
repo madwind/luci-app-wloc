@@ -47,6 +47,7 @@ WLOC_FIREWALL_HELPER_SOURCE=1
 DAEMON_RUNNING=1
 NFTP_CHECK_RC=0
 NFTP_APPLY_RC=0
+NFTP_ROLLBACK_RC=0
 export WLOC_TEST_RULES_RC=0
 NFTP_ACTIVE_RC=0
 nft_transaction_log="$fixture_root/nft-transactions.log"
@@ -63,6 +64,12 @@ nft() {
                 return "$NFTP_APPLY_RC"
             fi
             cat "$2" >>"$nft_transaction_log"
+            if [ "$NFTP_ROLLBACK_RC" -ne 0 ] \
+                && grep -Fq 'delete table inet rollback_failed' "$2" \
+                && ! grep -Fq 'table inet rollback_failed {' "$2"; then
+                echo 'mock nft rollback failure' >&2
+                return "$NFTP_ROLLBACK_RC"
+            fi
             return 0
             ;;
         list)
@@ -225,35 +232,65 @@ firewall_copy_atomic "$new_firewall" "$saved_firewall" \
 cmp -s "$new_firewall" "$saved_firewall" \
     || fail 'atomic save did not replace the persistent fixture'
 
-echo '  -> snapshot promotion failures are fatal and retain staged diagnostics'
+echo '  -> snapshot promotion failures roll back new tables and invalidate the old snapshot'
 promotion_firewall="$fixture_root/firewall.promoted.nft"
 printf '%s\n' 'table inet promoted {' '}' >"$promotion_firewall"
 printf '%s\n' '{}' >"$WLOC_STATUS_PATH"
 DAEMON_RUNNING=1
 : >"$rules_log"
-snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+persistent_before="$(cksum "$WLOC_FIREWALL_PATH")"
 if ! (
     trap - EXIT
     firewall_promote_snapshot() { return 1; }
     if firewall_apply_file "$promotion_firewall"; then
         fail 'snapshot promotion failure was reported as success'
     fi
-    [ "$snapshot_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
-        || fail 'snapshot promotion failure replaced the applied snapshot'
+    [ ! -e "$WLOC_FIREWALL_RUNTIME" ] \
+        || fail 'snapshot promotion failure retained the old applied snapshot'
     [ -s "$FIREWALL_RUNTIME_NEXT" ] \
         || fail 'snapshot promotion failure did not retain the staged snapshot'
+    grep -Fqx 'delete table inet promoted' "$nft_transaction_log" \
+        || fail 'snapshot promotion failure did not roll back the newly applied table'
     grep -Fqx cleanup "$rules_log" \
         || fail 'snapshot promotion failure did not clean up dynamic sets'
 ); then
     fail 'snapshot promotion failure handling failed'
 fi
+[ "$persistent_before" = "$(cksum "$WLOC_FIREWALL_PATH")" ] \
+    || fail 'snapshot promotion failure changed the persistent firewall rules'
+
+echo '  -> failed rollback leaves staged rules recoverable by remove-runtime'
+rollback_firewall="$fixture_root/firewall.rollback-failed.nft"
+printf '%s\n' 'table inet rollback_failed {' '}' >"$rollback_firewall"
+: >"$nft_transaction_log"
+NFTP_ROLLBACK_RC=1
+if ! (
+    trap - EXIT
+    firewall_promote_snapshot() { return 1; }
+    if firewall_apply_file "$rollback_firewall"; then
+        fail 'failed rollback promotion was reported as success'
+    fi
+    [ ! -e "$WLOC_FIREWALL_RUNTIME" ] \
+        || fail 'failed rollback retained the old applied snapshot'
+    [ -s "$FIREWALL_RUNTIME_NEXT" ] \
+        || fail 'failed rollback did not retain the staged snapshot'
+); then
+    fail 'failed rollback handling failed'
+fi
+NFTP_ROLLBACK_RC=0
+: >"$nft_transaction_log"
+firewall_remove_runtime || fail 'remove-runtime could not retry the failed rollback'
+grep -Fqx 'delete table inet rollback_failed' "$nft_transaction_log" \
+    || fail 'remove-runtime did not retry table removal from the staged snapshot'
+[ ! -e "$FIREWALL_RUNTIME_NEXT" ] \
+    || fail 'remove-runtime did not clear the recovered staged snapshot'
 
 echo '  -> active state checks the declared tables'
 NFTP_ACTIVE_RC=0
-firewall_active "$WLOC_FIREWALL_RUNTIME" \
+firewall_active "$promotion_firewall" \
     || fail 'active firewall snapshot was reported inactive'
 NFTP_ACTIVE_RC=1
-if firewall_active "$WLOC_FIREWALL_RUNTIME"; then
+if firewall_active "$promotion_firewall"; then
     fail 'missing active table was reported as active'
 fi
 NFTP_ACTIVE_RC=0

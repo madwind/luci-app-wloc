@@ -360,11 +360,14 @@ firewall_runtime_cleanup() {
     fi
 }
 
-_firewall_remove_file() {
-    local source="$1" transaction detail rc family name tables
+_firewall_remove_files() {
+    local transaction detail rc family name tables source readable=0
     firewall_error=''
     firewall_error_code='nft_apply_failed'
-    [ -r "$source" ] || {
+    for source in "$@"; do
+        [ -r "$source" ] && readable=1
+    done
+    [ "$readable" -eq 1 ] || {
         firewall_error='nftables configuration file is not readable'
         return 1
     }
@@ -380,7 +383,7 @@ _firewall_remove_file() {
     # Only declarative table declarations are owned. Legacy command snapshots
     # may still exist after an upgrade, but they have no generic inverse and
     # are therefore ignored during cleanup.
-    tables="$(firewall_tables "$source" | awk '!seen[$0]++')"
+    tables="$(for source in "$@"; do firewall_tables "$source"; done | awk '!seen[$0]++')"
     while read -r family name; do
         [ -n "$family" ] || continue
         if nft list table "$family" "$name" >/dev/null 2>&1; then
@@ -412,6 +415,10 @@ EOF
     }
 }
 
+_firewall_remove_file() {
+    _firewall_remove_files "$1"
+}
+
 firewall_remove_file() {
     local locked_here=0 rc
     if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
@@ -430,14 +437,11 @@ firewall_remove_file() {
 }
 
 _firewall_remove_runtime() {
-    local source=''
-    if [ -r "$FIREWALL_RUNTIME" ]; then
-        source="$FIREWALL_RUNTIME"
+    if [ -r "$FIREWALL_RUNTIME" ] || [ -r "$FIREWALL_RUNTIME_NEXT" ]; then
+        _firewall_remove_files \
+            "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT" || return 1
     elif [ -r "$FIREWALL_PERSISTENT" ]; then
-        source="$FIREWALL_PERSISTENT"
-    fi
-    if [ -n "$source" ]; then
-        _firewall_remove_file "$source" || return 1
+        _firewall_remove_file "$FIREWALL_PERSISTENT" || return 1
     fi
     rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"
 }
@@ -523,7 +527,7 @@ firewall_validate_file() {
 }
 
 _firewall_apply_file() {
-    local source="$1" transaction detail rc family name tables
+    local source="$1" transaction detail rc family name tables promotion_error rollback_error cleanup_error
     firewall_error=''
     firewall_error_code='nft_apply_failed'
     FIREWALL_RUNTIME_STATE_SET=0
@@ -576,10 +580,27 @@ EOF
     fi
     if ! firewall_promote_snapshot "$FIREWALL_RUNTIME_NEXT"; then
         FIREWALL_RUNTIME_PROMOTION_FAILED=1
-        firewall_error="${firewall_error:-fatal consistency error: unable to promote applied nftables snapshot}"
-        detail="$firewall_error"
-        firewall_runtime_cleanup || true
-        firewall_error="$detail"
+        promotion_error="${firewall_error:-fatal consistency error: unable to promote applied nftables snapshot}"
+        rollback_error=''
+        cleanup_error=''
+        if ! _firewall_remove_file "$FIREWALL_RUNTIME_NEXT"; then
+            rollback_error="${firewall_error:-unable to remove the newly applied nftables tables}"
+        fi
+        if ! rm -f "$FIREWALL_RUNTIME"; then
+            if [ -n "$rollback_error" ]; then
+                rollback_error="$rollback_error; unable to invalidate the previous applied snapshot"
+            else
+                rollback_error='unable to invalidate the previous applied snapshot'
+            fi
+        fi
+        if ! firewall_runtime_cleanup; then
+            cleanup_error="${firewall_error:-unable to clear runtime dynamic sets}"
+        fi
+        firewall_error="$promotion_error"
+        [ -z "$rollback_error" ] || \
+            firewall_error="$firewall_error; rollback failed: $rollback_error"
+        [ -z "$cleanup_error" ] || \
+            firewall_error="$firewall_error; fail-open cleanup failed: $cleanup_error"
         return 1
     fi
     FIREWALL_RUNTIME_STATE_SET=1

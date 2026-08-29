@@ -225,6 +225,7 @@ cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 APPLY_RC=0
 
 echo '  -> snapshot promotion failure returns an explicit consistency error'
+promotion_persistent_before="$(cksum "$persistent")"
 if ! (
     trap - EXIT
     firewall_promote_snapshot() { return 1; }
@@ -235,12 +236,17 @@ if ! (
         || fail 'snapshot promotion failure returned the wrong RPC error'
     [ "$response_error_code" = snapshot_promote_failed ] \
         || fail 'snapshot promotion failure returned the wrong error code'
+    [ ! -e "$WLOC_FIREWALL_RUNTIME" ] \
+        || fail 'snapshot promotion failure retained the old runtime snapshot'
     [ -s "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
         || fail 'snapshot promotion failure did not retain the staged snapshot'
 ); then
     fail 'snapshot promotion failure RPC handling failed'
 fi
+[ "$promotion_persistent_before" = "$(cksum "$persistent")" ] \
+    || fail 'snapshot promotion failure changed persistent storage'
 rm -f "$WLOC_FIREWALL_RUNTIME_NEXT"
+cp "$applied_source" "$WLOC_FIREWALL_RUNTIME"
 
 echo '  -> save ignores un-applied request content'
 firewall_config='table inet ignored {'

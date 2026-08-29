@@ -482,6 +482,14 @@ emit_configured_access_points() {
 }
 
 rpc_regenerate_ca() {
+    local enabled
+    enabled="$(uci -q get wloc.main.enabled 2>/dev/null || true)"
+    if [ "$enabled" != 1 ]; then
+        firewall_rpc_error service_disabled \
+            'Unable to regenerate CA while WLOC is disabled.' \
+            'Enable WLOC before regenerating the CA.'
+        return
+    fi
     if ! cleanup_rules; then
         cleanup_failure_response
         return
@@ -490,7 +498,7 @@ rpc_regenerate_ca() {
     rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
         /etc/wloc/ca.pem /etc/wloc/ca.info.json \
         /www/wloc-ca.mobileconfig
-    [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
+    [ "$enabled" = 1 ] && "$INIT" start >/dev/null 2>&1
     emit_status
 }
 

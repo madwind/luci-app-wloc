@@ -25,7 +25,11 @@ printf '%s\n' \
     'table bridge wloc_b {' \
     '}' >"$applied"
 printf '%s\n' 'table inet persistent_only {' '}' >"$persistent"
-printf '%s\n' 'table inet unrelated {' '}' >"$staged"
+printf '%s\n' \
+    'table inet wloc_b {' \
+    '}' \
+    'table inet unrelated {' \
+    '}' >"$staged"
 
 check_log="$fixture_root/check.log"
 apply_log="$fixture_root/apply.log"
@@ -74,9 +78,10 @@ grep -Fqx 'delete table inet wloc_a' "$apply_log" \
     || fail 'inet table was not removed'
 grep -Fqx 'delete table bridge wloc_b' "$apply_log" \
     || fail 'bridge table was not removed'
-if grep -Fq 'unrelated' "$check_log" "$apply_log"; then
-    fail 'unrelated nftables table was selected for removal'
-fi
+grep -Fqx 'delete table inet unrelated' "$apply_log" \
+    || fail 'staged nftables table was not removed'
+[ "$(grep -Fc 'delete table bridge wloc_b' "$apply_log")" -eq 1 ] \
+    || fail 'duplicate runtime/staged table declarations were not deduplicated'
 [ ! -e "$applied" ] || fail 'applied snapshot was not removed after cleanup'
 [ ! -e "$staged" ] || fail 'staged snapshot was not removed after cleanup'
 

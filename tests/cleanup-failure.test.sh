@@ -35,9 +35,12 @@ chmod +x "$schedule_helper"
 
 logger_log="$fixture_root/logger.log"
 procd_log="$fixture_root/procd.log"
+init_log="$fixture_root/init.log"
 start_error="$fixture_root/start-error"
 : >"$logger_log"
 : >"$procd_log"
+: >"$init_log"
+export WLOC_TEST_INIT_LOG="$init_log"
 
 # The init script is sourced after its rc.common shebang is removed so the
 # service functions can be exercised with host-side stubs.
@@ -101,11 +104,15 @@ if stop_service; then
 fi
 grep -Fq 'firewall cleanup failed while stopping service' "$logger_log" \
     || fail 'stop_service did not log cleanup failure'
+[ ! -s "$init_log" ] \
+    || fail 'stop_service restored schedule state before procd killed the service'
 
 echo '  -> service_stopped does not let cleanup failure get masked by rm'
 if service_stopped; then
     fail 'service_stopped reported success after cleanup failure'
 fi
+[ "$(cat "$init_log")" = stop ] \
+    || fail 'service_stopped did not retain schedule restore as the final fallback'
 
 fake_jshn="$fixture_root/jshn.sh"
 cat >"$fake_jshn" <<'EOF'
@@ -139,11 +146,9 @@ export WLOC_FIREWALL_RUNTIME="$fixture_root/firewall.applied.nft"
 export WLOC_STATUS_PATH="$fixture_root/status.json"
 . "$RPC"
 
-init_log="$fixture_root/init.log"
 rm_log="$fixture_root/rm.log"
 : >"$init_log"
 : >"$rm_log"
-export WLOC_TEST_INIT_LOG="$init_log"
 rm() {
     case "$*" in
         *'/etc/wloc/ca.key'*|*'/www/wloc-ca.mobileconfig'*)
@@ -156,8 +161,28 @@ rm() {
             ;;
     esac
 }
+fake_enabled=0
+uci() {
+    [ "${1:-}" = '-q' ] && shift
+    [ "${1:-}" = get ] && [ "${2:-}" = wloc.main.enabled ] || return 1
+    printf '%s\n' "$fake_enabled"
+}
+
+echo '  -> regenerate CA rejects a disabled WLOC service without mutations'
+fake_enabled=0
+rpc_regenerate_ca
+[ "$response_ok" = 0 ] || fail 'disabled regenerate CA did not return ok=false'
+[ "$response_error_code" = service_disabled ] \
+    || fail 'disabled regenerate CA returned the wrong error code'
+[ "$response_error" = 'Unable to regenerate CA while WLOC is disabled.' ] \
+    || fail 'disabled regenerate CA returned the wrong error message'
+[ "$response_detail" = 'Enable WLOC before regenerating the CA.' ] \
+    || fail 'disabled regenerate CA returned the wrong error detail'
+[ ! -s "$init_log" ] || fail 'disabled regenerate CA called the init script'
+[ ! -s "$rm_log" ] || fail 'disabled regenerate CA removed CA files'
 
 echo '  -> regenerate CA preserves the daemon and CA when cleanup fails'
+fake_enabled=1
 rpc_regenerate_ca
 [ "$response_ok" = 0 ] || fail 'cleanup RPC did not return ok=false'
 [ "$response_error_code" = cleanup_failed ] \
