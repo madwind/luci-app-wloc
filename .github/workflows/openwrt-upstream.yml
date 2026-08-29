@@ -54,10 +54,10 @@ jobs:
 
           Upgrade checklist:
 
-          - update and verify the official MediaTek Filogic, Rockchip armv8, and x86/64 SDK filenames;
+          - update and verify the official SDK filenames for mediatek/filogic, rockchip/armv8, and x86/64;
           - update all three pinned SDK SHA-256 values;
-          - confirm the GCC, musl, Rust target, and APK metadata assumptions, including R28S aarch64_generic metadata;
-          - rename the versioned build script and update the README;
+          - confirm the GCC, musl, Rust target, ELF interpreter, and APK metadata for each target/subtarget; NanoPi R28S/FriendlyWrt is only a rockchip/armv8 compatibility example, not a separate SDK target;
+          - update the versioned build script and README;
           - run the host tests and a full SDK package build.
 
           This issue was opened automatically from OpenWrt's Git tags.

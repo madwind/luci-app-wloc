@@ -7,10 +7,10 @@ PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 VERSION=25.12.5
 RUST_TOOLCHAIN=1.89.0
-BUILD_PROFILE="${1:-filogic}"
+TARGET_ID="${1:-mediatek/filogic}"
 
-case "$BUILD_PROFILE" in
-    filogic)
+case "$TARGET_ID" in
+    mediatek/filogic)
         TARGET=mediatek
         SUBTARGET=filogic
         SDK_SHA256=ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
@@ -22,7 +22,7 @@ case "$BUILD_PROFILE" in
         APK_ARCH=aarch64_cortex-a53
         TARGET_MK_PATTERN='^SUBTARGET:=filogic$'
         ;;
-    r28s)
+    rockchip/armv8)
         TARGET=rockchip
         SUBTARGET=armv8
         SDK_SHA256=59194a023968398af64bfa7d8bc3eac322641f6dc9cdbade28a4d9dd41866eba
@@ -34,7 +34,7 @@ case "$BUILD_PROFILE" in
         APK_ARCH=aarch64_generic
         TARGET_MK_PATTERN='^SUBTARGET:=armv8$'
         ;;
-    x86_64)
+    x86/64)
         TARGET=x86
         SUBTARGET=64
         SDK_SHA256=0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
@@ -47,7 +47,7 @@ case "$BUILD_PROFILE" in
         TARGET_MK_PATTERN='^ARCH:=x86_64$'
         ;;
     *)
-        echo "usage: $0 [filogic|r28s|x86_64]" >&2
+        echo "usage: $0 {mediatek/filogic|rockchip/armv8|x86/64}" >&2
         exit 2
         ;;
 esac
@@ -57,19 +57,20 @@ SDK_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${S
 ZSTD_VERSION=1.5.7
 ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 
-CACHE_ROOT="${OPENWRT_CACHE_ROOT:-$PROJECT/.build/openwrt-${VERSION}-${BUILD_PROFILE}}"
+DEFAULT_CACHE_ROOT="$PROJECT/.build/openwrt-${VERSION}/${TARGET}/${SUBTARGET}"
+CACHE_ROOT="${OPENWRT_CACHE_ROOT:-$DEFAULT_CACHE_ROOT}"
 if [ -n "${OPENWRT_BUILD_ROOT:-}" ]; then
     BUILD_ROOT="$OPENWRT_BUILD_ROOT"
 elif [ "$(stat -f -c %T "$PROJECT")" = v9fs ]; then
     # OpenWrt refuses case-insensitive Windows/WSL mounts. Keep sources and
     # downloads in the workspace, but compile on WSL's case-sensitive ext4.
-    BUILD_ROOT="$HOME/.cache/luci-app-wloc/openwrt-${VERSION}-${BUILD_PROFILE}"
+    BUILD_ROOT="$HOME/.cache/luci-app-wloc/openwrt-${VERSION}/${TARGET}/${SUBTARGET}"
 else
     BUILD_ROOT="$CACHE_ROOT"
 fi
 DOWNLOAD_DIR="$CACHE_ROOT/downloads"
 EXTRACT_DIR="$BUILD_ROOT/sdk"
-DIST_DIR="$PROJECT/dist/$BUILD_PROFILE"
+DIST_DIR="$PROJECT/dist/$TARGET/$SUBTARGET"
 ARCHIVE="$DOWNLOAD_DIR/$SDK_FILE"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing build command: $1" >&2; exit 1; }; }

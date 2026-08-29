@@ -42,8 +42,8 @@ jobs:
       - name: Cache verified OpenWrt SDK downloads
         uses: actions/cache@v6
         with:
-          path: .build/openwrt-25.12.5-x86_64/downloads
-          key: openwrt-sdk-${{ runner.os }}-25.12.5-x86_64-0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
+          path: .build/openwrt-25.12.5/x86/64/downloads
+          key: openwrt-sdk-${{ runner.os }}-25.12.5-x86-64-0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
 
       - name: Cache Cargo downloads
         uses: actions/cache@v6
@@ -54,6 +54,6 @@ jobs:
           key: cargo-downloads-${{ runner.os }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
           restore-keys: cargo-downloads-${{ runner.os }}-
 
-      - name: Build x86_64 APK
+      - name: Build x86/64 APK
         shell: bash
-        run: bash ./scripts/build-openwrt-25.12.5.sh x86_64
+        run: bash ./scripts/build-openwrt-25.12.5.sh x86/64

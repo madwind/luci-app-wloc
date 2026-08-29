@@ -24,7 +24,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build:
-    name: Build APK / ${{ matrix.target }}
+    name: Build APK / ${{ matrix.target }}/${{ matrix.subtarget }}
     needs: host-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -32,11 +32,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: filogic
+          - target: mediatek
+            subtarget: filogic
             sdk_sha256: ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
-          - target: r28s
+          - target: rockchip
+            subtarget: armv8
             sdk_sha256: 59194a023968398af64bfa7d8bc3eac322641f6dc9cdbade28a4d9dd41866eba
-          - target: x86_64
+          - target: x86
+            subtarget: "64"
             sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
 
     steps:
@@ -45,8 +48,8 @@ jobs:
       - name: Cache verified OpenWrt SDK downloads
         uses: actions/cache@v6
         with:
-          path: .build/openwrt-25.12.5-${{ matrix.target }}/downloads
-          key: openwrt-sdk-${{ runner.os }}-25.12.5-${{ matrix.target }}-${{ matrix.sdk_sha256 }}
+          path: .build/openwrt-25.12.5/${{ matrix.target }}/${{ matrix.subtarget }}/downloads
+          key: openwrt-sdk-${{ runner.os }}-25.12.5-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.sdk_sha256 }}
 
       - name: Cache Cargo downloads
         uses: actions/cache@v6
@@ -57,9 +60,9 @@ jobs:
           key: cargo-downloads-${{ runner.os }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
           restore-keys: cargo-downloads-${{ runner.os }}-
 
-      - name: Build ${{ matrix.target }} APK
+      - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
-        run: bash ./scripts/build-openwrt-25.12.5.sh "${{ matrix.target }}"
+        run: bash ./scripts/build-openwrt-25.12.5.sh "${{ matrix.target }}/${{ matrix.subtarget }}"
 
       - name: Prepare release assets
         shell: bash
@@ -73,17 +76,18 @@ jobs:
               exit 1
             fi
           fi
-          source_apk="$(find "dist/${{ matrix.target }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          source_apk="$(find "dist/${{ matrix.target }}/${{ matrix.subtarget }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
-          asset="luci-app-wloc-${WLOC_VERSION}-r${WLOC_RELEASE}-${{ matrix.target }}.apk"
+          TARGET_SUFFIX="${{ matrix.target }}-${{ matrix.subtarget }}"
+          asset="luci-app-wloc-${WLOC_VERSION}-r${WLOC_RELEASE}-${TARGET_SUFFIX}.apk"
           cp "$source_apk" "release-assets/$asset"
           (cd release-assets && sha256sum "$asset" >"$asset.sha256")
 
-      - name: Upload ${{ matrix.target }} artifacts
+      - name: Upload ${{ matrix.target }}/${{ matrix.subtarget }} artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: luci-app-wloc-${{ matrix.target }}
+          name: wloc-${{ matrix.target }}-${{ matrix.subtarget }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -102,7 +106,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: luci-app-wloc-*
+          pattern: wloc-*
           path: release-assets
           merge-multiple: true
 
