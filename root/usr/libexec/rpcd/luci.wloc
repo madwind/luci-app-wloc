@@ -27,64 +27,64 @@ firewall_rpc_error() {
 }
 
 firewall_response_state() {
-	local state_armed state_last_event
-	runtime_ready=0
-	recovering=0
-	runtime_warning=''
+    local state_armed state_last_event
+    runtime_ready=0
+    recovering=0
+    runtime_warning=''
 
-	if [ "${FIREWALL_RUNTIME_STATE_SET:-0}" -eq 1 ]; then
-		runtime_ready="${FIREWALL_RUNTIME_READY:-0}"
-		recovering="${FIREWALL_RUNTIME_RECOVERING:-0}"
-		runtime_warning="${FIREWALL_RUNTIME_WARNING:-}"
-		return 0
-	fi
+    if [ "${FIREWALL_RUNTIME_STATE_SET:-0}" -eq 1 ]; then
+        runtime_ready="${FIREWALL_RUNTIME_READY:-0}"
+        recovering="${FIREWALL_RUNTIME_RECOVERING:-0}"
+        runtime_warning="${FIREWALL_RUNTIME_WARNING:-}"
+        return 0
+    fi
 
-	[ -s "$STATE" ] || return 0
-	state_armed=0
-	state_last_event=''
-	json_load_file "$STATE" 2>/dev/null || return 0
-	json_get_var state_armed armed
-	json_get_var state_last_event last_event
-	case "$state_armed" in 1|true|yes) runtime_ready=1;; esac
-	case "$state_last_event" in
-		lease_failed)
-			recovering=1
-			runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.'
-			;;
-	esac
+    [ -s "$STATE" ] || return 0
+    state_armed=0
+    state_last_event=''
+    json_load_file "$STATE" 2>/dev/null || return 0
+    json_get_var state_armed armed
+    json_get_var state_last_event last_event
+    case "$state_armed" in 1|true|yes) runtime_ready=1;; esac
+    case "$state_last_event" in
+        lease_failed)
+            recovering=1
+            runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.'
+            ;;
+    esac
 }
 
 _firewall_response() {
-	local active_source
-	firewall_response_state
-	if [ -r "$FIREWALL_RUNTIME" ]; then
-		active_source="$FIREWALL_RUNTIME"
-	else
-		active_source="$FIREWALL"
-	fi
-	firewall_collect_active "$active_source" || {
-		FIREWALL_ACTIVE=''
-		FIREWALL_ACTIVE_FOUND=0
-		FIREWALL_TABLE_COUNT=0
-		FIREWALL_ACTIVE_TABLE_COUNT=0
-	}
-	json_init
-	json_add_boolean ok 1
-	json_add_string path "$FIREWALL"
-	json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
-	json_add_string applied "$(cat "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-	json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
-	json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-	[ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
-	[ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
-	json_add_boolean runtime_ready "$runtime_ready"
-	json_add_boolean recovering "$recovering"
-	json_add_string warning "$runtime_warning"
-	json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
-	json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
-	json_add_int table_count "$FIREWALL_TABLE_COUNT"
-	json_add_int active_table_count "$FIREWALL_ACTIVE_TABLE_COUNT"
-	json_dump
+    local active_source
+    firewall_response_state
+    if [ -r "$FIREWALL_RUNTIME" ]; then
+        active_source="$FIREWALL_RUNTIME"
+    else
+        active_source="$FIREWALL"
+    fi
+    firewall_collect_active "$active_source" || {
+        FIREWALL_ACTIVE=''
+        FIREWALL_ACTIVE_FOUND=0
+        FIREWALL_TABLE_COUNT=0
+        FIREWALL_ACTIVE_TABLE_COUNT=0
+    }
+    json_init
+    json_add_boolean ok 1
+    json_add_string path "$FIREWALL"
+    json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
+    json_add_string applied "$(cat "$FIREWALL_RUNTIME" 2>/dev/null || true)"
+    json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
+    json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
+    [ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
+    [ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
+    json_add_boolean runtime_ready "$runtime_ready"
+    json_add_boolean recovering "$recovering"
+    json_add_string warning "$runtime_warning"
+    json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
+    json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
+    json_add_int table_count "$FIREWALL_TABLE_COUNT"
+    json_add_int active_table_count "$FIREWALL_ACTIVE_TABLE_COUNT"
+    json_dump
 }
 
 firewall_response() {
@@ -109,11 +109,11 @@ firewall_response() {
 }
 
 firewall_request_config() {
-	local request
-	request="$(cat)"
-	json_load "$request" 2>/dev/null || return 1
-	json_get_var firewall_config config
-	[ "${#firewall_config}" -le 1048576 ]
+    local request
+    request="$(cat)"
+    json_load "$request" 2>/dev/null || return 1
+    json_get_var firewall_config config
+    [ "${#firewall_config}" -le 1048576 ]
 }
 
 firewall_request_save() {
@@ -126,22 +126,22 @@ firewall_request_save() {
 }
 
 emit_firewall_validate() {
-	local source
-	mkdir -p "$FIREWALL_RUNTIME_DIR"
-	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-source.XXXXXX")" || exit 1
-	printf '%s' "$firewall_config" >"$source"
-	if firewall_validate_file "$source"; then
-		json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
-	elif [ "${firewall_error_code:-}" = firewall_busy ]; then
-		firewall_rpc_error firewall_busy \
-			'Another firewall operation is already in progress. Please retry.' "$firewall_error"
-	else
-		json_init; json_add_boolean ok 0; json_add_boolean valid 0
-		json_add_string error 'nftables syntax check failed'
-		json_add_string error_code nft_check_failed
-		json_add_string detail "$firewall_error"; json_dump
-	fi
-	rm -f "$source"
+    local source
+    mkdir -p "$FIREWALL_RUNTIME_DIR"
+    source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-source.XXXXXX")" || exit 1
+    printf '%s' "$firewall_config" >"$source"
+    if firewall_validate_file "$source"; then
+        json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
+    elif [ "${firewall_error_code:-}" = firewall_busy ]; then
+        firewall_rpc_error firewall_busy \
+            'Another firewall operation is already in progress. Please retry.' "$firewall_error"
+    else
+        json_init; json_add_boolean ok 0; json_add_boolean valid 0
+        json_add_string error 'nftables syntax check failed'
+        json_add_string error_code nft_check_failed
+        json_add_string detail "$firewall_error"; json_dump
+    fi
+    rm -f "$source"
 }
 
 emit_firewall_save() {
@@ -160,124 +160,124 @@ emit_firewall_save() {
 }
 
 emit_firewall_apply() {
-	local source apply_rc response_rc locked_here=0
-	mkdir -p "$FIREWALL_RUNTIME_DIR"
-	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply-source.XXXXXX")" || exit 1
-	if ! printf '%s' "$firewall_config" >"$source"; then
-		rm -f "$source"
-		json_init; json_add_boolean ok 0
-		json_add_string error 'Unable to stage the firewall rules.'
-		json_dump
-		return
-	fi
-	if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
-		firewall_lock_acquire || {
-			firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
-				"${firewall_error:-Another firewall operation is already in progress. Please retry.}"
-			rm -f "$source"
-			return
-		}
-		locked_here=1
-	fi
-	FIREWALL_RUNTIME_PROMOTION_FAILED=0
-	if _firewall_apply_file "$source"; then
-		apply_rc=0
-	else
-		apply_rc=$?
-	fi
-	rm -f "$source"
-	if [ "$apply_rc" -ne 0 ]; then
-		if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
-			firewall_rpc_error snapshot_promote_failed \
-				'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' \
-				"$firewall_error"
-		else
-			case "${firewall_error_code:-nft_apply_failed}" in
-				firewall_busy)
-					firewall_rpc_error firewall_busy \
-						'Another firewall operation is already in progress. Please retry.' \
-						"$firewall_error";;
-				snapshot_stage_failed)
-					firewall_rpc_error snapshot_stage_failed \
-						'The runtime snapshot could not be staged.' "$firewall_error";;
-				nft_check_failed)
-					firewall_rpc_error nft_check_failed \
-						'The nftables syntax check failed.' "$firewall_error";;
-				*)
-					firewall_rpc_error nft_apply_failed \
-						'The nftables transaction failed.' "$firewall_error";;
-			esac
-		fi
-		if [ "$locked_here" -eq 1 ]; then
-			firewall_lock_release
-		fi
-		return
-	fi
-	if _firewall_response; then
-		response_rc=0
-	else
-		response_rc=$?
-	fi
-	if [ "$locked_here" -eq 1 ]; then
-		firewall_lock_release
-	fi
-	return "$response_rc"
+    local source apply_rc response_rc locked_here=0
+    mkdir -p "$FIREWALL_RUNTIME_DIR"
+    source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply-source.XXXXXX")" || exit 1
+    if ! printf '%s' "$firewall_config" >"$source"; then
+        rm -f "$source"
+        json_init; json_add_boolean ok 0
+        json_add_string error 'Unable to stage the firewall rules.'
+        json_dump
+        return
+    fi
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || {
+            firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
+                "${firewall_error:-Another firewall operation is already in progress. Please retry.}"
+            rm -f "$source"
+            return
+        }
+        locked_here=1
+    fi
+    FIREWALL_RUNTIME_PROMOTION_FAILED=0
+    if _firewall_apply_file "$source"; then
+        apply_rc=0
+    else
+        apply_rc=$?
+    fi
+    rm -f "$source"
+    if [ "$apply_rc" -ne 0 ]; then
+        if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
+            firewall_rpc_error snapshot_promote_failed \
+                'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' \
+                "$firewall_error"
+        else
+            case "${firewall_error_code:-nft_apply_failed}" in
+                firewall_busy)
+                    firewall_rpc_error firewall_busy \
+                        'Another firewall operation is already in progress. Please retry.' \
+                        "$firewall_error";;
+                snapshot_stage_failed)
+                    firewall_rpc_error snapshot_stage_failed \
+                        'The runtime snapshot could not be staged.' "$firewall_error";;
+                nft_check_failed)
+                    firewall_rpc_error nft_check_failed \
+                        'The nftables syntax check failed.' "$firewall_error";;
+                *)
+                    firewall_rpc_error nft_apply_failed \
+                        'The nftables transaction failed.' "$firewall_error";;
+            esac
+        fi
+        if [ "$locked_here" -eq 1 ]; then
+            firewall_lock_release
+        fi
+        return
+    fi
+    if _firewall_response; then
+        response_rc=0
+    else
+        response_rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$response_rc"
 }
 
 load_runtime_state() {
-	armed=0
-	configured_aps=0
-	ca_fingerprint=''
-	accepted_connections=0
-	passthrough_connections=0
-	tls_intercepted=0
-	wloc_requests=0
-	patched_responses=0
-	delivered_responses=0
-	patch_failures=0
-	last_event=''
-	last_error=''
-	service_reason=''
-	session_started_at=0
-	updated_at=0
-	runtime_log_enabled=0
-	runtime_log_revision=0
-	activity_rows=''
+    armed=0
+    configured_aps=0
+    ca_fingerprint=''
+    accepted_connections=0
+    passthrough_connections=0
+    tls_intercepted=0
+    wloc_requests=0
+    patched_responses=0
+    delivered_responses=0
+    patch_failures=0
+    last_event=''
+    last_error=''
+    service_reason=''
+    session_started_at=0
+    updated_at=0
+    runtime_log_enabled=0
+    runtime_log_revision=0
+    activity_rows=''
 
-	[ -s "$STATE" ] || return 0
-	json_load_file "$STATE" 2>/dev/null || return 0
-	json_get_vars armed:0 configured_aps:0 ca_fingerprint \
-		accepted_connections:0 passthrough_connections:0 tls_intercepted:0 \
-		wloc_requests:0 patched_responses:0 delivered_responses:0 patch_failures:0 \
-		last_event last_error session_started_at:0 updated_at:0 \
-		runtime_log_enabled:0 runtime_log_revision:0
-	if json_select ap_activity 2>/dev/null; then
-		json_get_keys activity_keys
-		for activity_index in $activity_keys; do
-			json_select "$activity_index" || continue
-			activity_error=''
-			json_get_vars ap_id latitude longitude last_location_at:0 success:0
-			json_get_var activity_error last_error
-			case "$ap_id" in ''|*[!A-Za-z0-9_-]*) ap_id='';; esac
-			[ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
+    [ -s "$STATE" ] || return 0
+    json_load_file "$STATE" 2>/dev/null || return 0
+    json_get_vars armed:0 configured_aps:0 ca_fingerprint \
+        accepted_connections:0 passthrough_connections:0 tls_intercepted:0 \
+        wloc_requests:0 patched_responses:0 delivered_responses:0 patch_failures:0 \
+        last_event last_error session_started_at:0 updated_at:0 \
+        runtime_log_enabled:0 runtime_log_revision:0
+    if json_select ap_activity 2>/dev/null; then
+        json_get_keys activity_keys
+        for activity_index in $activity_keys; do
+            json_select "$activity_index" || continue
+            activity_error=''
+            json_get_vars ap_id latitude longitude last_location_at:0 success:0
+            json_get_var activity_error last_error
+            case "$ap_id" in ''|*[!A-Za-z0-9_-]*) ap_id='';; esac
+            [ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
 "
-			json_select ..
-		done
-		json_select ..
-	fi
+            json_select ..
+        done
+        json_select ..
+    fi
 }
 
 package_version() {
-	local version
-	version="$(cat "$VERSION_CACHE" 2>/dev/null || true)"
-	case "$version" in ''|*[!A-Za-z0-9._+~-]*)
-		version="$(apk list --installed luci-app-wloc 2>/dev/null \
-			| sed -n 's/^luci-app-wloc-\([^ ]*\).*/\1/p' | head -n 1)"
-		case "$version" in *[!A-Za-z0-9._+~-]*) version='';; esac
-		[ -z "$version" ] || printf '%s\n' "$version" >"$VERSION_CACHE"
-		;;
-	esac
-	printf '%s' "$version"
+    local version
+    version="$(cat "$VERSION_CACHE" 2>/dev/null || true)"
+    case "$version" in ''|*[!A-Za-z0-9._+~-]*)
+        version="$(apk list --installed luci-app-wloc 2>/dev/null \
+            | sed -n 's/^luci-app-wloc-\([^ ]*\).*/\1/p' | head -n 1)"
+        case "$version" in *[!A-Za-z0-9._+~-]*) version='';; esac
+        [ -z "$version" ] || printf '%s\n' "$version" >"$VERSION_CACHE"
+        ;;
+    esac
+    printf '%s' "$version"
 }
 
 firewall_status_values() {
@@ -304,230 +304,230 @@ firewall_status_values() {
 }
 
 emit_status() {
-	local configured enabled version rules_present firewall_is_active attempts intercepted conflict daemon_running service_reason locked_here=0
-	load_runtime_state
-	configured=0
-	uci -q show wloc | grep -q '=wifi$' && configured=1
-	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
-	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
-	version="$(package_version)"
-	if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ] && firewall_lock_acquire; then
-		locked_here=1
-		firewall_status_values
-		firewall_lock_release
-	elif [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ]; then
-		firewall_status_values
-	else
-		rules_present=0
-		firewall_is_active=0
-		attempts=0
-		intercepted=0
-	fi
-	conflict=0
-	[ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
-	daemon_running=0
-	service_status_available=0
-	if service_daemon_running; then
-		daemon_running=1
-	elif [ "$service_status_available" -eq 0 ] && pidof wlocd >/dev/null 2>&1; then
-		# Older OpenWrt releases may not expose the service object yet. This
-		# compatibility fallback is deliberately skipped when ubus answered,
-		# so a manually launched wlocd cannot impersonate the managed daemon.
-		daemon_running=1
-	fi
-	service_reason=''
-	if [ "$daemon_running" -eq 0 ]; then
-		service_reason="$(cat /var/run/wloc/start-error 2>/dev/null || true)"
-	fi
-	if [ "$daemon_running" -eq 0 ] && [ "$enabled" -eq 1 ] && [ -z "$service_reason" ]; then
-		service_reason='service is not running; check the system log'
-	fi
-	if [ "$daemon_running" -eq 1 ] && [ "$armed" -eq 0 ]; then
-		case "$last_event" in
-			lease_failed)
-				service_reason='Runtime rule refresh failed'
-				[ -z "$last_error" ] || service_reason="$service_reason: $last_error"
-				;;
-			esac
-	elif [ "$daemon_running" -eq 1 ] && [ "$conflict" -eq 1 ]; then
-		service_reason='transparent-proxy path conflict; redirected packets are not reaching the WLOC listener'
-	fi
-	if [ -z "$ca_fingerprint" ] && [ -s "$CAINFO" ]; then
-		json_load_file "$CAINFO" 2>/dev/null && json_get_var ca_fingerprint fingerprint_sha256
-	fi
+    local configured enabled version rules_present firewall_is_active attempts intercepted conflict daemon_running service_reason locked_here=0
+    load_runtime_state
+    configured=0
+    uci -q show wloc | grep -q '=wifi$' && configured=1
+    enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
+    case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
+    version="$(package_version)"
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ] && firewall_lock_acquire; then
+        locked_here=1
+        firewall_status_values
+        firewall_lock_release
+    elif [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ]; then
+        firewall_status_values
+    else
+        rules_present=0
+        firewall_is_active=0
+        attempts=0
+        intercepted=0
+    fi
+    conflict=0
+    [ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
+    daemon_running=0
+    service_status_available=0
+    if service_daemon_running; then
+        daemon_running=1
+    elif [ "$service_status_available" -eq 0 ] && pidof wlocd >/dev/null 2>&1; then
+        # Older OpenWrt releases may not expose the service object yet. This
+        # compatibility fallback is deliberately skipped when ubus answered,
+        # so a manually launched wlocd cannot impersonate the managed daemon.
+        daemon_running=1
+    fi
+    service_reason=''
+    if [ "$daemon_running" -eq 0 ]; then
+        service_reason="$(cat /var/run/wloc/start-error 2>/dev/null || true)"
+    fi
+    if [ "$daemon_running" -eq 0 ] && [ "$enabled" -eq 1 ] && [ -z "$service_reason" ]; then
+        service_reason='service is not running; check the system log'
+    fi
+    if [ "$daemon_running" -eq 1 ] && [ "$armed" -eq 0 ]; then
+        case "$last_event" in
+            lease_failed)
+                service_reason='Runtime rule refresh failed'
+                [ -z "$last_error" ] || service_reason="$service_reason: $last_error"
+                ;;
+            esac
+    elif [ "$daemon_running" -eq 1 ] && [ "$conflict" -eq 1 ]; then
+        service_reason='transparent-proxy path conflict; redirected packets are not reaching the WLOC listener'
+    fi
+    if [ -z "$ca_fingerprint" ] && [ -s "$CAINFO" ]; then
+        json_load_file "$CAINFO" 2>/dev/null && json_get_var ca_fingerprint fingerprint_sha256
+    fi
 
-	json_init
-	json_add_boolean configured "$configured"
-	json_add_boolean enabled "$enabled"
-	json_add_string version "$version"
-	json_add_boolean running "$daemon_running"
-	json_add_boolean rules_present "$rules_present"
-	json_add_boolean firewall_active "$firewall_is_active"
-	json_add_boolean armed "$armed"
-	json_add_int configured_aps "$configured_aps"
-	json_add_int accepted_connections "$accepted_connections"
-	json_add_int passthrough_connections "$passthrough_connections"
-	json_add_int tls_intercepted "$tls_intercepted"
-	json_add_int wloc_requests "$wloc_requests"
-	json_add_int patched_responses "$patched_responses"
-	json_add_int delivered_responses "$delivered_responses"
-	json_add_int patch_failures "$patch_failures"
-	json_add_string last_event "$last_event"
-	json_add_string last_error "$last_error"
-	json_add_string service_reason "$service_reason"
-	json_add_int session_started_at "$session_started_at"
-	json_add_int updated_at "$updated_at"
-	json_add_boolean runtime_log_enabled "$runtime_log_enabled"
-	json_add_int runtime_log_revision "$runtime_log_revision"
-	json_add_int interception_attempts "$attempts"
-	json_add_int intercepted_packets "$intercepted"
-	json_add_boolean path_conflict "$conflict"
-	json_add_string fingerprint "$ca_fingerprint"
-	json_add_string profile_url '/wloc-ca.mobileconfig'
-	json_add_array ap_activity
-	while read -r ap_id activity_lat activity_lon activity_at activity_success activity_error; do
-		[ -n "$ap_id" ] || continue
-		case "$activity_at" in ''|*[!0-9]*) activity_at=0;; esac
-		case "$activity_success" in 1|true) activity_success=1;; *) activity_success=0;; esac
-		json_add_object
-		json_add_string ap_id "$ap_id"
-		json_add_string latitude "$activity_lat"
-		json_add_string longitude "$activity_lon"
-		json_add_int last_location_at "$activity_at"
-		json_add_boolean success "$activity_success"
-		json_add_string last_error "$activity_error"
-		json_close_object
-	done <<EOF
+    json_init
+    json_add_boolean configured "$configured"
+    json_add_boolean enabled "$enabled"
+    json_add_string version "$version"
+    json_add_boolean running "$daemon_running"
+    json_add_boolean rules_present "$rules_present"
+    json_add_boolean firewall_active "$firewall_is_active"
+    json_add_boolean armed "$armed"
+    json_add_int configured_aps "$configured_aps"
+    json_add_int accepted_connections "$accepted_connections"
+    json_add_int passthrough_connections "$passthrough_connections"
+    json_add_int tls_intercepted "$tls_intercepted"
+    json_add_int wloc_requests "$wloc_requests"
+    json_add_int patched_responses "$patched_responses"
+    json_add_int delivered_responses "$delivered_responses"
+    json_add_int patch_failures "$patch_failures"
+    json_add_string last_event "$last_event"
+    json_add_string last_error "$last_error"
+    json_add_string service_reason "$service_reason"
+    json_add_int session_started_at "$session_started_at"
+    json_add_int updated_at "$updated_at"
+    json_add_boolean runtime_log_enabled "$runtime_log_enabled"
+    json_add_int runtime_log_revision "$runtime_log_revision"
+    json_add_int interception_attempts "$attempts"
+    json_add_int intercepted_packets "$intercepted"
+    json_add_boolean path_conflict "$conflict"
+    json_add_string fingerprint "$ca_fingerprint"
+    json_add_string profile_url '/wloc-ca.mobileconfig'
+    json_add_array ap_activity
+    while read -r ap_id activity_lat activity_lon activity_at activity_success activity_error; do
+        [ -n "$ap_id" ] || continue
+        case "$activity_at" in ''|*[!0-9]*) activity_at=0;; esac
+        case "$activity_success" in 1|true) activity_success=1;; *) activity_success=0;; esac
+        json_add_object
+        json_add_string ap_id "$ap_id"
+        json_add_string latitude "$activity_lat"
+        json_add_string longitude "$activity_lon"
+        json_add_int last_location_at "$activity_at"
+        json_add_boolean success "$activity_success"
+        json_add_string last_error "$activity_error"
+        json_close_object
+    done <<EOF
 $activity_rows
 EOF
-	json_close_array
-	json_dump
+    json_close_array
+    json_dump
 }
 
 emit_configured_access_points() {
-	local section mode ssid disabled active ifname hostapd_status
-	. /lib/functions.sh
-	. "$AP_LIB"
+    local section mode ssid disabled active ifname hostapd_status
+    . /lib/functions.sh
+    . "$AP_LIB"
 
-	json_init
-	json_add_array access_points
-	append_configured_access_point() {
-		section="$1"
-		config_get ifname "$section" ifname ''
-		wloc_ap_valid_ifname "$ifname" || return 0
-		config_get mode "$section" mode ap
-		case "$mode" in
-			ap|ap-wds) ;;
-			*) return 0;;
-		esac
-		config_get ssid "$section" ssid ''
-		config_get_bool disabled "$section" disabled 0
-		hostapd_status="$(wloc_ap_get_hostapd_status "$ifname" 2>/dev/null || true)"
-		if [ -n "$hostapd_status" ]; then
-			active=1
-		else
-			active=0
-		fi
-		json_add_object
-		json_add_string section "$section"
-		json_add_string iface "$ifname"
-		json_add_string ssid "$ssid"
-		json_add_boolean disabled "$disabled"
-		json_add_boolean active "$active"
-		json_add_boolean up "$active"
-		json_close_object
-	}
-	config_load wireless
-	config_foreach append_configured_access_point wifi-iface
-	json_close_array
-	json_dump
+    json_init
+    json_add_array access_points
+    append_configured_access_point() {
+        section="$1"
+        config_get ifname "$section" ifname ''
+        wloc_ap_valid_ifname "$ifname" || return 0
+        config_get mode "$section" mode ap
+        case "$mode" in
+            ap|ap-wds) ;;
+            *) return 0;;
+        esac
+        config_get ssid "$section" ssid ''
+        config_get_bool disabled "$section" disabled 0
+        hostapd_status="$(wloc_ap_get_hostapd_status "$ifname" 2>/dev/null || true)"
+        if [ -n "$hostapd_status" ]; then
+            active=1
+        else
+            active=0
+        fi
+        json_add_object
+        json_add_string section "$section"
+        json_add_string iface "$ifname"
+        json_add_string ssid "$ssid"
+        json_add_boolean disabled "$disabled"
+        json_add_boolean active "$active"
+        json_add_boolean up "$active"
+        json_close_object
+    }
+    config_load wireless
+    config_foreach append_configured_access_point wifi-iface
+    json_close_array
+    json_dump
 }
 
 service_daemon_running() {
-	local response running
-	service_status_available=0
-	command -v ubus >/dev/null 2>&1 || return 1
-	response="$(ubus call service list '{"name":"wloc"}' 2>/dev/null)" || return 1
-	[ -n "$response" ] || return 1
-	json_load "$response" 2>/dev/null || return 1
-	service_status_available=1
-	json_select wloc 2>/dev/null || return 1
-	json_select instances 2>/dev/null || return 1
-	json_select daemon 2>/dev/null || return 1
-	json_get_var running running
-	case "$running" in 1|true|yes) return 0;; esac
-	return 1
+    local response running
+    service_status_available=0
+    command -v ubus >/dev/null 2>&1 || return 1
+    response="$(ubus call service list '{"name":"wloc"}' 2>/dev/null)" || return 1
+    [ -n "$response" ] || return 1
+    json_load "$response" 2>/dev/null || return 1
+    service_status_available=1
+    json_select wloc 2>/dev/null || return 1
+    json_select instances 2>/dev/null || return 1
+    json_select daemon 2>/dev/null || return 1
+    json_get_var running running
+    case "$running" in 1|true|yes) return 0;; esac
+    return 1
 }
 
 if [ "${WLOC_RPC_SOURCE:-0}" -ne 1 ]; then
 case "$1" in
 list)
-	json_init
-	for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
-		json_add_object "$method"
-		case "$method" in
-			firewall_validate|firewall_apply) json_add_string config '';;
-			firewall_save) json_add_string expected_applied_hash '';;
-		esac
-		json_close_object
-	done
-	json_dump
-	;;
+    json_init
+    for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
+        json_add_object "$method"
+        case "$method" in
+            firewall_validate|firewall_apply) json_add_string config '';;
+            firewall_save) json_add_string expected_applied_hash '';;
+        esac
+        json_close_object
+    done
+    json_dump
+    ;;
 call)
-	case "$2" in
-	status) emit_status;;
-	configured_access_points) emit_configured_access_points;;
-	restart)
-		if "$INIT" restart >/dev/null 2>&1; then
-			json_init; json_add_boolean ok 1; json_add_string state restarting; json_dump
-		else
-			json_init; json_add_boolean ok 0; json_add_string error 'Unable to restart the WLOC service.'; json_dump
-		fi
-		;;
-	disable)
-		uci -q set wloc.main.enabled='0'
-		uci -q commit wloc
-		"$RULES" cleanup
-		"$INIT" stop >/dev/null 2>&1 || true
-		emit_status
-		;;
-	regenerate_ca)
-		"$RULES" cleanup
-		"$INIT" stop >/dev/null 2>&1 || true
-		rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
-			/etc/wloc/ca.pem /etc/wloc/ca.info.json \
-			/www/wloc-ca.mobileconfig
-		[ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
-		emit_status
-		;;
-	cleanup)
-		"$RULES" cleanup
-		emit_status
-		;;
-	logs)
-		load_runtime_state
-		json_init
-		if [ "$runtime_log_enabled" -eq 1 ]; then
-			json_add_string logs "$(cat "$RUNTIME_LOG" 2>/dev/null || true)"
-		else
-			json_add_string logs ''
-		fi
-		json_dump
-		;;
-	firewall_read) firewall_response;;
-	firewall_validate)
-		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
-		emit_firewall_validate
-		;;
-	firewall_save)
-		firewall_request_save || { firewall_rpc_error invalid_request 'An applied firewall revision is required before saving.'; exit 0; }
-		emit_firewall_save "$expected_applied_hash"
-		;;
-	firewall_apply)
-		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
-		emit_firewall_apply
-		;;
-	*) echo '{"error":"unknown method"}'; exit 1;;
+    case "$2" in
+    status) emit_status;;
+    configured_access_points) emit_configured_access_points;;
+    restart)
+        if "$INIT" restart >/dev/null 2>&1; then
+            json_init; json_add_boolean ok 1; json_add_string state restarting; json_dump
+        else
+            json_init; json_add_boolean ok 0; json_add_string error 'Unable to restart the WLOC service.'; json_dump
+        fi
+        ;;
+    disable)
+        uci -q set wloc.main.enabled='0'
+        uci -q commit wloc
+        "$RULES" cleanup
+        "$INIT" stop >/dev/null 2>&1 || true
+        emit_status
+        ;;
+    regenerate_ca)
+        "$RULES" cleanup
+        "$INIT" stop >/dev/null 2>&1 || true
+        rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
+            /etc/wloc/ca.pem /etc/wloc/ca.info.json \
+            /www/wloc-ca.mobileconfig
+        [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
+        emit_status
+        ;;
+    cleanup)
+        "$RULES" cleanup
+        emit_status
+        ;;
+    logs)
+        load_runtime_state
+        json_init
+        if [ "$runtime_log_enabled" -eq 1 ]; then
+            json_add_string logs "$(cat "$RUNTIME_LOG" 2>/dev/null || true)"
+        else
+            json_add_string logs ''
+        fi
+        json_dump
+        ;;
+    firewall_read) firewall_response;;
+    firewall_validate)
+        firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
+        emit_firewall_validate
+        ;;
+    firewall_save)
+        firewall_request_save || { firewall_rpc_error invalid_request 'An applied firewall revision is required before saving.'; exit 0; }
+        emit_firewall_save "$expected_applied_hash"
+        ;;
+    firewall_apply)
+        firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
+        emit_firewall_apply
+        ;;
+    *) echo '{"error":"unknown method"}'; exit 1;;
 esac
 ;;
 *) exit 1;;

@@ -4,88 +4,88 @@
 . "${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}"
 
 valid_section() {
-	case "$1" in
-		''|*[!A-Za-z0-9_-]*) return 1;;
-	esac
+    case "$1" in
+        ''|*[!A-Za-z0-9_-]*) return 1;;
+    esac
 }
 
 warn_migration() {
-	logger -t wloc-migrate "location $1: $2; original binding was preserved" 2>/dev/null || true
+    logger -t wloc-migrate "location $1: $2; original binding was preserved" 2>/dev/null || true
 }
 
 collect_legacy_ssid_match() {
-	local section mode candidate candidate_ifname
-	section="$1"
-	config_get mode "$section" mode ap
-	case "$mode" in
-		ap|ap-wds) ;;
-		*) return 0;;
-	esac
-	config_get candidate "$section" ssid ''
-	config_get candidate_ifname "$section" ifname ''
-	[ "$candidate" = "$WLOC_LEGACY_SSID" ] &&
-		wloc_ap_valid_ifname "$candidate_ifname" &&
-		WLOC_LEGACY_MATCHES="$WLOC_LEGACY_MATCHES $candidate_ifname"
+    local section mode candidate candidate_ifname
+    section="$1"
+    config_get mode "$section" mode ap
+    case "$mode" in
+        ap|ap-wds) ;;
+        *) return 0;;
+    esac
+    config_get candidate "$section" ssid ''
+    config_get candidate_ifname "$section" ifname ''
+    [ "$candidate" = "$WLOC_LEGACY_SSID" ] &&
+        wloc_ap_valid_ifname "$candidate_ifname" &&
+        WLOC_LEGACY_MATCHES="$WLOC_LEGACY_MATCHES $candidate_ifname"
 }
 
 legacy_iface_for_ssid() {
-	local ssid="$1" iface count candidate
-	WLOC_LEGACY_SSID="$ssid"
-	WLOC_LEGACY_MATCHES=''
-	config_foreach collect_legacy_ssid_match wifi-iface
-	count=0
-	iface=''
-	for candidate in $WLOC_LEGACY_MATCHES; do
-		count=$((count + 1))
-		iface="$candidate"
-	done
-	[ "$count" -eq 1 ] || return 1
-	printf '%s\n' "$iface"
+    local ssid="$1" iface count candidate
+    WLOC_LEGACY_SSID="$ssid"
+    WLOC_LEGACY_MATCHES=''
+    config_foreach collect_legacy_ssid_match wifi-iface
+    count=0
+    iface=''
+    for candidate in $WLOC_LEGACY_MATCHES; do
+        count=$((count + 1))
+        iface="$candidate"
+    done
+    [ "$count" -eq 1 ] || return 1
+    printf '%s\n' "$iface"
 }
 
 cleanup_legacy_fields() {
-	local section="$1"
-	uci -q delete "wloc.$section.ssid"
-	uci -q delete "wloc.$section.bridge"
-	uci -q delete "wloc.$section.wireless_section"
-	uci -q delete "wloc.$section.bssid"
-	uci -q delete "wloc.$section.network"
-	uci -q delete "wloc.$section.wireless_ifname"
-	uci -q delete "wloc.$section.migration_pending"
+    local section="$1"
+    uci -q delete "wloc.$section.ssid"
+    uci -q delete "wloc.$section.bridge"
+    uci -q delete "wloc.$section.wireless_section"
+    uci -q delete "wloc.$section.bssid"
+    uci -q delete "wloc.$section.network"
+    uci -q delete "wloc.$section.wireless_ifname"
+    uci -q delete "wloc.$section.migration_pending"
 }
 
 migrate_location() {
-	local section iface ssid wireless_section
-	section="$1"
-	iface="$(uci -q get "wloc.$section.iface" 2>/dev/null || true)"
-	if [ -n "$iface" ]; then
-		cleanup_legacy_fields "$section"
-		return 0
-	fi
+    local section iface ssid wireless_section
+    section="$1"
+    iface="$(uci -q get "wloc.$section.iface" 2>/dev/null || true)"
+    if [ -n "$iface" ]; then
+        cleanup_legacy_fields "$section"
+        return 0
+    fi
 
-	# Convert the previous section-based binding to the fixed interface identity.
-	wireless_section="$(uci -q get "wloc.$section.wireless_section" 2>/dev/null || true)"
-	if ! valid_section "$wireless_section"; then
-		wireless_section=''
-	fi
-	if [ -n "$wireless_section" ] && uci -q get "wireless.$wireless_section" >/dev/null 2>&1; then
-		config_get iface "$wireless_section" ifname ''
-		if wloc_ap_valid_ifname "$iface"; then
-			uci -q set "wloc.$section.iface=$iface"
-			cleanup_legacy_fields "$section"
-			return 0
-		fi
-	fi
+    # Convert the previous section-based binding to the fixed interface identity.
+    wireless_section="$(uci -q get "wloc.$section.wireless_section" 2>/dev/null || true)"
+    if ! valid_section "$wireless_section"; then
+        wireless_section=''
+    fi
+    if [ -n "$wireless_section" ] && uci -q get "wireless.$wireless_section" >/dev/null 2>&1; then
+        config_get iface "$wireless_section" ifname ''
+        if wloc_ap_valid_ifname "$iface"; then
+            uci -q set "wloc.$section.iface=$iface"
+            cleanup_legacy_fields "$section"
+            return 0
+        fi
+    fi
 
-	ssid="$(uci -q get "wloc.$section.ssid" 2>/dev/null || true)"
-	if [ -z "$ssid" ] || ! iface="$(legacy_iface_for_ssid "$ssid")"; then
-		uci -q set "wloc.$section.migration_pending=1"
-		warn_migration "$section" 'legacy SSID binding could not be mapped to one fixed interface'
-		return 0
-	fi
+    ssid="$(uci -q get "wloc.$section.ssid" 2>/dev/null || true)"
+    if [ -z "$ssid" ] || ! iface="$(legacy_iface_for_ssid "$ssid")"; then
+        uci -q set "wloc.$section.migration_pending=1"
+        warn_migration "$section" 'legacy SSID binding could not be mapped to one fixed interface'
+        return 0
+    fi
 
-	uci -q set "wloc.$section.iface=$iface"
-	cleanup_legacy_fields "$section"
+    uci -q set "wloc.$section.iface=$iface"
+    cleanup_legacy_fields "$section"
 }
 
 # Seed only missing values so upgrades never overwrite an already configured
@@ -95,7 +95,7 @@ uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
 uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 listen_port="$(uci -q get wloc.main.listen_port 2>/dev/null || true)"
 case "$listen_port" in
-	''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
+    ''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
 esac
 uci -q delete wloc.main.gid
 # Schema 6 allowed custom domains. Schema 7 always removes that legacy list so
@@ -103,17 +103,17 @@ uci -q delete wloc.main.gid
 uci -q delete wloc.main.domain
 uci -q get wloc.main.debug >/dev/null || uci -q set wloc.main.debug='0'
 uci -q get wloc.main.runtime_log >/dev/null || uci -q set wloc.main.runtime_log='0'
-	uci -q set wloc.main.schema_version='7'
+    uci -q set wloc.main.schema_version='7'
 
 wloc_sections=''
 collect_wloc_section() {
-	wloc_sections="$wloc_sections $1"
+    wloc_sections="$wloc_sections $1"
 }
 config_load wloc
 config_foreach collect_wloc_section wifi
 config_load wireless
 for section in $wloc_sections; do
-	migrate_location "$section"
+    migrate_location "$section"
 done
 
 uci -q commit wloc

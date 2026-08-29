@@ -6,8 +6,8 @@ RPC="$ROOT/root/usr/libexec/rpcd/luci.wloc"
 HELPER="$ROOT/root/usr/libexec/wloc/firewall.sh"
 
 fail() {
-	echo "WLOC RPC firewall tests: FAIL: $*" >&2
-	exit 1
+    echo "WLOC RPC firewall tests: FAIL: $*" >&2
+    exit 1
 }
 
 fixture_root="$(mktemp -d)"
@@ -24,14 +24,14 @@ printf '%s' 'table inet applied {
 fake_jshn="$fixture_root/jshn.sh"
 cat >"$fake_jshn" <<'EOF'
 json_init() {
-	response_ok=''
-	response_error=''
-	response_runtime_ready=''
-	response_recovering=''
-	response_warning=''
-	response_error_code=''
-	response_saved_hash=''
-	response_applied_hash=''
+    response_ok=''
+    response_error=''
+    response_runtime_ready=''
+    response_recovering=''
+    response_warning=''
+    response_error_code=''
+    response_saved_hash=''
+    response_applied_hash=''
 }
 json_load() { :; }
 json_load_file() { :; }
@@ -44,20 +44,20 @@ json_close_object() { :; }
 json_add_array() { :; }
 json_close_array() { :; }
 json_add_boolean() {
-	case "$1" in
-		ok|runtime_ready|recovering) eval "response_$1=\"$2\"";;
-	esac
+    case "$1" in
+        ok|runtime_ready|recovering) eval "response_$1=\"$2\"";;
+    esac
 }
 json_add_int() { :; }
 json_add_string() {
-	case "$1" in
-		error) response_error="$2";;
-		error_code) response_error_code="$2";;
-		saved_hash) response_saved_hash="$2";;
-		applied_hash) response_applied_hash="$2";;
-		warning) response_warning="$2";;
-	esac
-	return 0
+    case "$1" in
+        error) response_error="$2";;
+        error_code) response_error_code="$2";;
+        saved_hash) response_saved_hash="$2";;
+        applied_hash) response_applied_hash="$2";;
+        warning) response_warning="$2";;
+    esac
+    return 0
 }
 json_dump() { :; }
 EOF
@@ -73,19 +73,19 @@ CHECK_RC=0
 APPLY_RC=0
 DAEMON_RUNNING=1
 nft() {
-	case "${1:-}" in
-		--check) return "$CHECK_RC";;
-		--file) return "$APPLY_RC";;
-		list) return 0;;
-		*) return 0;;
-	esac
+    case "${1:-}" in
+        --check) return "$CHECK_RC";;
+        --file) return "$APPLY_RC";;
+        list) return 0;;
+        *) return 0;;
+    esac
 }
 
 pidof() { [ "$DAEMON_RUNNING" -eq 1 ]; }
 uci() {
-	[ "${1:-}" = -q ] && shift
-	[ "${1:-}" = get ] && [ "${2:-}" = wloc.main.listen_port ] || return 1
-	printf '%s\n' 61520
+    [ "${1:-}" = -q ] && shift
+    [ "${1:-}" = get ] && [ "${2:-}" = wloc.main.listen_port ] || return 1
+    printf '%s\n' 61520
 }
 
 export WLOC_RPC_SOURCE=1
@@ -105,9 +105,9 @@ export WLOC_TEST_RULES_RC=0
 firewall_config="$(cat "$applied_source")"
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
-	|| fail 'apply did not update the applied runtime snapshot'
+    || fail 'apply did not update the applied runtime snapshot'
 cmp -s "$persistent" "$applied_source" \
-	&& fail 'apply changed the persistent firewall file'
+    && fail 'apply changed the persistent firewall file'
 [ "$response_ok" = 1 ] || fail 'successful apply did not return ok=true'
 [ "$response_runtime_ready" = 1 ] || fail 'successful reconcile did not return runtime_ready=true'
 [ "$response_recovering" = 0 ] || fail 'successful reconcile returned recovering=true'
@@ -144,7 +144,7 @@ emit_firewall_save "$hash_b"
 emit_firewall_save "$hash_c"
 [ "$response_ok" = 1 ] || fail 'Save with the current revision failed'
 cmp -s "$fixture_root/applied-c.nft" "$persistent" \
-	|| fail 'current-revision Save did not persist the applied snapshot'
+    || fail 'current-revision Save did not persist the applied snapshot'
 
 echo '  -> reconcile failure returns a warning without failing Apply'
 export WLOC_TEST_RULES_RC=1
@@ -154,7 +154,7 @@ emit_firewall_apply
 [ "$response_runtime_ready" = 0 ] || fail 'reconcile failure returned runtime_ready=true'
 [ "$response_recovering" = 1 ] || fail 'reconcile failure did not return recovering=true'
 [ "$response_warning" = 'Runtime rule refresh failed; WLOC will retry automatically.' ] \
-	|| fail 'reconcile failure returned the wrong warning'
+    || fail 'reconcile failure returned the wrong warning'
 export WLOC_TEST_RULES_RC=0
 
 echo '  -> syntax failure keeps both snapshots'
@@ -162,7 +162,7 @@ CHECK_RC=1
 firewall_config='table inet rejected {'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
-	|| fail 'syntax failure replaced the applied runtime snapshot'
+    || fail 'syntax failure replaced the applied runtime snapshot'
 [ "$response_error_code" = nft_check_failed ] || fail 'syntax failure returned the wrong error code'
 CHECK_RC=0
 
@@ -171,25 +171,25 @@ APPLY_RC=1
 firewall_config='table inet rejected {'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
-	|| fail 'transaction failure replaced the applied runtime snapshot'
+    || fail 'transaction failure replaced the applied runtime snapshot'
 [ "$response_error_code" = nft_apply_failed ] || fail 'transaction failure returned the wrong error code'
 APPLY_RC=0
 
 echo '  -> snapshot promotion failure returns an explicit consistency error'
 if ! (
-	trap - EXIT
-	firewall_promote_snapshot() { return 1; }
-	firewall_config="$(cat "$applied_source")"
-	emit_firewall_apply
-	[ "$response_ok" = 0 ] || fail 'snapshot promotion failure returned ok=true'
-	[ "$response_error" = 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' ] \
-		|| fail 'snapshot promotion failure returned the wrong RPC error'
-	[ "$response_error_code" = snapshot_promote_failed ] \
-		|| fail 'snapshot promotion failure returned the wrong error code'
-	[ -s "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
-		|| fail 'snapshot promotion failure did not retain the staged snapshot'
+    trap - EXIT
+    firewall_promote_snapshot() { return 1; }
+    firewall_config="$(cat "$applied_source")"
+    emit_firewall_apply
+    [ "$response_ok" = 0 ] || fail 'snapshot promotion failure returned ok=true'
+    [ "$response_error" = 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' ] \
+        || fail 'snapshot promotion failure returned the wrong RPC error'
+    [ "$response_error_code" = snapshot_promote_failed ] \
+        || fail 'snapshot promotion failure returned the wrong error code'
+    [ -s "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
+        || fail 'snapshot promotion failure did not retain the staged snapshot'
 ); then
-	fail 'snapshot promotion failure RPC handling failed'
+    fail 'snapshot promotion failure RPC handling failed'
 fi
 rm -f "$WLOC_FIREWALL_RUNTIME_NEXT"
 
@@ -198,6 +198,6 @@ firewall_config='table inet ignored {'
 current_hash="$(firewall_file_hash "$WLOC_FIREWALL_RUNTIME")"
 emit_firewall_save "$current_hash"
 cmp -s "$applied_source" "$persistent" \
-	|| fail 'save did not copy the applied snapshot to persistent storage'
+    || fail 'save did not copy the applied snapshot to persistent storage'
 
 echo 'WLOC RPC firewall tests: PASS'

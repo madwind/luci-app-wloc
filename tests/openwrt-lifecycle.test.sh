@@ -2,18 +2,18 @@
 set -eu
 
 fail() {
-	echo "OpenWrt lifecycle tests: FAIL: $*" >&2
-	exit 1
+    echo "OpenWrt lifecycle tests: FAIL: $*" >&2
+    exit 1
 }
 
 if [ -z "${WLOC_OPENWRT_IMAGE:-}" ] || [ -z "${WLOC_OPENWRT_APK:-}" ] || [ -z "${WLOC_OPENWRT_SSH_KEY:-}" ]; then
-	echo 'OpenWrt lifecycle tests: SKIP (set WLOC_OPENWRT_IMAGE, WLOC_OPENWRT_APK, and WLOC_OPENWRT_SSH_KEY)'
-	exit 0
+    echo 'OpenWrt lifecycle tests: SKIP (set WLOC_OPENWRT_IMAGE, WLOC_OPENWRT_APK, and WLOC_OPENWRT_SSH_KEY)'
+    exit 0
 fi
 
 for command in basename grep qemu-system-x86_64 scp ssh seq sleep; do
-	command -v "$command" >/dev/null 2>&1 \
-		|| fail "required command not found: $command"
+    command -v "$command" >/dev/null 2>&1 \
+        || fail "required command not found: $command"
 done
 [ -f "$WLOC_OPENWRT_IMAGE" ] || fail "OpenWrt image not found: $WLOC_OPENWRT_IMAGE"
 [ -f "$WLOC_OPENWRT_APK" ] || fail "WLOC APK not found: $WLOC_OPENWRT_APK"
@@ -28,120 +28,120 @@ CONSOLE_LOG="$(mktemp)"
 QEMU_PID=''
 
 cleanup() {
-	if [ -n "$QEMU_PID" ]; then
-		kill "$QEMU_PID" 2>/dev/null || true
-		wait "$QEMU_PID" 2>/dev/null || true
-	fi
-	rm -f "$CONSOLE_LOG"
+    if [ -n "$QEMU_PID" ]; then
+        kill "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+    fi
+    rm -f "$CONSOLE_LOG"
 }
 trap cleanup EXIT INT TERM HUP
 
 ssh_cmd() {
-	ssh $SSH_OPTIONS "$SSH_TARGET" "$@"
+    ssh $SSH_OPTIONS "$SSH_TARGET" "$@"
 }
 
 service_value() {
-	local path="$1"
-	ssh_cmd "ubus call service list '{\"name\":\"wloc\"}' | jsonfilter -e '$path'"
+    local path="$1"
+    ssh_cmd "ubus call service list '{\"name\":\"wloc\"}' | jsonfilter -e '$path'"
 }
 
 instance_running() {
-	local instance="$1" value
-	value="$(service_value "@.wloc.instances.${instance}.running" 2>/dev/null || true)"
-	case "$value" in
-		true|1|yes) return 0;;
-		*) return 1;;
-	esac
+    local instance="$1" value
+    value="$(service_value "@.wloc.instances.${instance}.running" 2>/dev/null || true)"
+    case "$value" in
+        true|1|yes) return 0;;
+        *) return 1;;
+    esac
 }
 
 daemon_pid() {
-	service_value '@.wloc.instances.daemon.pid'
+    service_value '@.wloc.instances.daemon.pid'
 }
 
 rpc_value() {
-	local command="$1" path="$2"
-	ssh_cmd "$command | jsonfilter -e '$path'"
+    local command="$1" path="$2"
+    ssh_cmd "$command | jsonfilter -e '$path'"
 }
 
 wait_for_ssh() {
-	local attempt
-	for attempt in $(seq 1 60); do
-		if ssh_cmd true >/dev/null 2>&1; then
-			return 0
-		fi
-		sleep 2
-	done
-	return 1
+    local attempt
+    for attempt in $(seq 1 60); do
+        if ssh_cmd true >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
 }
 
 reboot_guest() {
-	ssh_cmd reboot >/dev/null 2>&1 || true
-	sleep 5
-	wait_for_ssh || fail 'OpenWrt SSH did not return after reboot'
-	for attempt in $(seq 1 30); do
-		if instance_running daemon && instance_running schedule; then
-			return 0
-		fi
-		sleep 1
-	done
-	fail 'WLOC procd instances did not start after reboot'
+    ssh_cmd reboot >/dev/null 2>&1 || true
+    sleep 5
+    wait_for_ssh || fail 'OpenWrt SSH did not return after reboot'
+    for attempt in $(seq 1 30); do
+        if instance_running daemon && instance_running schedule; then
+            return 0
+        fi
+        sleep 1
+    done
+    fail 'WLOC procd instances did not start after reboot'
 }
 
 wait_for_instance() {
-	local instance="$1" attempt
-	for attempt in $(seq 1 30); do
-		if instance_running "$instance"; then
-			return 0
-		fi
-		sleep 1
-	done
-	return 1
+    local instance="$1" attempt
+    for attempt in $(seq 1 30); do
+        if instance_running "$instance"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 apk_name="$(basename "$WLOC_OPENWRT_APK")"
 qemu-system-x86_64 \
-	-machine q35 \
-	-m "$MEMORY" \
-	-nographic \
-	-snapshot \
-	-drive "file=$WLOC_OPENWRT_IMAGE,format=raw,if=virtio" \
-	-netdev "user,id=net0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22" \
-	-device virtio-net-pci,netdev=net0 \
-	>"$CONSOLE_LOG" 2>&1 &
+    -machine q35 \
+    -m "$MEMORY" \
+    -nographic \
+    -snapshot \
+    -drive "file=$WLOC_OPENWRT_IMAGE,format=raw,if=virtio" \
+    -netdev "user,id=net0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22" \
+    -device virtio-net-pci,netdev=net0 \
+    >"$CONSOLE_LOG" 2>&1 &
 QEMU_PID=$!
 
 echo '  -> wait for OpenWrt SSH'
 wait_for_ssh || fail 'OpenWrt SSH did not become ready'
 ssh_cmd "command -v ubus >/dev/null && command -v jsonfilter >/dev/null" \
-	|| fail 'OpenWrt does not provide ubus and jsonfilter'
+    || fail 'OpenWrt does not provide ubus and jsonfilter'
 
 echo '  -> install package and create a deterministic test rule'
 scp $SCP_OPTIONS "$WLOC_OPENWRT_APK" "$SSH_TARGET:/tmp/$apk_name" >/dev/null \
-	|| fail 'unable to copy the WLOC APK to OpenWrt'
+    || fail 'unable to copy the WLOC APK to OpenWrt'
 ssh_cmd "apk add --allow-untrusted /tmp/$apk_name" >/dev/null \
-	|| fail 'apk could not install luci-app-wloc'
+    || fail 'apk could not install luci-app-wloc'
 ssh_cmd "command -v rpcd >/dev/null && [ -x /etc/init.d/wloc ]" \
-	|| fail 'package install did not provide rpcd or the wloc init script'
+    || fail 'package install did not provide rpcd or the wloc init script'
 
 ssh_cmd /etc/init.d/wloc enabled \
-	|| fail 'OpenWrt default_postinst did not enable wloc'
+    || fail 'OpenWrt default_postinst did not enable wloc'
 wait_for_instance schedule \
-	|| fail 'OpenWrt default_postinst did not start the WLOC schedule instance'
+    || fail 'OpenWrt default_postinst did not start the WLOC schedule instance'
 if instance_running daemon; then
-	fail 'WLOC daemon started while main.enabled was still 0'
+    fail 'WLOC daemon started while main.enabled was still 0'
 fi
 
 ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
-	|| fail 'could not create the deterministic WLOC test rule'
+    || fail 'could not create the deterministic WLOC test rule'
 ssh_cmd /etc/init.d/wloc restart >/dev/null \
-	|| fail 'wloc could not be restarted after enabling the daemon'
+    || fail 'wloc could not be restarted after enabling the daemon'
 
 instance_running daemon \
-	|| fail 'procd daemon instance is not running'
+    || fail 'procd daemon instance is not running'
 instance_running schedule \
-	|| fail 'procd schedule instance is not running'
+    || fail 'procd schedule instance is not running'
 ssh_cmd ubus call luci.wloc status >/dev/null \
-	|| fail 'luci.wloc status RPC failed'
+    || fail 'luci.wloc status RPC failed'
 
 echo '  -> Apply and reboot without Save restores persistent rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
@@ -149,123 +149,123 @@ FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flag
 APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
 APPLY_RESULT=/tmp/wloc-apply-result
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
-	|| fail 'firewall Apply did not return a response'
+    || fail 'firewall Apply did not return a response'
 case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
-	true|1) ;;
-	*) fail 'firewall Apply did not return ok=true';;
+    true|1) ;;
+    *) fail 'firewall Apply did not return ok=true';;
 esac
 applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'firewall Apply did not return an applied revision'
 ssh_cmd "rm -f $APPLY_RESULT"
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
-	|| fail 'applied firewall rules are not active'
+    || fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
-	|| fail 'Apply changed the persistent firewall file'
+    || fail 'Apply changed the persistent firewall file'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
-	|| fail 'reboot without Save did not restore the persistent firewall file'
+    || fail 'reboot without Save did not restore the persistent firewall file'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
-	fail 'unsaved firewall rules survived reboot'
+    fail 'unsaved firewall rules survived reboot'
 fi
 
 echo '  -> Apply and Save persists the applied rules across reboot'
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
-	|| fail 'second firewall Apply did not return a response'
+    || fail 'second firewall Apply did not return a response'
 case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
-	true|1) ;;
-	*) fail 'second firewall Apply did not return ok=true';;
+    true|1) ;;
+    *) fail 'second firewall Apply did not return ok=true';;
 esac
 applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'second firewall Apply did not return an applied revision'
 ssh_cmd "rm -f $APPLY_RESULT"
 SAVE_COMMAND="ubus call luci.wloc firewall_save '{\"expected_applied_hash\":\"$applied_hash\"}'"
 case "$(rpc_value "$SAVE_COMMAND" '@.ok')" in
-	true|1) ;;
-	*) fail 'firewall Save did not return ok=true';;
+    true|1) ;;
+    *) fail 'firewall Save did not return ok=true';;
 esac
 persistent_b="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 [ "$persistent_b" != "$persistent_a" ] \
-	|| fail 'Save did not replace the persistent firewall file'
+    || fail 'Save did not replace the persistent firewall file'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_b" ] \
-	|| fail 'saved firewall rules did not survive reboot'
+    || fail 'saved firewall rules did not survive reboot'
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
-	|| fail 'saved firewall table was not restored after reboot'
+    || fail 'saved firewall table was not restored after reboot'
 
 daemon_pid="$(daemon_pid 2>/dev/null || true)"
 case "$daemon_pid" in
-	*[!0-9]*|'') fail 'could not find the procd-managed wlocd PID';;
+    *[!0-9]*|'') fail 'could not find the procd-managed wlocd PID';;
 esac
 
 echo '  -> procd crash recovery'
 ssh_cmd "kill -9 $daemon_pid" >/dev/null \
-	|| fail 'could not terminate the procd-managed daemon'
+    || fail 'could not terminate the procd-managed daemon'
 recovered=0
 for attempt in $(seq 1 30); do
-	new_pid="$(daemon_pid 2>/dev/null || true)"
-	if instance_running daemon && [ "$new_pid" != "$daemon_pid" ] && printf '%s' "$new_pid" | grep -Eq '^[0-9]+$'; then
-		recovered=1
-		break
-	fi
-	sleep 1
+    new_pid="$(daemon_pid 2>/dev/null || true)"
+    if instance_running daemon && [ "$new_pid" != "$daemon_pid" ] && printf '%s' "$new_pid" | grep -Eq '^[0-9]+$'; then
+        recovered=1
+        break
+    fi
+    sleep 1
 done
 [ "$recovered" -eq 1 ] || fail 'procd did not respawn wlocd'
 ssh_cmd "logread -e wlocd" | grep -q 'wlocd:' \
-	|| fail 'wlocd stderr was not visible in logread'
+    || fail 'wlocd stderr was not visible in logread'
 
 echo '  -> service reload'
 reload_pid="$new_pid"
 ssh_cmd "uci set wloc.main.debug=1; uci commit wloc; ubus call service event '{\"type\":\"config.change\",\"data\":{\"package\":\"wloc\"}}'" \
-	|| fail 'service config reload failed'
+    || fail 'service config reload failed'
 reloaded=0
 for attempt in $(seq 1 30); do
-	new_reload_pid="$(daemon_pid 2>/dev/null || true)"
-	if instance_running daemon && [ "$new_reload_pid" != "$reload_pid" ]; then
-		reloaded=1
-		break
-	fi
-	sleep 1
+    new_reload_pid="$(daemon_pid 2>/dev/null || true)"
+    if instance_running daemon && [ "$new_reload_pid" != "$reload_pid" ]; then
+        reloaded=1
+        break
+    fi
+    sleep 1
 done
 [ "$reloaded" -eq 1 ] || fail 'wloc daemon did not reload after config change'
 ssh_cmd ubus call luci.wloc status >/dev/null \
-	|| fail 'status RPC failed after service reload'
+    || fail 'status RPC failed after service reload'
 
 echo '  -> service stop removes all managed instances and dynamic state'
 ssh_cmd /etc/init.d/wloc stop >/dev/null \
-	|| fail 'wloc could not be stopped'
+    || fail 'wloc could not be stopped'
 if instance_running daemon || instance_running schedule; then
-	fail 'a WLOC procd instance remained running after stop'
+    fail 'a WLOC procd instance remained running after stop'
 fi
 if ssh_cmd "nft list set inet wloc_lifecycle apple_wloc_v4 2>/dev/null | grep -Eq 'elements[[:space:]]*=[[:space:]]*\\{[^}0-9]*[0-9]'"; then
-	fail 'WLOC dynamic host-set elements remained after stop'
+    fail 'WLOC dynamic host-set elements remained after stop'
 fi
 
 echo '  -> uninstall while WLOC is running removes managed services and firewall state'
 ssh_cmd /etc/init.d/wloc start >/dev/null \
-	|| fail 'wloc could not be started before uninstall'
+    || fail 'wloc could not be started before uninstall'
 wait_for_instance daemon \
-	|| fail 'WLOC daemon did not start before uninstall'
+    || fail 'WLOC daemon did not start before uninstall'
 wait_for_instance schedule \
-	|| fail 'WLOC schedule did not start before uninstall'
+    || fail 'WLOC schedule did not start before uninstall'
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
-	|| fail 'WLOC firewall table was not active before uninstall'
+    || fail 'WLOC firewall table was not active before uninstall'
 ssh_cmd "test -s /var/run/wloc/firewall.applied.nft" \
-	|| fail 'runtime firewall snapshot was not present before uninstall'
+    || fail 'runtime firewall snapshot was not present before uninstall'
 ssh_cmd "apk del luci-app-wloc" >/dev/null \
-	|| fail 'apk could not uninstall luci-app-wloc'
+    || fail 'apk could not uninstall luci-app-wloc'
 if instance_running daemon || instance_running schedule; then
-	fail 'a WLOC procd instance remained running after package uninstall'
+    fail 'a WLOC procd instance remained running after package uninstall'
 fi
 ssh_cmd "test ! -x /etc/init.d/wloc" \
-	|| fail 'WLOC init service remained after package uninstall'
+    || fail 'WLOC init service remained after package uninstall'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
-	fail 'WLOC nftables table remained after package uninstall'
+    fail 'WLOC nftables table remained after package uninstall'
 fi
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
-	|| fail 'applied firewall snapshot remained after package uninstall'
+    || fail 'applied firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
-	|| fail 'staged firewall snapshot remained after package uninstall'
+    || fail 'staged firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -e /var/run/wloc/firewall.lock" \
-	|| fail 'WLOC runtime state remained after package uninstall'
+    || fail 'WLOC runtime state remained after package uninstall'
 
 echo 'OpenWrt lifecycle tests: PASS'

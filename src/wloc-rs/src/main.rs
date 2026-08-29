@@ -156,10 +156,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-		let initially_armed = match reconcile_rules_async(
-			config.rules_helper.clone(),
-			config.listen_port,
-		)
+        let initially_armed = match reconcile_rules_async(
+            config.rules_helper.clone(),
+            config.listen_port,
+        )
         .await
         {
             Ok(()) => {
@@ -195,18 +195,18 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let armed = Arc::new(AtomicBool::new(initially_armed));
         let lease_armed = Arc::clone(&armed);
-		let lease_status = Arc::clone(&status);
-		let lease_helper = config.rules_helper.clone();
-		let lease_port = config.listen_port;
-		tokio::spawn(async move {
+        let lease_status = Arc::clone(&status);
+        let lease_helper = config.rules_helper.clone();
+        let lease_port = config.listen_port;
+        tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-				if let Err(error) = reconcile_rules_async(
-					lease_helper.clone(),
-					lease_port,
-				)
+                if let Err(error) = reconcile_rules_async(
+                    lease_helper.clone(),
+                    lease_port,
+                )
                 .await
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);
