@@ -1,86 +1,105 @@
 #!/bin/sh
 set -eu
 
-fail() {
-    echo "OpenWrt lifecycle tests: FAIL: $*" >&2
-
-    if [ -n "${QEMU_PID:-}" ]; then
-        if kill -0 "$QEMU_PID" 2>/dev/null; then
-            echo 'QEMU process is still running.' >&2
-        else
-            echo 'QEMU process is no longer running.' >&2
-        fi
-    fi
-
-    if [ -n "${CONSOLE_LOG:-}" ] &&
-       [ -s "$CONSOLE_LOG" ]; then
-        echo '===== QEMU console tail =====' >&2
-        tail -n 300 "$CONSOLE_LOG" >&2
-        echo '===== end QEMU console =====' >&2
-    fi
-
-    exit 1
-}
-
 phase() {
     printf '[%s] %s\n' "$1" "$2"
 }
 
-if [ -z "${WLOC_OPENWRT_IMAGE:-}" ] || [ -z "${WLOC_OPENWRT_APK:-}" ] || [ -z "${WLOC_OPENWRT_SSH_KEY:-}" ]; then
-    echo 'OpenWrt lifecycle tests: SKIP (set WLOC_OPENWRT_IMAGE, WLOC_OPENWRT_APK, and WLOC_OPENWRT_SSH_KEY)'
-    exit 0
+if [ "${WLOC_RUNTIME_ALLOW_DESTRUCTIVE:-}" != 1 ]; then
+    echo 'runtime integration: REFUSED (set WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 for a dedicated test device)' >&2
+    exit 1
 fi
 
-for command in basename grep qemu-system-x86_64 scp ssh ssh-keyscan seq sleep tail; do
-    command -v "$command" >/dev/null 2>&1 \
-        || fail "required command not found: $command"
-done
-[ -f "$WLOC_OPENWRT_IMAGE" ] || fail "OpenWrt image not found: $WLOC_OPENWRT_IMAGE"
-[ -f "$WLOC_OPENWRT_APK" ] || fail "WLOC APK not found: $WLOC_OPENWRT_APK"
-[ -f "$WLOC_OPENWRT_SSH_KEY" ] || fail "SSH key not found: $WLOC_OPENWRT_SSH_KEY"
+if [ -z "${WLOC_OPENWRT_SSH:-}" ] || [ -z "${WLOC_OPENWRT_APK:-}" ]; then
+    echo 'runtime integration: WLOC_OPENWRT_SSH and WLOC_OPENWRT_APK are required' >&2
+    exit 1
+fi
 
-SSH_PORT=${WLOC_OPENWRT_SSH_PORT:-22022}
-MEMORY=${WLOC_OPENWRT_MEMORY:-256M}
-SSH_TARGET="root@127.0.0.1"
-SSH_PUBLIC_KEY="${WLOC_OPENWRT_SSH_PUBLIC_KEY:-$WLOC_OPENWRT_SSH_KEY.pub}"
-[ -f "$SSH_PUBLIC_KEY" ] || fail "SSH public key not found: $SSH_PUBLIC_KEY"
-SSH_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -p $SSH_PORT -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-SCP_OPTIONS="-O -i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-SSH_BOOTSTRAP_OPTIONS="-p $SSH_PORT -o BatchMode=no -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-SCP_BOOTSTRAP_OPTIONS="-O -P $SSH_PORT -o BatchMode=no -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-CONSOLE_LOG="$(mktemp)"
-SSH_ASKPASS_SCRIPT="$(mktemp)"
-printf '%s\n' '#!/bin/sh' 'exit 0' >"$SSH_ASKPASS_SCRIPT"
-chmod 0700 "$SSH_ASKPASS_SCRIPT"
-QEMU_PID=''
-
-cleanup() {
-    if [ -n "$QEMU_PID" ]; then
-        kill "$QEMU_PID" 2>/dev/null || true
-        wait "$QEMU_PID" 2>/dev/null || true
-    fi
-    rm -f "$CONSOLE_LOG"
-    rm -f "$SSH_ASKPASS_SCRIPT"
+[ -f "$WLOC_OPENWRT_APK" ] || {
+    echo "runtime integration: WLOC APK not found: $WLOC_OPENWRT_APK" >&2
+    exit 1
 }
-trap cleanup EXIT INT TERM HUP
+
+for command in grep scp seq sleep ssh tail; do
+    command -v "$command" >/dev/null 2>&1 || {
+        echo "runtime integration: required command not found: $command" >&2
+        exit 1
+    }
+done
+
+SSH_OPTIONS='-o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=1'
+SCP_OPTIONS="$SSH_OPTIONS"
+SSH_TARGET="$WLOC_OPENWRT_SSH"
+REMOTE_APK='/tmp/luci-app-wloc-runtime.apk'
+REMOTE_APPLY_RESULT='/tmp/wloc-runtime-apply-result'
+PACKAGE_CLEANUP_REQUIRED=0
+FIXTURE_CREATED=0
+MAIN_ENABLED_WAS_SET=0
+MAIN_ENABLED_VALUE=''
+MAIN_DEBUG_WAS_SET=0
+MAIN_DEBUG_VALUE=''
 
 ssh_cmd() {
     ssh $SSH_OPTIONS "$SSH_TARGET" "$@"
 }
 
-ssh_bootstrap_cmd() {
-    SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
-    SSH_ASKPASS_REQUIRE=force \
-    DISPLAY=:0 \
-        ssh $SSH_BOOTSTRAP_OPTIONS "$SSH_TARGET" "$@"
+scp_cmd() {
+    scp $SCP_OPTIONS "$@"
 }
 
-scp_bootstrap() {
-    SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
-    SSH_ASKPASS_REQUIRE=force \
-    DISPLAY=:0 \
-        scp $SCP_BOOTSTRAP_OPTIONS "$@"
+fail() {
+    echo "runtime integration: FAIL: $*" >&2
+    echo '===== remote diagnostics =====' >&2
+    ssh_cmd "/etc/init.d/wloc status" >&2 || true
+    ssh_cmd "ubus call service list '{\"name\":\"wloc\"}'" >&2 || true
+    ssh_cmd "ubus call luci.wloc status" >&2 || true
+    ssh_cmd "logread -e wlocd | tail -n 80" >&2 || true
+    ssh_cmd "nft list tables" >&2 || true
+    ssh_cmd "nft list table inet wloc_lifecycle" >&2 || true
+    ssh_cmd "uci show wloc" >&2 || true
+    echo '===== end remote diagnostics =====' >&2
+    exit 1
 }
+
+restore_main_enabled() {
+    if [ "$MAIN_ENABLED_WAS_SET" -eq 1 ] && [ -n "$MAIN_ENABLED_VALUE" ]; then
+        ssh_cmd "uci -q set wloc.main.enabled=$MAIN_ENABLED_VALUE; uci -q commit wloc" >/dev/null 2>&1 || true
+    else
+        ssh_cmd "uci -q delete wloc.main.enabled; uci -q commit wloc" >/dev/null 2>&1 || true
+    fi
+}
+
+restore_main_debug() {
+    if [ "$MAIN_DEBUG_WAS_SET" -eq 1 ] && [ -n "$MAIN_DEBUG_VALUE" ]; then
+        ssh_cmd "uci -q set wloc.main.debug=$MAIN_DEBUG_VALUE; uci -q commit wloc" >/dev/null 2>&1 || true
+    else
+        ssh_cmd "uci -q delete wloc.main.debug; uci -q commit wloc" >/dev/null 2>&1 || true
+    fi
+}
+
+cleanup() {
+    status=$?
+    trap - EXIT INT TERM HUP
+
+    if [ "$PACKAGE_CLEANUP_REQUIRED" -eq 1 ]; then
+        ssh_cmd "/etc/init.d/wloc stop" >/dev/null 2>&1 || true
+    fi
+
+    if [ "$FIXTURE_CREATED" -eq 1 ]; then
+        ssh_cmd "uci -q delete wireless.wloc_test; uci -q commit wireless" >/dev/null 2>&1 || true
+        ssh_cmd "uci -q delete wloc.test; uci -q commit wloc" >/dev/null 2>&1 || true
+        restore_main_enabled
+        restore_main_debug
+    fi
+
+    if [ "$PACKAGE_CLEANUP_REQUIRED" -eq 1 ]; then
+        ssh_cmd "apk del luci-app-wloc" >/dev/null 2>&1 || true
+    fi
+
+    ssh_cmd "rm -f $REMOTE_APK $REMOTE_APPLY_RESULT" >/dev/null 2>&1 || true
+    exit "$status"
+}
+trap cleanup EXIT INT TERM HUP
 
 service_value() {
     local path="$1"
@@ -105,108 +124,6 @@ rpc_value() {
     ssh_cmd "$command | jsonfilter -e '$path'"
 }
 
-wait_for_ssh_transport() {
-    local attempt
-    for attempt in $(seq 1 60); do
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            fail 'QEMU exited before OpenWrt SSH became available'
-        fi
-        if ssh-keyscan -T 2 -p "$SSH_PORT" 127.0.0.1 >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 2
-    done
-    return 1
-}
-
-wait_for_key_ssh() {
-    local attempt
-    for attempt in $(seq 1 15); do
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            fail 'QEMU exited while waiting for SSH key authentication'
-        fi
-        if ssh_cmd true >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
-
-bootstrap_ssh() {
-    local attempt empty_password_login=0
-
-    phase SSH 'checking fresh-image root SSH access'
-    for attempt in $(seq 1 10); do
-        if ssh_bootstrap_cmd true >/dev/null 2>&1; then
-            empty_password_login=1
-            break
-        fi
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            fail 'QEMU exited while bootstrapping SSH'
-        fi
-        sleep 1
-    done
-
-    if [ "$empty_password_login" -eq 1 ]; then
-        phase SSH 'installing lifecycle SSH key'
-        scp_bootstrap "$SSH_PUBLIC_KEY" "$SSH_TARGET:/tmp/wloc-lifecycle.pub" >/dev/null \
-            || fail 'unable to copy the lifecycle SSH public key to OpenWrt'
-        ssh_bootstrap_cmd "mkdir -p /etc/dropbear; mv /tmp/wloc-lifecycle.pub /etc/dropbear/authorized_keys; chmod 0600 /etc/dropbear/authorized_keys" \
-            || fail 'unable to install the lifecycle SSH public key'
-    fi
-
-    wait_for_key_ssh \
-        || fail 'OpenWrt accepted neither the lifecycle SSH key nor root empty-password bootstrap'
-    phase SSH 'key installed'
-}
-
-reboot_guest() {
-    local attempt went_down=0
-
-    phase REBOOT 'requesting guest reboot'
-    ssh_cmd reboot >/dev/null 2>&1 || true
-
-    phase REBOOT 'waiting for guest down'
-    for attempt in $(seq 1 30); do
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            fail 'QEMU exited while OpenWrt was rebooting'
-        fi
-
-        if ! ssh_cmd true >/dev/null 2>&1; then
-            went_down=1
-            phase REBOOT 'guest down'
-            break
-        fi
-        sleep 1
-    done
-
-    [ "$went_down" -eq 1 ] ||
-        fail 'OpenWrt SSH never went down during reboot'
-
-    phase REBOOT 'waiting for guest up'
-    for attempt in $(seq 1 90); do
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            fail 'QEMU exited before OpenWrt returned from reboot'
-        fi
-
-        if ssh_cmd true >/dev/null 2>&1; then
-            phase REBOOT 'guest up'
-            phase REBOOT 'waiting for WLOC instances'
-            wait_for_instance daemon ||
-                fail 'WLOC daemon did not return after reboot'
-            wait_for_instance schedule ||
-                fail 'WLOC schedule did not return after reboot'
-            phase REBOOT 'WLOC instances restored'
-            return 0
-        fi
-
-        sleep 2
-    done
-
-    fail 'OpenWrt SSH did not return after reboot'
-}
-
 wait_for_instance() {
     local instance="$1" attempt
     for attempt in $(seq 1 30); do
@@ -218,28 +135,77 @@ wait_for_instance() {
     return 1
 }
 
-apk_name="$(basename "$WLOC_OPENWRT_APK")"
-qemu-system-x86_64 \
-    -machine q35 \
-    -m "$MEMORY" \
-    -nographic \
-    -drive "file=$WLOC_OPENWRT_IMAGE,format=raw,if=virtio" \
-    -netdev "user,id=net0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22" \
-    -device virtio-net-pci,netdev=net0 \
-    >"$CONSOLE_LOG" 2>&1 &
-QEMU_PID=$!
+reboot_device() {
+    local attempt went_down=0
 
-phase BOOT 'waiting for OpenWrt SSH'
-wait_for_ssh_transport || fail 'OpenWrt SSH did not become ready'
-phase BOOT 'official OpenWrt image booted'
-bootstrap_ssh
-ssh_cmd "command -v ubus >/dev/null && command -v jsonfilter >/dev/null" \
-    || fail 'OpenWrt does not provide ubus and jsonfilter'
+    phase REBOOT 'requesting device reboot'
+    ssh_cmd reboot >/dev/null 2>&1 || true
+
+    phase REBOOT 'waiting for device down'
+    for attempt in $(seq 1 30); do
+        if ! ssh_cmd true >/dev/null 2>&1; then
+            went_down=1
+            phase REBOOT 'device down'
+            break
+        fi
+        sleep 1
+    done
+
+    [ "$went_down" -eq 1 ] || fail 'OpenWrt SSH never went down during reboot'
+
+    phase REBOOT 'waiting for device up'
+    for attempt in $(seq 1 90); do
+        if ssh_cmd true >/dev/null 2>&1; then
+            phase REBOOT 'device up'
+            phase REBOOT 'waiting for WLOC instances'
+            wait_for_instance daemon || fail 'WLOC daemon did not return after reboot'
+            wait_for_instance schedule || fail 'WLOC schedule did not return after reboot'
+            phase REBOOT 'WLOC instances restored'
+            return 0
+        fi
+        sleep 2
+    done
+
+    fail 'OpenWrt SSH did not return after reboot'
+}
+
+phase PREFLIGHT 'checking SSH transport and remote tools'
+ssh_cmd true >/dev/null 2>&1 || fail 'unable to connect to OpenWrt over SSH'
+for command in apk ubus jsonfilter uci nft; do
+    ssh_cmd "command -v $command >/dev/null 2>&1" \
+        || fail "required OpenWrt command not found: $command"
+done
+
+if ssh_cmd "apk info -e luci-app-wloc >/dev/null 2>&1"; then
+    fail 'luci-app-wloc is already installed; use a dedicated clean test device'
+fi
+if ssh_cmd "uci -q get wireless.wloc_test >/dev/null 2>&1"; then
+    fail 'wireless.wloc_test already exists; refusing to modify an existing AP section'
+fi
+if ssh_cmd "uci -q get wloc.test >/dev/null 2>&1"; then
+    fail 'wloc.test already exists; refusing to modify an existing location section'
+fi
+
+if MAIN_ENABLED_VALUE="$(ssh_cmd "uci -q get wloc.main.enabled" 2>/dev/null)"; then
+    MAIN_ENABLED_WAS_SET=1
+fi
+if MAIN_DEBUG_VALUE="$(ssh_cmd "uci -q get wloc.main.debug" 2>/dev/null)"; then
+    MAIN_DEBUG_WAS_SET=1
+fi
+case "$MAIN_ENABLED_VALUE" in
+    ''|*[!A-Za-z0-9_.-]*)
+        [ "$MAIN_ENABLED_WAS_SET" -eq 0 ] || fail 'wloc.main.enabled has an unsafe value to restore';;
+esac
+case "$MAIN_DEBUG_VALUE" in
+    ''|*[!A-Za-z0-9_.-]*)
+        [ "$MAIN_DEBUG_WAS_SET" -eq 0 ] || fail 'wloc.main.debug has an unsafe value to restore';;
+esac
 
 phase APK 'installing package'
-scp $SCP_OPTIONS "$WLOC_OPENWRT_APK" "$SSH_TARGET:/tmp/$apk_name" >/dev/null \
+scp_cmd "$WLOC_OPENWRT_APK" "$SSH_TARGET:$REMOTE_APK" >/dev/null \
     || fail 'unable to copy the WLOC APK to OpenWrt'
-ssh_cmd "apk add --allow-untrusted /tmp/$apk_name" >/dev/null \
+PACKAGE_CLEANUP_REQUIRED=1
+ssh_cmd "apk add --allow-untrusted $REMOTE_APK" >/dev/null \
     || fail 'apk could not install luci-app-wloc'
 ssh_cmd "command -v rpcd >/dev/null && [ -x /etc/init.d/wloc ]" \
     || fail 'package install did not provide rpcd or the wloc init script'
@@ -255,8 +221,9 @@ if instance_running daemon; then
 fi
 phase PROCD 'default_postinst verified'
 
-ssh_cmd "touch /etc/config/wireless; uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
-    || fail 'could not create the deterministic WLOC test rule'
+FIXTURE_CREATED=1
+ssh_cmd "uci set wireless.wloc_test=wifi-iface; uci set wireless.wloc_test.mode=ap; uci set wireless.wloc_test.ifname=lo; uci set wireless.wloc_test.ssid=wloc-test; uci set wloc.test=wifi; uci set wloc.test.enabled=1; uci set wloc.test.iface=lo; uci set wloc.test.latitude=0; uci set wloc.test.longitude=0; uci set wloc.test.proxy_type=direct; uci set wloc.main.enabled=1; uci commit wireless; uci commit wloc" \
+    || fail 'could not create the deterministic WLOC test fixture'
 ssh_cmd /etc/init.d/wloc restart >/dev/null \
     || fail 'wloc could not be restarted after enabling the daemon'
 
@@ -272,24 +239,23 @@ phase FIREWALL 'applying unsaved rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; }; }'
 APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
-APPLY_RESULT=/tmp/wloc-apply-result
-ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
+ssh_cmd "$APPLY_COMMAND > $REMOTE_APPLY_RESULT" \
     || fail 'firewall Apply did not return a response'
-apply_ok="$(rpc_value "cat $APPLY_RESULT" '@.ok' 2>/dev/null || true)"
+apply_ok="$(rpc_value "cat $REMOTE_APPLY_RESULT" '@.ok' 2>/dev/null || true)"
 case "$apply_ok" in
     true|1) ;;
-    *) ssh_cmd "cat $APPLY_RESULT" >&2 || true
+    *) ssh_cmd "cat $REMOTE_APPLY_RESULT" >&2 || true
        fail 'firewall Apply did not return ok=true';;
 esac
-applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
+applied_hash="$(rpc_value "cat $REMOTE_APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'firewall Apply did not return an applied revision'
-ssh_cmd "rm -f $APPLY_RESULT"
+ssh_cmd "rm -f $REMOTE_APPLY_RESULT"
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
     || fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'Apply changed the persistent firewall file'
 phase FIREWALL 'Apply without Save'
-reboot_guest
+reboot_device
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'reboot without Save did not restore the persistent firewall file'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
@@ -298,17 +264,17 @@ fi
 phase FIREWALL 'rollback verified'
 
 phase FIREWALL 'applying and saving rules'
-ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
+ssh_cmd "$APPLY_COMMAND > $REMOTE_APPLY_RESULT" \
     || fail 'second firewall Apply did not return a response'
-apply_ok="$(rpc_value "cat $APPLY_RESULT" '@.ok' 2>/dev/null || true)"
+apply_ok="$(rpc_value "cat $REMOTE_APPLY_RESULT" '@.ok' 2>/dev/null || true)"
 case "$apply_ok" in
     true|1) ;;
-    *) ssh_cmd "cat $APPLY_RESULT" >&2 || true
+    *) ssh_cmd "cat $REMOTE_APPLY_RESULT" >&2 || true
        fail 'second firewall Apply did not return ok=true';;
 esac
-applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
+applied_hash="$(rpc_value "cat $REMOTE_APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'second firewall Apply did not return an applied revision'
-ssh_cmd "rm -f $APPLY_RESULT"
+ssh_cmd "rm -f $REMOTE_APPLY_RESULT"
 SAVE_COMMAND="ubus call luci.wloc firewall_save '{\"expected_applied_hash\":\"$applied_hash\"}'"
 case "$(rpc_value "$SAVE_COMMAND" '@.ok')" in
     true|1) ;;
@@ -317,7 +283,7 @@ esac
 persistent_b="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 [ "$persistent_b" != "$persistent_a" ] \
     || fail 'Save did not replace the persistent firewall file'
-reboot_guest
+reboot_device
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_b" ] \
     || fail 'saved firewall rules did not survive reboot'
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
@@ -388,6 +354,7 @@ ssh_cmd "test -s /var/run/wloc/firewall.applied.nft" \
     || fail 'runtime firewall snapshot was not present before uninstall'
 ssh_cmd "apk del luci-app-wloc" >/dev/null \
     || fail 'apk could not uninstall luci-app-wloc'
+PACKAGE_CLEANUP_REQUIRED=0
 if instance_running daemon || instance_running schedule; then
     fail 'a WLOC procd instance remained running after package uninstall'
 fi
@@ -404,5 +371,5 @@ ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.
     || fail 'WLOC runtime state remained after package uninstall'
 phase UNINSTALL 'cleanup verified'
 
-phase COMPLETE 'all lifecycle checks passed'
-echo 'OpenWrt lifecycle tests: PASS'
+phase COMPLETE 'all runtime integration checks passed'
+echo 'OpenWrt runtime integration: PASS'
