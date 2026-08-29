@@ -22,9 +22,9 @@ DNS_RETRY_SECONDS=10
 INGRESS_INTERFACE_TIMEOUT=120s
 
 firewall_snapshot() {
-    if [ -s "$CUSTOM_FIREWALL" ]; then
+    if [ -f "$CUSTOM_FIREWALL" ]; then
         printf '%s\n' "$CUSTOM_FIREWALL"
-    elif [ -s "$PERSISTENT_FIREWALL" ]; then
+    elif [ -f "$PERSISTENT_FIREWALL" ]; then
         printf '%s\n' "$PERSISTENT_FIREWALL"
     fi
     return 0
@@ -134,8 +134,12 @@ valid_ipv4() {
 }
 
 host_set_targets() {
+    local snapshot
+
+    snapshot="$(firewall_snapshot)"
+
     {
-        if [ ! -s "$CUSTOM_FIREWALL" ] && [ ! -s "$PERSISTENT_FIREWALL" ]; then
+        if [ -z "$snapshot" ]; then
             printf 'inet %s\n' "$TABLE"
         fi
         declarative_set_targets "$HOST_SET"

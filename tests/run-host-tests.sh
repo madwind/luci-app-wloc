@@ -653,6 +653,32 @@ clear_host_sets \
 [ ! -s "$host_flush_log" ] \
     || fail 'missing host set unexpectedly received a flush'
 
+echo '  -> empty applied snapshots take precedence over persistent rules'
+empty_applied_snapshot="$fixture_root/empty-firewall.applied.nft"
+old_persistent_snapshot="$fixture_root/old-firewall.nft"
+: >"$empty_applied_snapshot"
+printf '%s\n' \
+    'table inet old {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$old_persistent_snapshot"
+CUSTOM_FIREWALL="$empty_applied_snapshot"
+PERSISTENT_FIREWALL="$old_persistent_snapshot"
+[ "$(firewall_snapshot)" = "$empty_applied_snapshot" ] \
+    || fail 'empty applied snapshot did not take precedence'
+[ -z "$(ingress_set_targets)" ] \
+    || fail 'ingress targets were read from persistent rules after an empty Apply'
+[ -z "$(declarative_set_targets "$HOST_SET")" ] \
+    || fail 'host declarations were read from persistent rules after an empty Apply'
+[ -z "$(host_set_targets)" ] \
+    || fail 'host targets retained a legacy fallback after an empty Apply'
+
 nft() { return 1; }
 
 
