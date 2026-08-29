@@ -13,6 +13,8 @@ fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
 runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
+lock_helper="$ROOT/tests/native-lock.test-helper.sh"
+chmod +x "$lock_helper"
 persistent="$fixture_root/firewall.saved.nft"
 applied="$runtime/firewall.applied.nft"
 staged="$runtime/firewall.applied.nft.next"
@@ -57,6 +59,8 @@ export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_RUNTIME="$applied"
 export WLOC_FIREWALL_RUNTIME_NEXT="$staged"
 export WLOC_FIREWALL_PATH="$persistent"
+export WLOC_FIREWALL_LOCK="$runtime/firewall.lock"
+export WLOC_FIREWALL_LOCK_COMMAND="$lock_helper"
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$HELPER"
 

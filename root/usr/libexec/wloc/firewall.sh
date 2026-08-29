@@ -8,122 +8,35 @@ FIREWALL_RUNTIME_NEXT=${WLOC_FIREWALL_RUNTIME_NEXT:-${FIREWALL_RUNTIME}.next}
 FIREWALL_PERSISTENT=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
-FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-${FIREWALL_RUNTIME_DIR}/firewall.lock}
+FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-/var/lock/wloc-firewall.lock}
+FIREWALL_LOCK_COMMAND=${WLOC_FIREWALL_LOCK_COMMAND:-lock}
 FIREWALL_LOCK_TIMEOUT=${WLOC_FIREWALL_LOCK_TIMEOUT:-5}
 FIREWALL_LOCK_HELD=0
-FIREWALL_LOCK_OWNER=''
 
 firewall_set_error() {
     firewall_error_code="$1"
     firewall_error="$2"
 }
 
-firewall_process_start() {
-    if [ -r "/proc/$$/stat" ]; then
-        awk '{ print $22; exit }' "/proc/$$/stat"
-    else
-        printf '%s' unknown
-    fi
-}
-
-firewall_lock_save_traps() {
-    FIREWALL_LOCK_SAVED_EXIT_TRAP="$(trap -p EXIT 2>/dev/null || true)"
-    [ -n "$FIREWALL_LOCK_SAVED_EXIT_TRAP" ] || \
-        FIREWALL_LOCK_SAVED_EXIT_TRAP="$(trap -p 0 2>/dev/null || true)"
-    FIREWALL_LOCK_SAVED_INT_TRAP="$(trap -p INT 2>/dev/null || true)"
-    FIREWALL_LOCK_SAVED_TERM_TRAP="$(trap -p TERM 2>/dev/null || true)"
-    FIREWALL_LOCK_SAVED_HUP_TRAP="$(trap -p HUP 2>/dev/null || true)"
-}
-
-firewall_lock_restore_trap() {
-    local signal="$1" saved="$2"
-    if [ -n "$saved" ]; then
-        eval "$saved"
-    else
-        trap - "$signal"
-    fi
-}
-
 firewall_lock_release() {
-    local owner=''
     [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ] || return 0
-    if [ -r "$FIREWALL_LOCK/owner" ]; then
-        owner="$(cat "$FIREWALL_LOCK/owner" 2>/dev/null || true)"
-    fi
-    if [ "$owner" = "$FIREWALL_LOCK_OWNER" ]; then
-        rm -f "$FIREWALL_LOCK/owner" || true
-        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
-    fi
+    "$FIREWALL_LOCK_COMMAND" -u "$FIREWALL_LOCK" >/dev/null 2>&1 || true
     FIREWALL_LOCK_HELD=0
-    FIREWALL_LOCK_OWNER=''
-    firewall_lock_restore_trap EXIT "${FIREWALL_LOCK_SAVED_EXIT_TRAP:-}"
-    firewall_lock_restore_trap INT "${FIREWALL_LOCK_SAVED_INT_TRAP:-}"
-    firewall_lock_restore_trap TERM "${FIREWALL_LOCK_SAVED_TERM_TRAP:-}"
-    firewall_lock_restore_trap HUP "${FIREWALL_LOCK_SAVED_HUP_TRAP:-}"
-    FIREWALL_LOCK_SAVED_EXIT_TRAP=''
-    FIREWALL_LOCK_SAVED_INT_TRAP=''
-    FIREWALL_LOCK_SAVED_TERM_TRAP=''
-    FIREWALL_LOCK_SAVED_HUP_TRAP=''
-}
-
-firewall_lock_abort() {
-    local status="$1"
-    firewall_lock_release
-    exit "$status"
-}
-
-firewall_lock_install_traps() {
-    firewall_lock_save_traps
-    trap 'firewall_lock_release' EXIT
-    trap 'firewall_lock_abort 130' INT
-    trap 'firewall_lock_abort 143' TERM
-    trap 'firewall_lock_abort 129' HUP
-}
-
-firewall_lock_owner_alive() {
-    local owner pid start current
-    [ -r "$FIREWALL_LOCK/owner" ] || return 2
-    owner="$(cat "$FIREWALL_LOCK/owner" 2>/dev/null || true)"
-    pid="${owner%% *}"
-    start="${owner#* }"
-    case "$pid" in
-        ''|*[!0-9]*) return 2;;
-    esac
-    kill -0 "$pid" 2>/dev/null || return 1
-    case "$start" in
-        ''|unknown) return 0;;
-    esac
-    [ -r "/proc/$pid/stat" ] || return 0
-    current="$(awk '{ print $22; exit }' "/proc/$pid/stat")"
-    [ "$current" = "$start" ]
-}
-
-firewall_lock_remove_stale() {
-    local owner_rc
-    [ -d "$FIREWALL_LOCK" ] || return 1
-    if [ ! -e "$FIREWALL_LOCK/owner" ]; then
-        rmdir "$FIREWALL_LOCK" 2>/dev/null
-        return $?
-    fi
-    if firewall_lock_owner_alive; then
-        return 1
-    else
-        owner_rc=$?
-    fi
-    [ "$owner_rc" -eq 1 ] || return 1
-    rm -f "$FIREWALL_LOCK/owner" || return 1
-    rmdir "$FIREWALL_LOCK" 2>/dev/null
 }
 
 firewall_lock_acquire() {
-    local lock_parent timeout attempt owner_start
+    local lock_parent timeout attempt
     [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ] && return 0
     firewall_error_code=''
     firewall_error=''
+    command -v "$FIREWALL_LOCK_COMMAND" >/dev/null 2>&1 || {
+        firewall_set_error firewall_lock_failed 'OpenWrt lock utility is not available'
+        return 1
+    }
     lock_parent="${FIREWALL_LOCK%/*}"
     [ "$lock_parent" = "$FIREWALL_LOCK" ] && lock_parent='.'
     mkdir -p "$lock_parent" || {
-        firewall_set_error firewall_lock_failed 'unable to create the firewall lock directory'
+        firewall_set_error firewall_lock_failed 'unable to create the firewall lock parent directory'
         return 1
     }
     timeout="$FIREWALL_LOCK_TIMEOUT"
@@ -131,10 +44,7 @@ firewall_lock_acquire() {
         ''|*[!0-9]*) timeout=5;;
     esac
     attempt=0
-    while ! mkdir "$FIREWALL_LOCK" 2>/dev/null; do
-        if firewall_lock_remove_stale; then
-            continue
-        fi
+    while ! "$FIREWALL_LOCK_COMMAND" -n "$FIREWALL_LOCK" >/dev/null 2>&1; do
         if [ "$attempt" -ge "$timeout" ]; then
             firewall_set_error firewall_busy 'Another firewall operation is already in progress. Please retry.'
             return 1
@@ -145,23 +55,7 @@ firewall_lock_acquire() {
         }
         attempt=$((attempt + 1))
     done
-    chmod 0700 "$FIREWALL_LOCK" 2>/dev/null || {
-        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
-        firewall_set_error firewall_lock_failed 'unable to initialize the firewall lock'
-        return 1
-    }
-    owner_start="$(firewall_process_start)"
-    FIREWALL_LOCK_OWNER="$$ $owner_start"
-    if ! printf '%s\n' "$FIREWALL_LOCK_OWNER" >"$FIREWALL_LOCK/owner" || \
-        ! chmod 0600 "$FIREWALL_LOCK/owner"; then
-        rm -f "$FIREWALL_LOCK/owner"
-        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
-        FIREWALL_LOCK_OWNER=''
-        firewall_set_error firewall_lock_failed 'unable to record the firewall lock owner'
-        return 1
-    fi
     FIREWALL_LOCK_HELD=1
-    firewall_lock_install_traps
 }
 
 firewall_tables() {
@@ -658,8 +552,8 @@ if [ "${WLOC_FIREWALL_HELPER_SOURCE:-0}" -ne 1 ]; then
             }
             ;;
         active)
-            firewall_collect_active "${2:-}" || {
-                printf '%s\n' 'nftables configuration file is not readable' >&2
+            firewall_active "${2:-}" || {
+                printf '%s\n' "${firewall_error:-nftables configuration file is not readable}" >&2
                 exit 1
             }
             printf '%s\n' "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"

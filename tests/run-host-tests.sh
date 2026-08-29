@@ -195,6 +195,17 @@ grep -Fq 'firewall_lock_acquire' "$FIREWALL_HELPER" \
     || fail 'firewall helper does not serialize firewall operations'
 grep -Fq 'FIREWALL_LOCK_TIMEOUT' "$FIREWALL_HELPER" \
     || fail 'firewall lock does not have a bounded wait'
+grep -Fq 'FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-/var/lock/wloc-firewall.lock}' "$FIREWALL_HELPER" \
+    || fail 'firewall helper does not use the OpenWrt lock path'
+grep -Fq 'FIREWALL_LOCK_COMMAND=${WLOC_FIREWALL_LOCK_COMMAND:-lock}' "$FIREWALL_HELPER" \
+    || fail 'firewall helper does not use the OpenWrt lock utility'
+grep -Fq '"$FIREWALL_LOCK_COMMAND" -n "$FIREWALL_LOCK"' "$FIREWALL_HELPER" \
+    || fail 'firewall helper does not acquire the lock non-blocking'
+grep -Fq '"$FIREWALL_LOCK_COMMAND" -u "$FIREWALL_LOCK"' "$FIREWALL_HELPER" \
+    || fail 'firewall helper does not release the native lock'
+if grep -Eq 'firewall_process_start|firewall_lock_(save_traps|restore_trap|abort|install_traps|owner_alive|remove_stale)|FIREWALL_LOCK_OWNER|trap -p|/owner' "$FIREWALL_HELPER"; then
+    fail 'firewall helper still contains the removed custom owner/trap lock'
+fi
 grep -Fq 'firewall_save_snapshot' "$RPC" "$FIREWALL_HELPER" \
     || fail 'firewall Save does not use the guarded applied snapshot helper'
 

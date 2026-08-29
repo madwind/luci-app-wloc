@@ -13,6 +13,8 @@ fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
 runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
+lock_helper="$ROOT/tests/native-lock.test-helper.sh"
+chmod +x "$lock_helper"
 source_a="$fixture_root/firewall-a.nft"
 source_b="$fixture_root/firewall-b.nft"
 printf '%s\n' 'table inet apply_a {' '}' >"$source_a"
@@ -22,26 +24,24 @@ printf '%s\n' 'table inet old {' '}' >"$runtime/firewall.applied.nft"
 WLOC_RUNTIME_DIR="$runtime"
 WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
 WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
+WLOC_FIREWALL_LOCK="$runtime/firewall.lock"
+WLOC_FIREWALL_LOCK_COMMAND="$lock_helper"
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$HELPER"
 
-echo '  -> busy locks fail fast and stale locks are recoverable'
+echo '  -> native lock rejects a busy operation without an owner file'
 FIREWALL_LOCK_TIMEOUT=0
-mkdir "$FIREWALL_LOCK"
-printf '%s\n' "$$ unknown" >"$FIREWALL_LOCK/owner"
+"$lock_helper" -n "$FIREWALL_LOCK" \
+    || fail 'test lock helper did not acquire the busy lock'
 if firewall_lock_acquire; then
     fail 'an active firewall lock was acquired by a second operation'
 fi
 [ "${firewall_error_code:-}" = firewall_busy ] \
     || fail 'an active firewall lock did not return firewall_busy'
-rm -f "$FIREWALL_LOCK/owner"
-rmdir "$FIREWALL_LOCK"
-
-mkdir "$FIREWALL_LOCK"
-printf '%s\n' '2147483647 unknown' >"$FIREWALL_LOCK/owner"
-firewall_lock_acquire || fail 'a stale firewall lock was not recovered'
-firewall_lock_release
-[ ! -e "$FIREWALL_LOCK" ] || fail 'the recovered firewall lock was not released'
+[ ! -e "$FIREWALL_LOCK/owner" ] \
+    || fail 'the native lock unexpectedly used an owner file'
+"$lock_helper" -u "$FIREWALL_LOCK" \
+    || fail 'test lock helper did not release the busy lock'
 
 rules_helper="$fixture_root/rules.sh"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$rules_helper"
@@ -108,6 +108,8 @@ WLOC_TEST_APPLY_RELEASE="$release" \
 WLOC_RUNTIME_DIR="$runtime" \
 WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft" \
 WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next" \
+WLOC_FIREWALL_LOCK="$runtime/firewall.lock" \
+WLOC_FIREWALL_LOCK_COMMAND="$lock_helper" \
 WLOC_FIREWALL_LOCK_TIMEOUT=20 \
 WLOC_RULES_HELPER="$rules_helper" \
 "$worker" &
@@ -134,6 +136,8 @@ WLOC_TEST_APPLY_RELEASE="$fixture_root/apply-b-release" \
 WLOC_RUNTIME_DIR="$runtime" \
 WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft" \
 WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next" \
+WLOC_FIREWALL_LOCK="$runtime/firewall.lock" \
+WLOC_FIREWALL_LOCK_COMMAND="$lock_helper" \
 WLOC_FIREWALL_LOCK_TIMEOUT=20 \
 WLOC_RULES_HELPER="$rules_helper" \
 "$worker" &
@@ -156,6 +160,9 @@ grep -Fqx 'inet:apply_b' "$state" \
     || fail 'the kernel model does not contain the last serialized Apply'
 [ "$(sed -n '1p' "$log")" = A ] || fail 'Apply A was not the first transaction'
 [ "$(sed -n '2p' "$log")" = B ] || fail 'Apply B did not start after Apply A'
-[ ! -e "$runtime/firewall.lock" ] || fail 'firewall lock remained after both transactions'
+[ ! -e "$runtime/firewall.lock/owner" ] \
+    || fail 'native firewall lock unexpectedly created an owner file'
+[ ! -d "$runtime/firewall.lock.test-held" ] \
+    || fail 'native firewall lock test holder remained after both transactions'
 
 echo 'WLOC firewall concurrency tests: PASS'

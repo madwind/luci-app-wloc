@@ -14,6 +14,8 @@ fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
 runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
+lock_helper="$ROOT/tests/native-lock.test-helper.sh"
+chmod +x "$lock_helper"
 persistent="$fixture_root/firewall.saved.nft"
 applied_source="$fixture_root/firewall.applied-input.nft"
 printf '%s' 'table inet saved {
@@ -96,6 +98,8 @@ export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_PATH="$persistent"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
 export WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
+export WLOC_FIREWALL_LOCK="$runtime/firewall.lock"
+export WLOC_FIREWALL_LOCK_COMMAND="$lock_helper"
 export WLOC_STATUS_PATH="$runtime/status.json"
 . "$RPC"
 
@@ -127,14 +131,16 @@ hash_c="$response_applied_hash"
 persistent_before="$(cksum "$persistent")"
 echo '  -> a busy firewall lock returns a retryable RPC error'
 FIREWALL_LOCK_TIMEOUT=0
-mkdir "$FIREWALL_LOCK"
-printf '%s\n' "$$ unknown" >"$FIREWALL_LOCK/owner"
+"$lock_helper" -n "$FIREWALL_LOCK" \
+    || fail 'test lock helper did not acquire the busy lock'
 emit_firewall_save "$hash_c"
 [ "$response_ok" = 0 ] || fail 'busy Save unexpectedly succeeded'
 [ "$response_error_code" = firewall_busy ] || fail 'busy Save returned the wrong error code'
 [ "$persistent_before" = "$(cksum "$persistent")" ] || fail 'busy Save changed persistent storage'
-rm -f "$FIREWALL_LOCK/owner"
-rmdir "$FIREWALL_LOCK"
+[ ! -e "$FIREWALL_LOCK/owner" ] \
+    || fail 'the native lock unexpectedly used an owner file'
+"$lock_helper" -u "$FIREWALL_LOCK" \
+    || fail 'test lock helper did not release the busy lock'
 FIREWALL_LOCK_TIMEOUT=5
 
 emit_firewall_save "$hash_b"

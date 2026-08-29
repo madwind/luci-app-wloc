@@ -14,6 +14,8 @@ fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
 runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
+lock_helper="$ROOT/tests/native-lock.test-helper.sh"
+chmod +x "$lock_helper"
 firewall_source="$fixture_root/firewall.nft"
 printf '%s\n' 'table inet wloc {' '}' >"$firewall_source"
 
@@ -31,6 +33,8 @@ export WLOC_RULES_HELPER="$rules_helper"
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
 export WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
+export WLOC_FIREWALL_LOCK="$runtime/firewall.lock"
+export WLOC_FIREWALL_LOCK_COMMAND="$lock_helper"
 export WLOC_STATUS_PATH="$runtime/status.json"
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$HELPER"
