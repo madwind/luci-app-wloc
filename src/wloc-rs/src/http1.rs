@@ -109,6 +109,11 @@ fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
             headers.append(name, value);
         }
     }
+    if chunked && content_length.is_some() {
+        return Err(ProxyError::Upstream(
+            "ambiguous HTTP/1 message framing".into(),
+        ));
+    }
     let wire_body = &raw[header_end + 4..];
     let body = if chunked {
         decode_chunked(wire_body)?
@@ -189,6 +194,10 @@ mod tests {
         assert!(
             parse(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\na").is_err()
         );
+        assert!(parse(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n"
+        )
+        .is_err());
         assert!(decode_chunked(b"1\r\naXX0\r\n\r\n").is_err());
         assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 524289\r\n\r\n").is_err());
     }

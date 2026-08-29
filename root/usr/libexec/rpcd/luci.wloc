@@ -309,13 +309,19 @@ package_version() {
 }
 
 firewall_status_values() {
-    local table_dump counters
-    [ -s "$FIREWALL_RUNTIME" ] && rules_present=1 || rules_present=0
-    firewall_is_active=0
-    if firewall_collect_active "$FIREWALL_RUNTIME" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
-        firewall_is_active=1
+    local active_source table_dump counters
+    if [ -f "$FIREWALL_RUNTIME" ]; then
+        active_source="$FIREWALL_RUNTIME"
+    else
+        active_source="$FIREWALL"
     fi
-    table_dump="$(nft list table inet wloc 2>/dev/null || true)"
+    [ -s "$active_source" ] && rules_present=1 || rules_present=0
+    firewall_is_active=0
+    table_dump=''
+    if [ -s "$active_source" ] && firewall_collect_active "$active_source"; then
+        table_dump="$FIREWALL_ACTIVE"
+        [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ] && firewall_is_active=1
+    fi
     counters="$(printf '%s\n' "$table_dump" | awk '
         /wloc owned (AP|ingress) redirect/ {
             if (match($0, /counter packets [0-9]+/)) {
