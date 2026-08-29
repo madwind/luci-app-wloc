@@ -218,6 +218,18 @@ grep -Fq 'firewall_file_hash "$FIREWALL_PERSISTENT"' "$FIREWALL_HELPER" \
 if grep -Fq 'firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"' "$FIREWALL_HELPER"; then
     fail 'firewall Save still depends on the caller FIREWALL variable'
 fi
+grep -Fq 'LUCI_DEPENDS:=@(aarch64||x86_64)' "$ROOT/Makefile" \
+    || fail 'package Makefile does not declare supported architectures'
+grep -Fq 'LUCI_EXTRA_DEPENDS:=' "$ROOT/Makefile" \
+    || fail 'package Makefile no longer separates runtime-only dependencies'
+grep -Fq 'luci-base (>=0)' "$ROOT/Makefile" \
+    || fail 'runtime-only luci-base dependency is missing'
+grep -Fq 'nftables (>=0)' "$ROOT/Makefile" \
+    || fail 'runtime-only nftables dependency is missing'
+grep -Fq 'ip-full (>=0)' "$ROOT/Makefile" \
+    || fail 'runtime-only ip-full dependency is missing'
+grep -Fq 'jshn (>=0)' "$ROOT/Makefile" \
+    || fail 'runtime-only jshn dependency is missing'
 
 grep -Fq 'listener_ready' "$INIT" \
     || fail 'service start does not defer dynamic-set population until listener readiness'

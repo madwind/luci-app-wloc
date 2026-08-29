@@ -11,9 +11,9 @@ PKG_MAINTAINER:=luci-app-wloc maintainers
 
 LUCI_TITLE:=Apple WLOC movement-following location proxy for OpenWrt
 
-# Do not put runtime-only dependencies in LUCI_DEPENDS.
-# LUCI_DEPENDS becomes OpenWrt build dependencies as well.
-LUCI_DEPENDS:=
+# wlocd currently ships musl binaries only for these OpenWrt architectures.
+# Keep runtime-only packages in LUCI_EXTRA_DEPENDS below.
+LUCI_DEPENDS:=@(aarch64||x86_64)
 
 # Runtime dependencies only. They are written into the APK metadata
 # without pulling the whole target dependency tree into this SDK build.
