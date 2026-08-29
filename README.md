@@ -182,14 +182,16 @@ when no snapshot exists) through a checked nftables delete transaction.
 Unrelated tables are not touched. Since the editor accepts declarations rather
 than arbitrary command scripts, WLOC can identify the owned tables for cleanup.
 
-For a real-system lifecycle check, the release workflow uses the OpenWrt
-ImageBuilder to create an x86_64 QEMU image with a temporary root SSH key in a
-network overlay. The WLOC APK is then copied into the guest and installed by
-the lifecycle test, so package hooks and service behavior are exercised as
-they are on OpenWrt.
+For a real-system lifecycle check, the release workflow downloads and verifies
+the official OpenWrt 25.12.5 x86_64 generic ext4-combined image. The compressed
+artifact is cached, while a disposable uncompressed copy is booted directly by
+QEMU. The lifecycle test initializes root SSH key access on a fresh image when
+needed, then copies and installs the WLOC APK so package hooks and service
+behavior are exercised as they are on OpenWrt.
 
-You can also provide an OpenWrt x86_64 QEMU image with root SSH key access and
-run the optional test directly:
+You can also provide an OpenWrt x86_64 QEMU image and a root SSH key pair to run
+the optional test directly. The private key's adjacent `.pub` file is used to
+bootstrap a fresh official image:
 
 The release workflow runs the same check in a dedicated **OpenWrt x86_64
 lifecycle** job after the x86_64 APK build. It verifies package hooks,
@@ -202,7 +204,8 @@ WLOC_OPENWRT_SSH_KEY=/path/to/root.key \
 sh tests/openwrt-lifecycle.test.sh
 ```
 
-It uses QEMU snapshot mode, so the supplied image is not modified.
+The supplied image is used as the QEMU lifecycle disk and may be modified by
+the test; use a disposable copy when running it manually.
 
 ## License
 

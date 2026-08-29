@@ -147,16 +147,33 @@ fi
 if grep -Eq 'losetup|lsblk|sudo mount|umount' "$WORKFLOW"; then
     fail 'QEMU lifecycle workflow still mutates a raw image filesystem'
 fi
-grep -Fq 'openwrt-imagebuilder-25.12.5-x86-64.Linux-x86_64.tar.zst' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not download the OpenWrt ImageBuilder'
-grep -Fq '313221253d9bac534e4a4ee6492a4941b4ba0f43200eceb8d16a4785470ae9df' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not pin the ImageBuilder checksum'
-grep -Fq 'tests/openwrt-image-overlay' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not use the lifecycle overlay'
-grep -Fq 'authorized_keys' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not inject the temporary SSH key'
-grep -Fq 'make -C "$imagebuilder_dir" image PROFILE=' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not build an image with ImageBuilder'
+if grep -Eiq 'imagebuilder|rsync|zstd|tar --zstd|make -C .* image|openwrt-image-overlay' "$WORKFLOW"; then
+    fail 'QEMU lifecycle workflow still contains ImageBuilder or overlay tooling'
+fi
+grep -Fq "OPENWRT_VERSION='25.12.5'" "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not pin the OpenWrt version'
+grep -Fq "OPENWRT_TARGET='x86/64'" "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not pin the OpenWrt target'
+grep -Fq "OPENWRT_IMAGE='openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz'" "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not use the official ext4-combined image'
+grep -Fq "OPENWRT_IMAGE_SHA256='23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461'" "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not pin the official image checksum'
+grep -Fq 'Cache verified OpenWrt image' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not cache the official image'
+grep -Fq 'openwrt-runtime-image-' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow cache key does not identify the runtime image'
+grep -Fq 'gzip -dc "$image_gz" >"$image"' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not unpack the official image'
+grep -Fq "ssh-keygen -t ed25519 -N '' -f \"\$RUNNER_TEMP/wloc-lifecycle\"" "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not create the temporary SSH key'
+grep -Fq 'WLOC_OPENWRT_IMAGE="$RUNNER_TEMP/openwrt.img"' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not pass the unpacked image to the test'
+if [ -d "$ROOT/tests/openwrt-image-overlay" ]; then
+    fail 'ImageBuilder lifecycle overlay still exists'
+fi
+if grep -Fq -- '-snapshot' "$QEMU_TEST"; then
+    fail 'QEMU lifecycle test still uses snapshot mode'
+fi
 grep -Fq 'scp $SCP_OPTIONS "$WLOC_OPENWRT_APK"' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not install the APK inside the guest'
 SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
