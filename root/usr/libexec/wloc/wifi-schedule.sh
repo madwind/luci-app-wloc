@@ -113,24 +113,25 @@ restore_entry() {
     case "$original" in
         __unset__)
             if uci -q get "wireless.$section.disabled" >/dev/null 2>&1; then
-                uci -q delete "wireless.$section.disabled"
-                WLOC_SCHEDULE_CHANGED=1
+                if uci -q delete "wireless.$section.disabled"; then
+                    WLOC_SCHEDULE_CHANGED=1
+                fi
             fi
             ;;
         *)
             current="$(uci -q get "wireless.$section.disabled" 2>/dev/null || true)"
             if [ "$current" != "$original" ]; then
-                uci -q set "wireless.$section.disabled=$original"
-                WLOC_SCHEDULE_CHANGED=1
+                if uci -q set "wireless.$section.disabled=$original"; then
+                    WLOC_SCHEDULE_CHANGED=1
+                fi
             fi
             ;;
     esac
 }
 
 reconcile() {
-    local section original current new_state old_state new_state_contents
+    local section original current new_state
     mkdir -p "$STATE_DIR"
-    old_state="$(cat "$STATE_FILE" 2>/dev/null || true)"
     WLOC_SCHEDULE_CHANGED=0
     : >"$DESIRED_FILE"
     config_load wloc || return 1
@@ -143,7 +144,11 @@ reconcile() {
         current="$(uci -q get "wireless.$section.disabled" 2>/dev/null || true)"
         case "$current" in
             1|yes|true) ;;
-            *) uci -q set "wireless.$section.disabled=1"; WLOC_SCHEDULE_CHANGED=1;;
+            *)
+                if uci -q set "wireless.$section.disabled=1"; then
+                    WLOC_SCHEDULE_CHANGED=1
+                fi
+                ;;
         esac
     done <"$DESIRED_FILE"
 
@@ -164,8 +169,7 @@ reconcile() {
     else
         rm -f "$new_state" "$STATE_FILE"
     fi
-    new_state_contents="$(cat "$STATE_FILE" 2>/dev/null || true)"
-    if [ "$WLOC_SCHEDULE_CHANGED" -eq 1 ] || [ "$old_state" != "$new_state_contents" ]; then
+    if [ "$WLOC_SCHEDULE_CHANGED" -eq 1 ]; then
         reload_wifi
     fi
 }

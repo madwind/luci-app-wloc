@@ -894,8 +894,24 @@ reconcile
 [ ! -e "$fixture_root/wifi-schedule.state" ] || fail 'schedule state was not cleared after restore'
 [ "$reload_count" -eq 2 ] || fail 'schedule did not reload WiFi after restore'
 
-    schedule_enabled_value=1
+echo '  -> already-disabled AP schedule does not reload WiFi'
+schedule_enabled_value=1
+fake_disabled=1
+reconcile
+[ "$fake_disabled" = 1 ] || fail 'already-disabled AP changed state on schedule entry'
+[ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|1' ] \
+    || fail 'already-disabled AP did not record its original state'
+[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for an already-disabled AP'
+
+schedule_enabled_value=0
+reconcile
+[ "$fake_disabled" = 1 ] || fail 'already-disabled AP changed state on schedule exit'
+[ ! -e "$fixture_root/wifi-schedule.state" ] || fail 'already-disabled AP state was not cleared'
+[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi after an unchanged schedule exit'
+
+schedule_enabled_value=1
 fake_wireless_exists=0
+fake_disabled=0
 reconcile
 [ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing interface'
 [ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing interface'
