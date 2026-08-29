@@ -76,7 +76,14 @@ a transparent proxy—with a matching OUTPUT policy can process it normally.
 
 - Xiaomi AX3000T and other OpenWrt 25.12.5 MediaTek Filogic devices
   (`aarch64_cortex-a53`)
+- NanoPi R28S (Rockchip RK3528A) with OpenWrt/FriendlyWrt 25.12
+  `rockchip/armv8` (`aarch64_generic`)
 - OpenWrt 25.12.5 x86/64 devices (`x86_64`)
+
+FriendlyWrt 25.12's open-source RK3528 build configuration uses
+`build_dir/target-aarch64_generic_musl/root-rockchip`, so the R28S package is
+published as `aarch64_generic`. This package architecture is independent of
+the compiler optimization settings used for the Cortex-A53 CPU.
 
 ## Build
 
@@ -90,22 +97,25 @@ the same application version with packaging-only changes.
 # MediaTek Filogic
 bash ./scripts/build-openwrt-25.12.5.sh filogic
 
+# NanoPi R28S
+bash ./scripts/build-openwrt-25.12.5.sh r28s
+
 # OpenWrt x86/64
 bash ./scripts/build-openwrt-25.12.5.sh x86_64
 ```
 
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
-`dist/filogic/` or `dist/x86_64/`. The default GitHub Actions CI runs Rust
+`dist/filogic/`, `dist/r28s/`, or `dist/x86_64/`. The default GitHub Actions CI runs Rust
 formatting, Clippy, Rust tests, and host tests on pushes and pull requests.
 Changes to the package Makefile, Rust source, OpenWrt root files, or build
 scripts also run an x86_64 SDK compile smoke test. The release package workflow
-runs host tests, builds both architectures, validates the APK artifacts,
+runs host tests, builds all three targets, validates the APK artifacts,
 generates SHA-256 files, and publishes the GitHub Release. It does not run the
 deep runtime integration suite. CI caches each architecture's checksum-pinned
 SDK archive and Cargo downloads, while the build script still verifies the SDK
 SHA-256 on every run. A tag must match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and
-creates a GitHub Release containing both architecture-specific APKs and their
+creates a GitHub Release containing the Filogic, R28S, and x86/64 APKs and their
 SHA-256 files.
 
 ## Install
@@ -203,14 +213,20 @@ authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
 `nft`.
 
 ```sh
+WLOC_OPENWRT_APK="$(
+    find dist/filogic -maxdepth 1 -type f \
+        -name 'luci-app-wloc-*.apk' -print -quit
+)"
+
 WLOC_OPENWRT_SSH=root@192.168.1.1 \
-WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-*.apk \
+WLOC_OPENWRT_APK="$WLOC_OPENWRT_APK" \
 WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
 sh tests/runtime-integration.sh
 ```
 
-Use the APK matching the target architecture; for an x86_64 target, use the
-artifact under `dist/x86_64/`. The suite installs and uninstalls the package,
+Use the APK matching the target architecture; use artifacts under
+`dist/filogic/`, `dist/r28s/`, or `dist/x86_64/` for the corresponding target.
+The suite installs and uninstalls the package,
 creates the temporary `wireless.wloc_test` and `wloc.test` UCI sections, changes
 WLOC firewall state, reboots the target, kills `wlocd`, and stops the service.
 It is therefore destructive and may change the target's WLOC firewall
