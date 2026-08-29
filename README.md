@@ -207,16 +207,20 @@ The firewall snapshots have distinct roles:
     authoritative runtime snapshot of the successfully applied revision
 
 /var/run/wloc/firewall.applied.nft.next
-    temporary staging file used during Apply only
+    staging snapshot used while applying a new firewall revision
+    normally promoted or removed immediately; may be retained after a
+    snapshot-promotion failure so recovery and remove-runtime can identify
+    tables belonging to the failed revision
 ```
 
 WLOC immediately reconciles its dynamic sets when the listener is ready; if the
 daemon or a runtime update is temporarily unavailable, the sets remain
 fail-open and the daemon retries automatically. Normal firewall or runtime
 recovery does not require a manual **Restart service**.
-When the package is uninstalled, its lifecycle hook first removes tables
-declared by the last applied snapshot (falling back to the persistent file
-when no snapshot exists) through a checked nftables delete transaction.
+When the package is uninstalled, its lifecycle hook removes tables declared by
+the applied runtime snapshot and any retained staged recovery snapshot,
+falling back to the persistent snapshot only when neither runtime snapshot is
+available, through a checked nftables delete transaction.
 Unrelated tables are not touched. Since the editor accepts declarations rather
 than arbitrary command scripts, WLOC can identify the owned tables for cleanup.
 
