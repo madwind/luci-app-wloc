@@ -27,67 +27,55 @@ export WLOC_STATUS_PATH="$fixture_root/status.json"
 . "$RPC"
 
 nft() {
-    [ "$1" = list ] && [ "$2" = table ] || return 1
-    case "$3:$4" in
+    [ "${1:-}" = list ] && [ "${2:-}" = table ] || return 1
+    case "${3:-}:${4:-}" in
+        bridge:wloc)
+            printf '%s\n' \
+                'table bridge wloc {' \
+                '    counter packets 99 bytes 100 comment "wloc owned ingress redirect"' \
+                '}'
+            ;;
         inet:wloc)
             printf '%s\n' \
                 'table inet wloc {' \
                 '    counter packets 3 bytes 100 comment "wloc owned AP redirect"' \
-                '}'
-            ;;
-        bridge:custom_bridge)
-            printf '%s\n' \
-                'table bridge custom_bridge {' \
-                '    counter packets 2 bytes 100 comment "wloc owned ingress redirect"' \
-                '}'
-            ;;
-        inet:custom_inet)
-            printf '%s\n' \
-                'table inet custom_inet {' \
-                '    counter packets 4 bytes 100 comment "wloc owned AP redirect"' \
-                '}'
-            ;;
-        bridge:fallback_wloc)
-            printf '%s\n' \
-                'table bridge fallback_wloc {' \
-                '    counter packets 6 bytes 100 comment "wloc owned ingress redirect"' \
+                '    counter packets 77 bytes 100 comment "wloc owned ingress redirect"' \
                 '}'
             ;;
         *) return 1;;
     esac
 }
 
-echo '  -> standard inet table counters are reported'
-printf '%s\n' 'table inet wloc { }' >"$runtime"
+echo '  -> fixed bridge and inet table status is reported'
+printf '%s\n' 'table bridge wloc { }' 'table inet wloc { }' >"$runtime"
 printf '%s\n' 'table inet persistent { }' >"$persistent"
 firewall_status_values
-[ "$rules_present" = 1 ] || fail 'applied snapshot was not marked present'
-[ "$firewall_is_active" = 1 ] || fail 'active inet table was reported inactive'
-[ "$attempts" = 3 ] || fail 'inet table attempt counter was not reported'
-[ "$intercepted" = 3 ] || fail 'inet table redirect counter was not reported'
+[ "$rules_present" = 1 ] || fail 'runtime snapshot was not marked present'
+[ "$firewall_is_active" = 1 ] || fail 'both WLOC tables were not reported active'
+[ "$FIREWALL_ACTIVE_TABLE_COUNT" = 2 ] || fail 'fixed table count was not reported as 2/2'
+[ "$attempts" = 3 ] || fail 'inet WLOC redirect counter was not reported'
+[ "$intercepted" = 3 ] || fail 'bridge or non-AP counters leaked into status'
 
-echo '  -> all custom tables are scanned and a failed table is skipped'
-printf '%s\n' \
-    'table bridge custom_bridge { }' \
-    'table inet custom_inet { }' \
-    'table inet missing { }' >"$runtime"
+echo '  -> a missing fixed table reports partial active state'
+nft() {
+    [ "${1:-}" = list ] && [ "${2:-}" = table ] || return 1
+    [ "${3:-}:${4:-}" = 'inet:wloc' ] && printf '%s\n' \
+        'table inet wloc {' \
+        '    counter packets 4 bytes 100 comment "wloc owned AP redirect"' \
+        '}'
+}
 firewall_status_values
-[ "$attempts" = 6 ] || fail 'custom table counters were not accumulated'
-[ "$intercepted" = 6 ] || fail 'custom table redirect counters were not accumulated'
-[ "$firewall_is_active" = 0 ] || fail 'a missing table was reported as fully active'
+[ "$firewall_is_active" = 0 ] || fail 'partial fixed table state was reported fully active'
+[ "$FIREWALL_ACTIVE_TABLE_COUNT" = 1 ] || fail 'partial fixed table count was not reported as 1/2'
+[ "$attempts" = 4 ] || fail 'inet WLOC counter was not read from the fixed table'
 
-echo '  -> missing tables produce zero counters'
-printf '%s\n' 'table inet missing { }' >"$runtime"
-firewall_status_values
-[ "$attempts" = 0 ] || fail 'missing table produced a non-zero attempt counter'
-[ "$intercepted" = 0 ] || fail 'missing table produced a non-zero redirect counter'
-
-echo '  -> persistent rules are used when no applied snapshot exists'
+echo '  -> persistent content does not provide generic table fallback'
 rm -f "$runtime"
-printf '%s\n' 'table bridge fallback_wloc { }' >"$persistent"
+printf '%s\n' 'table bridge custom { }' 'table inet custom { }' >"$persistent"
+nft() { return 1; }
 firewall_status_values
-[ "$rules_present" = 1 ] || fail 'persistent fallback was not marked present'
-[ "$attempts" = 6 ] || fail 'persistent fallback counters were not reported'
-[ "$intercepted" = 6 ] || fail 'persistent fallback redirect counter was not reported'
+[ "$rules_present" = 1 ] || fail 'persistent rules were not marked present'
+[ "$FIREWALL_ACTIVE_TABLE_COUNT" = 0 ] || fail 'custom persistent tables were discovered as WLOC tables'
+[ "$attempts" = 0 ] || fail 'custom persistent counters were aggregated'
 
 echo 'WLOC runtime status tests: PASS'

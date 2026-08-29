@@ -17,9 +17,19 @@ lock_helper="$ROOT/tests/native-lock.test-helper.sh"
 chmod +x "$lock_helper"
 source_a="$fixture_root/firewall-a.nft"
 source_b="$fixture_root/firewall-b.nft"
-printf '%s\n' 'table inet apply_a {' '}' >"$source_a"
-printf '%s\n' 'table inet apply_b {' '}' >"$source_b"
-printf '%s\n' 'table inet old {' '}' >"$runtime/firewall.applied.nft"
+printf '%s\n' \
+    'table bridge wloc {' \
+    '    chain apply_a { }' \
+    '}' \
+    'table inet wloc {' \
+    '}' >"$source_a"
+printf '%s\n' \
+    'table bridge wloc {' \
+    '    chain apply_b { }' \
+    '}' \
+    'table inet wloc {' \
+    '}' >"$source_b"
+printf '%s\n' 'table bridge wloc {' '}' 'table inet wloc {' '}' >"$runtime/firewall.applied.nft"
 
 WLOC_RUNTIME_DIR="$runtime"
 WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
@@ -64,7 +74,7 @@ nft() {
         --file)
             transaction="$2"
             printf '%s\n' "$WLOC_TEST_ACTOR" >>"$WLOC_TEST_NFT_LOG"
-            table="$(awk '$1 == "table" && $2 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ { print $2 ":" $3; exit }' "$transaction")"
+            table="$(awk '$1 == "table" && ($2 == "bridge" || $2 == "inet") && $3 == "wloc" { print $2 ":" $3; exit }' "$transaction")"
             printf '%s\n' "$table" >"$WLOC_TEST_NFT_STATE"
             if [ "$WLOC_TEST_ACTOR" = A ]; then
                 : >"$WLOC_TEST_APPLY_MARKER"
@@ -94,7 +104,7 @@ state="$fixture_root/nft-state"
 log="$fixture_root/nft.log"
 marker="$fixture_root/apply-a-entered"
 release="$fixture_root/apply-a-release"
-printf '%s\n' 'inet:old' >"$state"
+printf '%s\n' 'bridge:wloc' 'inet:wloc' >"$state"
 : >"$log"
 
 echo '  -> concurrent Apply operations serialize the complete state transition'
@@ -156,8 +166,8 @@ wait "$apply_b_pid" || fail 'serialized Apply B failed'
 
 cmp -s "$source_b" "$runtime/firewall.applied.nft" \
     || fail 'the applied snapshot does not contain the last serialized Apply'
-grep -Fqx 'inet:apply_b' "$state" \
-    || fail 'the kernel model does not contain the last serialized Apply'
+grep -Fqx 'bridge:wloc' "$state" \
+    || fail 'the kernel model does not contain the fixed WLOC table'
 [ "$(sed -n '1p' "$log")" = A ] || fail 'Apply A was not the first transaction'
 [ "$(sed -n '2p' "$log")" = B ] || fail 'Apply B did not start after Apply A'
 [ ! -e "$runtime/firewall.lock/owner" ] \

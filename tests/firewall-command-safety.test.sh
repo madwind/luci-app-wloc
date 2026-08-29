@@ -22,15 +22,17 @@ chmod +x "$rules_helper"
 
 valid="$fixture_root/valid.nft"
 printf '%s\n' \
-    '# WLOC table definitions may contain normal table members.' \
-    'table inet wloc_test {' \
-    '    set clients {' \
-    '        type ipv4_addr' \
+    '# WLOC owns these two table definitions.' \
+    'table bridge wloc {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
     '        flags timeout' \
     '    }' \
-    '    chain test {' \
-    '        type filter hook prerouting priority -1;' \
-    '        policy accept;' \
+    '}' \
+    'table inet wloc {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
     '    }' \
     '}' >"$valid"
 
@@ -47,19 +49,23 @@ CHECK_LOG="$fixture_root/check.log"
 APPLY_LOG="$fixture_root/apply.log"
 : >"$CHECK_LOG"
 : >"$APPLY_LOG"
+CHECK_RC=0
+APPLY_RC=0
 
 nft() {
     case "${1:-}" in
         --check)
             cat "$3" >>"$CHECK_LOG"
-            return 0
+            return "$CHECK_RC"
             ;;
         --file)
             cat "$2" >>"$APPLY_LOG"
-            return 0
+            return "$APPLY_RC"
             ;;
         list)
-            return 1
+            [ "${2:-}" = table ] || return 1
+            [ "${3:-}:${4:-}" = 'bridge:wloc' ] || \
+                [ "${3:-}:${4:-}" = 'inet:wloc' ]
             ;;
         *)
             return 1
@@ -71,81 +77,80 @@ pidof() {
     return 1
 }
 
-echo '  -> declarative table definitions pass validation and Apply'
+echo '  -> fixed bridge and inet WLOC tables pass ownership and Apply'
 firewall_validate_file "$valid" \
-    || fail 'a valid declarative table definition was rejected'
+    || fail 'valid fixed WLOC table definitions were rejected'
 firewall_apply_file "$valid" \
-    || fail 'a valid declarative table definition could not be applied'
+    || fail 'valid fixed WLOC table definitions could not be applied'
 cmp -s "$valid" "$WLOC_FIREWALL_RUNTIME" \
     || fail 'the valid applied snapshot was not promoted'
-[ -s "$CHECK_LOG" ] || fail 'valid rules were not passed to nft --check'
+grep -Fqx 'delete table bridge wloc' "$CHECK_LOG" \
+    || fail 'bridge WLOC replacement was not checked by nft'
+grep -Fqx 'delete table inet wloc' "$CHECK_LOG" \
+    || fail 'inet WLOC replacement was not checked by nft'
 [ -s "$APPLY_LOG" ] || fail 'valid rules were not passed to the nft transaction'
 
-valid_bridge="$fixture_root/valid-bridge.nft"
-printf '%s\n' \
-    'table bridge bridge_test {' \
-    '}' >"$valid_bridge"
-echo '  -> supported bridge table headers pass the editor contract'
-firewall_validate_file "$valid_bridge" \
-    || fail 'a valid bridge table definition was rejected'
-[ "$(firewall_tables "$valid_bridge")" = 'bridge bridge_test' ] \
-    || fail 'firewall_tables did not recognize the valid bridge table header'
-
+runtime_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
 check_before="$(cksum "$CHECK_LOG")"
 apply_before="$(cksum "$APPLY_LOG")"
-runtime_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
-unsafe_index=0
+for header in \
+    'table inet custom {' \
+    'table bridge foo {' \
+    'table ip wloc {' \
+    'table ip6 wloc {' \
+    'table inet wloc2 {' \
+    'table netdev wloc {' \
+    'add table inet wloc'; do
+    source="$fixture_root/ownership-$RANDOM.nft"
+    printf '%s\n' "$header" '}' >"$source"
+    echo "  -> reject non-owned table declaration: $header"
+    if firewall_validate_file "$source"; then
+        fail "non-owned table passed ownership validation: $header"
+    fi
+    [ "${firewall_error_code:-}" = unsupported_firewall_command ] \
+        || fail "non-owned table returned the wrong error: $header"
+    [ "$check_before" = "$(cksum "$CHECK_LOG")" ] \
+        || fail "non-owned table reached nft --check: $header"
+    if firewall_apply_file "$source"; then
+        fail "non-owned table was applied: $header"
+    fi
+    [ "$apply_before" = "$(cksum "$APPLY_LOG")" ] \
+        || fail "non-owned table reached the nft transaction: $header"
+    [ "$runtime_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+        || fail "non-owned table changed the applied snapshot: $header"
+    [ ! -e "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
+        || fail "non-owned table left a staged snapshot: $header"
+done
 
 for command in \
     'flush ruleset' \
-    'delete table inet fw4' \
     'include "/etc/nftables.d/*.nft"' \
-    'add table inet wloc_legacy' \
-    'replace rule inet fw4 input handle 1 accept'; do
-    unsafe_index=$((unsafe_index + 1))
-    source="$fixture_root/unsafe-$unsafe_index.nft"
+    'delete table inet wloc' \
+    'destroy table inet wloc' \
+    'reset rules' \
+    'insert rule inet wloc input accept' \
+    'replace rule inet wloc input handle 1 accept'; do
+    source="$fixture_root/command-$RANDOM.nft"
     printf '%s\n' "$command" >"$source"
-    echo "  -> reject unsafe command: $command"
+    echo "  -> reject command form: $command"
     if firewall_validate_file "$source"; then
-        fail "unsafe command passed validation: $command"
+        fail "unsupported command passed validation: $command"
     fi
     [ "${firewall_error_code:-}" = unsupported_firewall_command ] \
-        || fail "unsafe command returned the wrong validation error: $command"
+        || fail "unsupported command returned the wrong error: $command"
     [ "$check_before" = "$(cksum "$CHECK_LOG")" ] \
-        || fail "unsafe command reached nft --check: $command"
-    if firewall_apply_file "$source"; then
-        fail "unsafe command was applied: $command"
-    fi
-    [ "${firewall_error_code:-}" = unsupported_firewall_command ] \
-        || fail "unsafe command returned the wrong Apply error: $command"
-    [ "$apply_before" = "$(cksum "$APPLY_LOG")" ] \
-        || fail "unsafe command reached the nft transaction: $command"
-    [ "$runtime_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
-        || fail "unsafe command changed the applied snapshot: $command"
-    [ ! -e "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
-        || fail "unsafe command left a staged snapshot: $command"
+        || fail "unsupported command reached nft --check: $command"
 done
 
-split_family="$fixture_root/invalid-split-family.nft"
-printf '%s\n' \
-    'table' \
-    'inet split_family {' \
-    '}' >"$split_family"
-split_name="$fixture_root/invalid-split-name.nft"
-printf '%s\n' \
-    'table inet' \
-    'split_name {' \
-    '}' >"$split_name"
-
-for source in "$split_family" "$split_name"; do
-    echo "  -> reject split table header: $source"
-    if firewall_validate_file "$source"; then
-        fail "split table header passed validation: $source"
-    fi
-    [ "${firewall_error_code:-}" = unsupported_firewall_command ] \
-        || fail "split table header returned the wrong validation error: $source"
-    [ "$check_before" = "$(cksum "$CHECK_LOG")" ] \
-        || fail "split table header reached nft --check: $source"
-done
+echo '  -> nft validates syntax after ownership passes'
+invalid="$fixture_root/invalid.nft"
+printf '%s\n' 'table inet wloc {' '    this is invalid nft syntax' '}' >"$invalid"
+CHECK_RC=1
+if firewall_validate_file "$invalid"; then
+    fail 'invalid nft syntax passed validation'
+fi
+[ "${firewall_error_code:-}" = nft_check_failed ] \
+    || fail 'invalid nft syntax returned the wrong error'
+CHECK_RC=0
 
 echo 'WLOC firewall command safety tests: PASS'

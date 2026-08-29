@@ -29,6 +29,11 @@ const api = loadFirewallView();
 const persistent = 'table inet saved {\n}\n';
 const applied = 'table inet applied {\n}\n';
 
+assert.ok(source.includes('table bridge wloc'));
+assert.ok(source.includes('table inet wloc'));
+assert.ok(source.includes('Only table bridge wloc and table inet wloc definitions are supported.'));
+assert.ok(!source.includes('custom nftables tables'));
+
 // A browser reload after Apply must restore the unsaved applied revision so
 // that the next Save targets the same snapshot the user actually confirmed.
 let state = api.initialEditorState({
