@@ -26,8 +26,10 @@ crosses midnight. If the fixed interface is missing or ambiguous, WLOC records
 a warning and leaves every other AP unchanged; it never falls back to another
 AP or the whole wireless configuration.
 
-The nftables editor accepts declarative table definitions only, for example
-`table inet wloc { ... }` or `table bridge wloc { ... }`. Normal table contents
+The nftables editor accepts declarative table definitions only. Every table
+header must use the single-line `table FAMILY NAME {` format, such as
+`table inet wloc {` or `table bridge wloc {`; do not split the header or put the
+opening brace on a separate line. Normal table contents
 such as sets, maps, chains, rules, counters, and flowtables are checked by
 `nft`. Destructive global commands such as `flush ruleset`, `include`, `delete`,
 `destroy`, `reset`, `insert`, and `replace` are intentionally rejected before
@@ -202,7 +204,7 @@ authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
 
 ```sh
 WLOC_OPENWRT_SSH=root@192.168.1.1 \
-WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r101.apk \
+WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-*.apk \
 WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
 sh tests/runtime-integration.sh
 ```
