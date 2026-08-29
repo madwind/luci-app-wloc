@@ -9,7 +9,7 @@
     },
     "write": {
       "ubus": {
-        "luci.wloc": [ "restart", "disable", "regenerate_ca", "cleanup", "firewall_save", "firewall_apply" ]
+        "luci.wloc": [ "restart", "regenerate_ca", "firewall_save", "firewall_apply" ]
       },
       "uci": [ "wloc" ]
     }

@@ -267,7 +267,7 @@ return view.extend({
                 updateActiveState(activeStatus, result);
                 updateStates();
                 setState(feedback, recovering ? 'warn' : 'ok', recovering
-                    ? _('Firewall rules were temporarily applied. Runtime dynamic sets are recovering automatically.')
+                    ? (runtimeWarning || _('Firewall rules were temporarily applied. Runtime dynamic sets are recovering automatically.'))
                     : _('Rules were temporarily applied. Confirm that network, LuCI and SSH still work, then click Save.'));
                 return result;
             }).catch(function(error) {

@@ -56,6 +56,12 @@ async fn cleanup_rules_async(helper: PathBuf) -> Result<(), String> {
         .map_err(|error| format!("cleanup rules task failed: {error}"))?
 }
 
+fn cleanup_recovery_should_report(was_armed: bool, cleanup_was_failed: &mut bool) -> bool {
+    let should_report = was_armed || *cleanup_was_failed;
+    *cleanup_was_failed = false;
+    should_report
+}
+
 fn record_startup_error(error: &str) {
     if let Some(path) = std::env::var_os("WLOC_START_ERROR_PATH") {
         let _ = std::fs::write(path, error);
@@ -158,6 +164,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
+        let mut cleanup_was_failed = false;
         let initially_armed = match reconcile_rules_async(
             config.rules_helper.clone(),
             config.listen_port,
@@ -186,6 +193,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         |c| c.armed(false),
                     ),
                     Err(cleanup_error) => {
+                        cleanup_was_failed = true;
                         let detail = format!(
                             "initial rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
                         );
@@ -225,39 +233,48 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);
                     match cleanup_rules_async(lease_helper.clone()).await {
-                        Ok(()) if was_armed => {
-                            lease_status.update_detail(
-                                "lease_failed",
-                                "action=rules_removed fail_open=true retry_seconds=10",
-                                Some(&error),
-                                |c| c.armed(false),
-                            );
-                            eprintln!("wlocd: interception=false error=lease_refresh retry_seconds=10");
+                        Ok(()) => {
+                            if cleanup_recovery_should_report(was_armed, &mut cleanup_was_failed) {
+                                lease_status.update_detail(
+                                    "lease_failed",
+                                    "action=rules_removed fail_open=true retry_seconds=10",
+                                    Some(&error),
+                                    |c| c.armed(false),
+                                );
+                                eprintln!(
+                                    "wlocd: interception=false error=lease_refresh retry_seconds=10"
+                                );
+                            }
                         }
-                        Ok(()) => {}
                         Err(cleanup_error) => {
-                            let detail = format!(
-                                "rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
-                            );
-                            lease_status.update_detail(
-                                "cleanup_failed",
-                                "armed=false retry_seconds=10",
-                                Some(&detail),
-                                |c| c.armed(false),
-                            );
-                            eprintln!(
-                                "wlocd: interception=false error=cleanup_failed retry_seconds=10"
-                            );
+                            if !cleanup_was_failed {
+                                let detail = format!(
+                                    "rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
+                                );
+                                lease_status.update_detail(
+                                    "cleanup_failed",
+                                    "armed=false retry_seconds=10",
+                                    Some(&detail),
+                                    |c| c.armed(false),
+                                );
+                                eprintln!(
+                                    "wlocd: interception=false error=cleanup_failed retry_seconds=10"
+                                );
+                            }
+                            cleanup_was_failed = true;
                         }
                     }
-                } else if !lease_armed.swap(true, Ordering::SeqCst) {
-                    lease_status.update_detail(
-                        "interception_rearmed",
-                        "action=rules_rebuilt recovery=true",
-                        None,
-                        |c| c.armed(true),
-                    );
-                    eprintln!("wlocd: interception=true recovery=rules_rebuilt");
+                } else {
+                    cleanup_was_failed = false;
+                    if !lease_armed.swap(true, Ordering::SeqCst) {
+                        lease_status.update_detail(
+                            "interception_rearmed",
+                            "action=rules_rebuilt recovery=true",
+                            None,
+                            |c| c.armed(true),
+                        );
+                        eprintln!("wlocd: interception=true recovery=rules_rebuilt");
+                    }
                 }
             }
         });
@@ -299,4 +316,33 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok::<(), std::io::Error>(())
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_recovery_should_report;
+
+    #[test]
+    fn a_recovered_cleanup_failure_is_reported_once() {
+        let mut cleanup_was_failed = true;
+        assert!(cleanup_recovery_should_report(
+            false,
+            &mut cleanup_was_failed
+        ));
+        assert!(!cleanup_was_failed);
+        assert!(!cleanup_recovery_should_report(
+            false,
+            &mut cleanup_was_failed
+        ));
+    }
+
+    #[test]
+    fn an_armed_reconcile_failure_is_reported_and_clears_recovery_state() {
+        let mut cleanup_was_failed = false;
+        assert!(cleanup_recovery_should_report(
+            true,
+            &mut cleanup_was_failed
+        ));
+        assert!(!cleanup_was_failed);
+    }
 }

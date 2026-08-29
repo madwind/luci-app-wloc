@@ -67,7 +67,11 @@ EOF
 rules_helper="$fixture_root/rules.sh"
 cat >"$rules_helper" <<'EOF'
 #!/bin/sh
-exit "${WLOC_TEST_RULES_RC:-0}"
+case "${1:-}" in
+    reconcile) exit "${WLOC_TEST_RECONCILE_RC:-${WLOC_TEST_RULES_RC:-0}}";;
+    cleanup) exit "${WLOC_TEST_CLEANUP_RC:-${WLOC_TEST_RULES_RC:-0}}";;
+    *) exit "${WLOC_TEST_RULES_RC:-0}";;
+esac
 EOF
 chmod +x "$rules_helper"
 
@@ -164,6 +168,7 @@ emit_firewall_apply
 
 echo '  -> reconcile failure returns a warning without failing Apply'
 export WLOC_TEST_RULES_RC=1
+export WLOC_TEST_CLEANUP_RC=0
 firewall_config="$(cat "$applied_source")"
 emit_firewall_apply
 [ "$response_ok" = 1 ] || fail 'reconcile failure returned ok=false'
@@ -171,7 +176,35 @@ emit_firewall_apply
 [ "$response_recovering" = 1 ] || fail 'reconcile failure did not return recovering=true'
 [ "$response_warning" = 'Runtime rule refresh failed; WLOC will retry automatically.' ] \
     || fail 'reconcile failure returned the wrong warning'
+unset WLOC_TEST_CLEANUP_RC
 export WLOC_TEST_RULES_RC=0
+
+echo '  -> reconcile and cleanup failure keeps Apply successful with a fail-open warning'
+export WLOC_TEST_RECONCILE_RC=1
+export WLOC_TEST_CLEANUP_RC=1
+firewall_config="$(cat "$applied_source")"
+emit_firewall_apply
+[ "$response_ok" = 1 ] || fail 'cleanup failure returned ok=false'
+[ "$response_runtime_ready" = 0 ] || fail 'cleanup failure returned runtime_ready=true'
+[ "$response_recovering" = 1 ] || fail 'cleanup failure did not return recovering=true'
+[ "$response_warning" = 'Runtime rule refresh failed and fail-open cleanup also failed; WLOC will retry automatically.' ] \
+    || fail 'cleanup failure returned the wrong warning'
+cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
+    || fail 'cleanup failure changed the applied snapshot'
+unset WLOC_TEST_RECONCILE_RC WLOC_TEST_CLEANUP_RC
+
+echo '  -> listener-not-ready cleanup failure keeps Apply successful with a fail-open warning'
+DAEMON_RUNNING=0
+export WLOC_TEST_CLEANUP_RC=1
+firewall_config="$(cat "$applied_source")"
+emit_firewall_apply
+[ "$response_ok" = 1 ] || fail 'listener cleanup failure returned ok=false'
+[ "$response_runtime_ready" = 0 ] || fail 'listener cleanup failure returned runtime_ready=true'
+[ "$response_recovering" = 1 ] || fail 'listener cleanup failure did not return recovering=true'
+[ "$response_warning" = 'WLOC listener is not ready and fail-open cleanup failed; WLOC will retry automatically.' ] \
+    || fail 'listener cleanup failure returned the wrong warning'
+unset WLOC_TEST_CLEANUP_RC
+DAEMON_RUNNING=1
 
 echo '  -> syntax failure keeps both snapshots'
 CHECK_RC=1

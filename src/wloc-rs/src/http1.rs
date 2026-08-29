@@ -126,6 +126,9 @@ fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
         }
         wire_body[..len].to_vec()
     } else {
+        if wire_body.len() > MAX_RESPONSE {
+            return Err(ProxyError::Upstream("HTTP/1 body exceeds bound".into()));
+        }
         wire_body.to_vec()
     };
     Ok(UpstreamResponse {
@@ -200,5 +203,16 @@ mod tests {
         .is_err());
         assert!(decode_chunked(b"1\r\naXX0\r\n\r\n").is_err());
         assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 524289\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn bounds_close_delimited_responses() {
+        let mut accepted = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+        accepted.extend(std::iter::repeat_n(b'a', MAX_RESPONSE));
+        assert_eq!(parse(&accepted).unwrap().body.len(), MAX_RESPONSE);
+
+        let mut rejected = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+        rejected.extend(std::iter::repeat_n(b'a', MAX_RESPONSE + 1));
+        assert!(parse(&rejected).is_err());
     }
 }

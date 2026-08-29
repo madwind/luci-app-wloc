@@ -481,38 +481,17 @@ emit_configured_access_points() {
     json_dump
 }
 
-rpc_disable() {
-    uci -q set wloc.main.enabled='0'
-    uci -q commit wloc
-    if cleanup_rules; then
-        "$INIT" stop >/dev/null 2>&1 || true
-        emit_status
-    else
-        "$INIT" stop >/dev/null 2>&1 || true
-        cleanup_failure_response
-    fi
-}
-
 rpc_regenerate_ca() {
-    if cleanup_rules; then
-        "$INIT" stop >/dev/null 2>&1 || true
-        rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
-            /etc/wloc/ca.pem /etc/wloc/ca.info.json \
-            /www/wloc-ca.mobileconfig
-        [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
-        emit_status
-    else
-        "$INIT" stop >/dev/null 2>&1 || true
+    if ! cleanup_rules; then
         cleanup_failure_response
+        return
     fi
-}
-
-rpc_cleanup() {
-    if cleanup_rules; then
-        emit_status
-    else
-        cleanup_failure_response
-    fi
+    "$INIT" stop >/dev/null 2>&1 || true
+    rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
+        /etc/wloc/ca.pem /etc/wloc/ca.info.json \
+        /www/wloc-ca.mobileconfig
+    [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
+    emit_status
 }
 
 service_daemon_running() {
@@ -535,7 +514,7 @@ if [ "${WLOC_RPC_SOURCE:-0}" -ne 1 ]; then
 case "$1" in
 list)
     json_init
-    for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
+    for method in status configured_access_points restart regenerate_ca logs firewall_read firewall_validate firewall_save firewall_apply; do
         json_add_object "$method"
         case "$method" in
             firewall_validate|firewall_apply) json_add_string config '';;
@@ -556,14 +535,8 @@ call)
             json_init; json_add_boolean ok 0; json_add_string error 'Unable to restart the WLOC service.'; json_dump
         fi
         ;;
-    disable)
-        rpc_disable
-        ;;
     regenerate_ca)
         rpc_regenerate_ca
-        ;;
-    cleanup)
-        rpc_cleanup
         ;;
     logs)
         load_runtime_state

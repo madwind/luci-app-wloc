@@ -640,6 +640,10 @@ return view.extend({
 
         function notifyAction(promise, message) {
             return promise.then(function(result) {
+                if (result && result.ok === false) {
+                    var detail = result.detail || result.error || result.error_code || _('The action was not completed.');
+                    throw new Error(String(detail));
+                }
                 var notification = typeof message === 'function' ? message(result || {}) : message;
                 ui.addNotification(null, E('p', {}, notification), 'info');
                 return refresh();

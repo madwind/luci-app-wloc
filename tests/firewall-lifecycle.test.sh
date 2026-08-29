@@ -23,7 +23,11 @@ rules_helper="$fixture_root/rules-helper.sh"
 cat >"$rules_helper" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$WLOC_TEST_RULES_LOG"
-exit "${WLOC_TEST_RULES_RC:-0}"
+case "${1:-}" in
+    reconcile) exit "${WLOC_TEST_RECONCILE_RC:-${WLOC_TEST_RULES_RC:-0}}";;
+    cleanup) exit "${WLOC_TEST_CLEANUP_RC:-${WLOC_TEST_RULES_RC:-0}}";;
+    *) exit "${WLOC_TEST_RULES_RC:-0}";;
+esac
 EOF
 chmod +x "$rules_helper"
 rules_log="$fixture_root/rules.log"
@@ -114,6 +118,7 @@ echo '  -> reconcile failures keep Apply successful and fail open'
 : >"$rules_log"
 DAEMON_RUNNING=1
 export WLOC_TEST_RULES_RC=1
+export WLOC_TEST_CLEANUP_RC=0
 firewall_apply_file "$firewall_source" || fail 'reconcile failure was reported as Apply failure'
 grep -Fqx 'reconcile 61520' "$rules_log" \
     || fail 'reconcile was not attempted for the applied rules'
@@ -124,7 +129,26 @@ grep -Fqx cleanup "$rules_log" \
 [ "$FIREWALL_RUNTIME_RECOVERING" -eq 1 ] || fail 'failed reconcile did not enter recovering state'
 [ "$FIREWALL_RUNTIME_WARNING" = 'Runtime rule refresh failed; WLOC will retry automatically.' ] \
     || fail 'reconcile failure did not expose the recovery warning'
+unset WLOC_TEST_CLEANUP_RC
 export WLOC_TEST_RULES_RC=0
+
+echo '  -> reconcile and fail-open cleanup failures remain visible'
+: >"$rules_log"
+export WLOC_TEST_RECONCILE_RC=1
+export WLOC_TEST_CLEANUP_RC=1
+applied_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+firewall_apply_file "$firewall_source" || fail 'cleanup failure was reported as Apply failure'
+grep -Fqx 'reconcile 61520' "$rules_log" \
+    || fail 'cleanup failure case did not attempt reconcile'
+grep -Fqx cleanup "$rules_log" \
+    || fail 'cleanup failure case did not attempt fail-open cleanup'
+[ "$applied_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+    || fail 'cleanup failure case changed the applied snapshot'
+[ "$FIREWALL_RUNTIME_STATE_SET" -eq 1 ] || fail 'cleanup failure lost runtime state'
+[ "$FIREWALL_RUNTIME_RECOVERING" -eq 1 ] || fail 'cleanup failure did not enter recovery'
+[ "$FIREWALL_RUNTIME_WARNING" = 'Runtime rule refresh failed and fail-open cleanup also failed; WLOC will retry automatically.' ] \
+    || fail 'cleanup failure did not expose the fail-open warning'
+unset WLOC_TEST_RECONCILE_RC WLOC_TEST_CLEANUP_RC
 
 echo '  -> stopped daemon keeps dynamic state empty'
 : >"$rules_log"
@@ -135,6 +159,25 @@ grep -Fqx cleanup "$rules_log" \
 if grep -Fqx 'reconcile 61520' "$rules_log"; then
     fail 'stopped daemon was reconciled'
 fi
+
+echo '  -> listener-not-ready cleanup failures remain visible'
+: >"$rules_log"
+DAEMON_RUNNING=0
+export WLOC_TEST_CLEANUP_RC=1
+applied_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+firewall_apply_file "$firewall_source" || fail 'listener cleanup failure was reported as Apply failure'
+if grep -Fqx 'reconcile 61520' "$rules_log"; then
+    fail 'listener-not-ready cleanup failure was reconciled'
+fi
+grep -Fqx cleanup "$rules_log" \
+    || fail 'listener-not-ready cleanup failure did not attempt cleanup'
+[ "$applied_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+    || fail 'listener-not-ready cleanup failure changed the applied snapshot'
+[ "$FIREWALL_RUNTIME_STATE_SET" -eq 1 ] || fail 'listener cleanup failure lost runtime state'
+[ "$FIREWALL_RUNTIME_RECOVERING" -eq 1 ] || fail 'listener cleanup failure did not enter recovery'
+[ "$FIREWALL_RUNTIME_WARNING" = 'WLOC listener is not ready and fail-open cleanup failed; WLOC will retry automatically.' ] \
+    || fail 'listener cleanup failure did not expose the fail-open warning'
+unset WLOC_TEST_CLEANUP_RC
 
 echo '  -> snapshot staging failures do not touch nftables'
 staging_parent="$fixture_root/staging-parent"

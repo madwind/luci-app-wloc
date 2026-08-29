@@ -807,7 +807,9 @@ eval "$(sed '/^case /,$d' "$SCHEDULE")"
 
 fake_wireless_exists=1
 fake_disabled=0
-    schedule_enabled_value=1
+schedule_enabled_value=1
+schedule_set_failed=0
+schedule_restore_failed=0
 reload_count=0
 uci() {
     [ "${1:-}" = '-q' ] && shift
@@ -825,9 +827,12 @@ uci() {
             esac
             ;;
         set)
+            [ "$schedule_set_failed" -eq 0 ] || return 1
+            [ "$schedule_restore_failed" -eq 0 ] || return 1
             fake_disabled="${2#*=}"
             ;;
         delete)
+            [ "$schedule_restore_failed" -eq 0 ] || return 1
             fake_disabled=0
             ;;
         *) return 1;;
@@ -842,33 +847,93 @@ reconcile
     || fail 'schedule did not record the original disabled value'
 [ "$reload_count" -eq 1 ] || fail 'schedule did not reload WiFi after disabling'
 
-    schedule_enabled_value=0
+schedule_enabled_value=0
 reconcile
 [ "$fake_disabled" = 0 ] || fail 'schedule did not restore the original disabled value'
 [ ! -e "$fixture_root/wifi-schedule.state" ] || fail 'schedule state was not cleared after restore'
 [ "$reload_count" -eq 2 ] || fail 'schedule did not reload WiFi after restore'
 
+echo '  -> failed schedule restoration preserves state for the next reconcile'
+schedule_enabled_value=1
+fake_disabled=0
+schedule_restore_failed=0
+reconcile
+schedule_enabled_value=0
+schedule_restore_failed=1
+restore_reload_count="$reload_count"
+if reconcile; then
+    fail 'schedule reported success after a restore failure'
+fi
+[ "$fake_disabled" = 1 ] || fail 'failed schedule restore changed the AP state'
+[ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|0' ] \
+    || fail 'failed schedule restore discarded the original state'
+[ "$reload_count" -eq "$restore_reload_count" ] \
+    || fail 'failed schedule restore reloaded WiFi'
+schedule_restore_failed=0
+reconcile
+[ "$fake_disabled" = 0 ] || fail 'schedule did not retry the failed restore'
+[ ! -e "$fixture_root/wifi-schedule.state" ] \
+    || fail 'schedule did not clear state after the retry succeeded'
+[ "$reload_count" -eq $((restore_reload_count + 1)) ] \
+    || fail 'successful schedule restore did not reload WiFi exactly once'
+
+echo '  -> restore_state retains a failed entry and retries it'
+printf '%s\n' 'wifi_ap|0' >"$fixture_root/wifi-schedule.state"
+fake_disabled=1
+schedule_restore_failed=1
+restore_reload_count="$reload_count"
+if restore_state; then
+    fail 'restore_state reported success after a restore failure'
+fi
+[ "$fake_disabled" = 1 ] || fail 'restore_state changed the AP after a restore failure'
+[ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|0' ] \
+    || fail 'restore_state discarded a failed entry'
+[ "$reload_count" -eq "$restore_reload_count" ] \
+    || fail 'restore_state reloaded WiFi after a restore failure'
+schedule_restore_failed=0
+restore_state
+[ "$fake_disabled" = 0 ] || fail 'restore_state did not retry the failed entry'
+[ ! -e "$fixture_root/wifi-schedule.state" ] \
+    || fail 'restore_state did not clear the successful entry'
+[ "$reload_count" -eq $((restore_reload_count + 1)) ] \
+    || fail 'restore_state did not reload WiFi after a successful restore'
+
 echo '  -> already-disabled AP schedule does not reload WiFi'
 schedule_enabled_value=1
 fake_disabled=1
+already_disabled_reload_count="$reload_count"
 reconcile
 [ "$fake_disabled" = 1 ] || fail 'already-disabled AP changed state on schedule entry'
 [ "$(cat "$fixture_root/wifi-schedule.state")" = 'wifi_ap|1' ] \
     || fail 'already-disabled AP did not record its original state'
-[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for an already-disabled AP'
+[ "$reload_count" -eq "$already_disabled_reload_count" ] || fail 'schedule reloaded WiFi for an already-disabled AP'
 
 schedule_enabled_value=0
 reconcile
 [ "$fake_disabled" = 1 ] || fail 'already-disabled AP changed state on schedule exit'
 [ ! -e "$fixture_root/wifi-schedule.state" ] || fail 'already-disabled AP state was not cleared'
-[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi after an unchanged schedule exit'
+[ "$reload_count" -eq "$already_disabled_reload_count" ] || fail 'schedule reloaded WiFi after an unchanged schedule exit'
 
 schedule_enabled_value=1
 fake_wireless_exists=0
 fake_disabled=0
 reconcile
 [ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing interface'
-[ "$reload_count" -eq 2 ] || fail 'schedule reloaded WiFi for a missing interface'
+[ "$reload_count" -eq $((restore_reload_count + 1)) ] || fail 'schedule reloaded WiFi for a missing interface'
+
+echo '  -> failed schedule state saves do not mutate UCI or reload WiFi'
+fake_wireless_exists=1
+fake_disabled=0
+schedule_enabled_value=1
+mkdir "$fixture_root/wifi-schedule.state"
+state_save_reload_count="$reload_count"
+if reconcile; then
+    fail 'schedule reported success after a state save failure'
+fi
+[ "$fake_disabled" = 0 ] || fail 'schedule changed UCI after a state save failure'
+[ "$reload_count" -eq "$state_save_reload_count" ] \
+    || fail 'schedule reloaded WiFi after a state save failure'
+rmdir "$fixture_root/wifi-schedule.state"
 
 
 echo 'host tests: PASS'

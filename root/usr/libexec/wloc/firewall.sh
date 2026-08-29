@@ -590,14 +590,20 @@ EOF
             # The nft transaction and applied snapshot already succeeded. Keep the
             # completed Apply successful, but remove dynamic state fail-open while
             # the daemon retries reconciliation.
-            firewall_runtime_cleanup || true
+            if firewall_runtime_cleanup; then
+                FIREWALL_RUNTIME_WARNING='Runtime rule refresh failed; WLOC will retry automatically.'
+            else
+                FIREWALL_RUNTIME_WARNING='Runtime rule refresh failed and fail-open cleanup also failed; WLOC will retry automatically.'
+            fi
             FIREWALL_RUNTIME_RECOVERING=1
-            FIREWALL_RUNTIME_WARNING='Runtime rule refresh failed; WLOC will retry automatically.'
         fi
     else
-        firewall_runtime_cleanup || true
+        if firewall_runtime_cleanup; then
+            FIREWALL_RUNTIME_WARNING='Runtime dynamic sets are waiting for the WLOC listener; WLOC will retry automatically.'
+        else
+            FIREWALL_RUNTIME_WARNING='WLOC listener is not ready and fail-open cleanup failed; WLOC will retry automatically.'
+        fi
         FIREWALL_RUNTIME_RECOVERING=1
-        FIREWALL_RUNTIME_WARNING='Runtime dynamic sets are waiting for the WLOC listener; WLOC will retry automatically.'
     fi
 }
 

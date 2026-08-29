@@ -28,6 +28,7 @@ chmod +x "$firewall_helper"
 schedule_helper="$fixture_root/schedule.sh"
 cat >"$schedule_helper" <<'EOF'
 #!/bin/sh
+[ -n "${WLOC_TEST_INIT_LOG:-}" ] && printf '%s\n' "$*" >>"$WLOC_TEST_INIT_LOG"
 exit 0
 EOF
 chmod +x "$schedule_helper"
@@ -138,12 +139,32 @@ export WLOC_FIREWALL_RUNTIME="$fixture_root/firewall.applied.nft"
 export WLOC_STATUS_PATH="$fixture_root/status.json"
 . "$RPC"
 
-echo '  -> cleanup RPC returns an explicit failure response'
-rpc_cleanup
+init_log="$fixture_root/init.log"
+rm_log="$fixture_root/rm.log"
+: >"$init_log"
+: >"$rm_log"
+export WLOC_TEST_INIT_LOG="$init_log"
+rm() {
+    case "$*" in
+        *'/etc/wloc/ca.key'*|*'/www/wloc-ca.mobileconfig'*)
+            printf '%s\n' "$*" >>"$rm_log"
+            ;;
+        *'/var/run/wloc'*|*'/etc/wloc'*)
+            ;;
+        *)
+            command rm "$@"
+            ;;
+    esac
+}
+
+echo '  -> regenerate CA preserves the daemon and CA when cleanup fails'
+rpc_regenerate_ca
 [ "$response_ok" = 0 ] || fail 'cleanup RPC did not return ok=false'
 [ "$response_error_code" = cleanup_failed ] \
-    || fail 'cleanup RPC returned the wrong error code'
+    || fail 'regenerate CA returned the wrong error code'
 [ "$response_detail" = "$WLOC_TEST_RULES_OUTPUT" ] \
-    || fail 'cleanup RPC did not preserve the helper error'
+    || fail 'regenerate CA did not preserve the helper error'
+[ ! -s "$init_log" ] || fail 'regenerate CA stopped the daemon after cleanup failure'
+[ ! -s "$rm_log" ] || fail 'regenerate CA removed CA files after cleanup failure'
 
 echo 'WLOC cleanup failure tests: PASS'
