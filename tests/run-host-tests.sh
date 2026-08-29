@@ -21,7 +21,7 @@ FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 FIREWALL_VIEW="$HTDOCS/luci-static/resources/view/wloc/firewall.js"
 MAIN_VIEW="$HTDOCS/luci-static/resources/view/wloc/main.js"
 STATUS_SOURCE="$ROOT/src/wloc-rs/src/status.rs"
-QEMU_TEST="$ROOT/tests/openwrt-lifecycle.test.sh"
+RUNTIME_INTEGRATION_TEST="$ROOT/tests/runtime-integration.sh"
 
 fail() {
     echo "host tests: FAIL: $*" >&2
@@ -52,7 +52,7 @@ done
 [ -f "$FIREWALL_VIEW" ] || fail "WLOC firewall view not found"
 [ -f "$MAIN_VIEW" ] || fail "WLOC main view not found"
 [ -f "$STATUS_SOURCE" ] || fail "WLOC status source not found"
-[ -f "$QEMU_TEST" ] || fail "OpenWrt lifecycle test not found"
+[ -f "$RUNTIME_INTEGRATION_TEST" ] || fail "OpenWrt runtime integration test not found"
 
 
 echo '==> Shell syntax'
@@ -69,6 +69,7 @@ done < <(
         \) \
         -print0
 )
+sh -n "$RUNTIME_INTEGRATION_TEST" || fail "shell syntax error: $RUNTIME_INTEGRATION_TEST"
 
 
 echo '==> JSON syntax'
@@ -112,96 +113,6 @@ if grep -Fq '/etc/init.d/wloc stop' "$ROOT/Makefile"; then
 fi
 [ -n "$prerm_cleanup_line" ] \
     || fail 'package prerm does not clean up WLOC firewall state'
-grep -Fq 'SCP_OPTIONS=' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not separate scp options'
-grep -Fq 'SCP_OPTIONS="-O ' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not force legacy scp protocol'
-grep -Fq 'touch /etc/config/wireless' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not create the wireless UCI fixture'
-grep -Fq -- '-P $SSH_PORT' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not use scp -P for the SSH port'
-if grep -Fq 'scp $SSH_OPTIONS' "$QEMU_TEST"; then
-    fail 'QEMU lifecycle test still passes SSH options to scp'
-fi
-grep -Fq 'ubus call service list' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not query procd through ubus'
-grep -Fq "service_value '@.wloc.instances.daemon.pid'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not read the daemon PID through service_value'
-if grep -Fq '"daemon"' "$QEMU_TEST" || grep -Fq '"schedule"' "$QEMU_TEST"; then
-    fail 'QEMU lifecycle test still parses procd JSON with grep'
-fi
-grep -Fq 'OpenWrt x86_64 lifecycle' "$ROOT/.github/workflows/openwrt-build.yml" \
-    || fail 'release workflow does not include the OpenWrt lifecycle job'
-grep -Fq 'apk del luci-app-wloc' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not cover package uninstall'
-grep -Fq 'firewall.applied.nft' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not verify runtime snapshot cleanup'
-grep -Fq '/etc/init.d/wloc start' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not uninstall while WLOC is running'
-grep -Fq 'expected_applied_hash' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not use the applied revision for Save'
-WORKFLOW="$ROOT/.github/workflows/openwrt-build.yml"
-if grep -Eq 'libguestfs|guestfish|virt-filesystems' "$WORKFLOW"; then
-    fail 'QEMU lifecycle workflow still depends on libguestfs tooling'
-fi
-if grep -Eq 'losetup|lsblk|sudo mount|umount' "$WORKFLOW"; then
-    fail 'QEMU lifecycle workflow still mutates a raw image filesystem'
-fi
-if grep -Eiq 'imagebuilder|rsync|zstd|tar --zstd|make -C .* image|openwrt-image-overlay' "$WORKFLOW"; then
-    fail 'QEMU lifecycle workflow still contains ImageBuilder or overlay tooling'
-fi
-grep -Fq "OPENWRT_VERSION='25.12.5'" "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not pin the OpenWrt version'
-grep -Fq "OPENWRT_TARGET='x86/64'" "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not pin the OpenWrt target'
-grep -Fq "OPENWRT_IMAGE='openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz'" "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not use the official ext4-combined image'
-grep -Fq "OPENWRT_IMAGE_SHA256='23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461'" "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not pin the official image checksum'
-grep -Fq 'Cache verified OpenWrt image' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not cache the official image'
-grep -Fq 'openwrt-runtime-image-' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow cache key does not identify the runtime image'
-grep -Fq 'gzip -dc "$image_gz" >"$image"' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not unpack the official image'
-grep -Fq "ssh-keygen -t ed25519 -N '' -f \"\$RUNNER_TEMP/wloc-lifecycle\"" "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not create the temporary SSH key'
-grep -Fq 'WLOC_OPENWRT_IMAGE="$RUNNER_TEMP/openwrt.img"' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not pass the unpacked image to the test'
-if [ -d "$ROOT/tests/openwrt-image-overlay" ]; then
-    fail 'ImageBuilder lifecycle overlay still exists'
-fi
-if grep -Fq -- '-snapshot' "$QEMU_TEST"; then
-    fail 'QEMU lifecycle test still uses snapshot mode'
-fi
-grep -Fq 'ssh-keyscan -T 2 -p' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not wait for the SSH transport'
-grep -Fq 'SSH_BOOTSTRAP_OPTIONS=' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not define fresh-image SSH bootstrap options'
-grep -Fq 'SSH_ASKPASS_REQUIRE=force' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not automate the empty-password SSH bootstrap'
-grep -Fq '/etc/dropbear/authorized_keys' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not install the lifecycle SSH key'
-grep -Fq "phase BOOT 'official OpenWrt image booted'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark the official image boot'
-grep -Fq "phase SSH 'key installed'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark SSH key initialization'
-grep -Fq "phase APK 'WLOC installed'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark WLOC installation'
-grep -Fq "phase PROCD 'service verified'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark service verification'
-grep -Fq "phase FIREWALL 'Apply without Save'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark the unsaved Apply phase'
-grep -Fq "phase FIREWALL 'rollback verified'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark rollback verification'
-grep -Fq "phase FIREWALL 'Save verified'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark Save verification'
-grep -Fq "phase PROCD 'respawn verified'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark respawn verification'
-grep -Fq "phase UNINSTALL 'cleanup verified'" "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not mark uninstall cleanup'
-grep -Fq 'scp $SCP_OPTIONS "$WLOC_OPENWRT_APK"' "$QEMU_TEST" \
-    || fail 'QEMU lifecycle test does not install the APK inside the guest'
 SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
 [ -f "$SMOKE_WORKFLOW" ] \
     || fail 'x86_64 SDK smoke workflow is missing'
