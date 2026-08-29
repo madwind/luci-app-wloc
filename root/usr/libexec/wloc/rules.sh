@@ -88,15 +88,29 @@ EOF
 }
 
 clear_host_sets() {
-    local family table_name
+    local family table_name set_dump rc=0
+
     while read -r family table_name; do
         [ -n "$family" ] || continue
-        if nft list set "$family" "$table_name" "$HOST_SET" >/dev/null 2>&1; then
-            nft flush set "$family" "$table_name" "$HOST_SET" >/dev/null 2>&1 || return 1
+
+        if ! set_dump="$(
+            nft list set "$family" "$table_name" "$HOST_SET" 2>/dev/null
+        )"; then
+            continue
         fi
+
+        if ! host_set_compatible "$set_dump"; then
+            echo "wloc: optional host set $family/$table_name/$HOST_SET has an incompatible type" >&2
+            rc=1
+            continue
+        fi
+
+        nft flush set "$family" "$table_name" "$HOST_SET" >/dev/null 2>&1 || rc=1
     done <<EOF
 $(host_set_targets)
 EOF
+
+    return "$rc"
 }
 
 cleanup() {

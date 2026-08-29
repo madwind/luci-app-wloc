@@ -434,8 +434,29 @@ mkdir -p "$fixture_root/br-lan/brif"
 export WLOC_SYS_CLASS_NET="$fixture_root"
 
 nft() {
+    [ "${WLOC_TEST_NFT_UNAVAILABLE:-0}" -eq 1 ] && return 1
+
     if [ "${1:-}" = '-f' ] && [ "${2:-}" = '-' ]; then
         cat
+        return 0
+    fi
+    if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = apple_wloc_v4 ]; then
+        case "${4:-}" in
+            host_missing)
+                return 1
+                ;;
+            host_incompatible)
+                printf '%s\n' 'type inet_service' 'flags timeout'
+                return 0
+                ;;
+            host_compatible)
+                printf '%s\n' 'type ipv4_addr' 'flags timeout'
+                return 0
+                ;;
+        esac
+    fi
+    if [ "${1:-}" = flush ] && [ "${5:-}" = apple_wloc_v4 ]; then
+        printf '%s\n' "$*" >>"$host_flush_log"
         return 0
     fi
     if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ]; then
@@ -579,9 +600,60 @@ printf '%s\n' \
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
     || fail 'reconcile was not idempotent or did not deduplicate configured AP interfaces'
 
-nft() { return 1; }
+WLOC_TEST_NFT_UNAVAILABLE=1
 [ -z "$(sync_ingress_interfaces)" ] \
     || fail 'missing optional ingress set prevented reconciliation'
+unset WLOC_TEST_NFT_UNAVAILABLE
+
+echo '  -> host-set cleanup preserves type safety'
+host_flush_log="$fixture_root/host-set-flush.log"
+host_snapshot="$fixture_root/host-set.applied.nft"
+host_persistent="$fixture_root/host-set.persistent.nft"
+: >"$host_persistent"
+
+printf '%s\n' \
+    'table inet host_compatible {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+CUSTOM_FIREWALL="$host_snapshot"
+PERSISTENT_FIREWALL="$host_persistent"
+: >"$host_flush_log"
+clear_host_sets \
+    || fail 'compatible host set cleanup failed'
+grep -Fqx 'flush set inet host_compatible apple_wloc_v4' "$host_flush_log" \
+    || fail 'compatible host set was not flushed'
+
+printf '%s\n' \
+    'table inet host_incompatible {' \
+    '    set apple_wloc_v4 {' \
+    '        type inet_service' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_flush_log"
+if clear_host_sets; then
+    fail 'incompatible host set cleanup was reported as successful'
+fi
+[ ! -s "$host_flush_log" ] \
+    || fail 'incompatible host set was flushed'
+
+printf '%s\n' \
+    'table inet host_missing {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_flush_log"
+clear_host_sets \
+    || fail 'missing host set made cleanup fail'
+[ ! -s "$host_flush_log" ] \
+    || fail 'missing host set unexpectedly received a flush'
+
+nft() { return 1; }
 
 
 if grep -Eq 'rule\.bridge|duplicate bridge' \
