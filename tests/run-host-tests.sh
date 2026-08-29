@@ -439,6 +439,9 @@ nft() {
         return 0
     fi
     if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ]; then
+        if [ "${4:-}" = missing ]; then
+            return 1
+        fi
         if [ "${4:-}" = incompatible ]; then
             printf '%s\n' 'type ipv4_addr' 'flags timeout'
             return 0
@@ -546,6 +549,16 @@ printf '%s\n' \
     '}' >"$ingress_persistent"
 [ "$(ingress_set_targets)" = 'bridge fallback_wloc' ] \
     || fail 'ingress discovery did not fall back to the persistent snapshot'
+
+printf '%s\n' \
+    'table bridge missing {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
+[ -z "$(sync_ingress_interfaces)" ] \
+    || fail 'an ingress set missing from nftables state was not skipped'
 
 printf '%s\n' 'table bridge no_ingress { }' >"$ingress_snapshot"
 [ -z "$(sync_ingress_interfaces)" ] \

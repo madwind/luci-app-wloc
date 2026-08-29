@@ -197,7 +197,7 @@ authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
 
 ```sh
 WLOC_OPENWRT_SSH=root@192.168.1.1 \
-WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r100.apk \
+WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r101.apk \
 WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
 sh tests/runtime-integration.sh
 ```

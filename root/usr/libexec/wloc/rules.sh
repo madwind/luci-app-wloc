@@ -339,25 +339,34 @@ collect_wloc_ingress() {
 }
 
 sync_ingress_interfaces() {
-    local interface interfaces family table_name set_dump targets
+    local interface interfaces family table_name set_dump targets valid_targets
     WLOC_RESOLVE_ERROR=''
     WLOC_INGRESS_INTERFACES=''
     targets="$(ingress_set_targets)"
     # A custom ruleset may not use WLOC's optional interface set at all.
     [ -n "$targets" ] || return 0
+    valid_targets=''
     while read -r family table_name; do
         [ -n "$family" ] || continue
         if ! set_dump="$(nft list set "$family" "$table_name" "$INGRESS_SET" 2>/dev/null)"; then
-            echo "wloc: unable to inspect $family/$table_name/$INGRESS_SET" >&2
-            return 1
+            # The table may have been removed outside WLOC after the snapshot
+            # was applied. Treat that optional target as absent and continue.
+            continue
         fi
         if ! ingress_set_compatible "$set_dump"; then
             echo "wloc: optional ingress set $family/$table_name/$INGRESS_SET has an incompatible type" >&2
             return 1
         fi
+        if [ -n "$valid_targets" ]; then
+            valid_targets="$valid_targets
+$family $table_name"
+        else
+            valid_targets="$family $table_name"
+        fi
     done <<EOF
 $targets
 EOF
+    [ -n "$valid_targets" ] || return 0
     load_ap_lib || return 1
     config_load wloc || return 1
     config_foreach collect_wloc_ingress wifi
@@ -375,7 +384,7 @@ EOF
                 "$family" "$table_name" "$INGRESS_SET" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
             done
         done <<EOF
-$targets
+$valid_targets
 EOF
     } | nft -f - || {
         echo 'wloc: unable to refresh ingress sets; custom rules were left unchanged' >&2
