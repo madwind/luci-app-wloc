@@ -150,9 +150,11 @@ APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'
 APPLY_RESULT=/tmp/wloc-apply-result
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
     || fail 'firewall Apply did not return a response'
-case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
+apply_ok="$(rpc_value "cat $APPLY_RESULT" '@.ok' 2>/dev/null || true)"
+case "$apply_ok" in
     true|1) ;;
-    *) fail 'firewall Apply did not return ok=true';;
+    *) ssh_cmd "cat $APPLY_RESULT" >&2 || true
+       fail 'firewall Apply did not return ok=true';;
 esac
 applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'firewall Apply did not return an applied revision'
@@ -171,9 +173,11 @@ fi
 echo '  -> Apply and Save persists the applied rules across reboot'
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
     || fail 'second firewall Apply did not return a response'
-case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
+apply_ok="$(rpc_value "cat $APPLY_RESULT" '@.ok' 2>/dev/null || true)"
+case "$apply_ok" in
     true|1) ;;
-    *) fail 'second firewall Apply did not return ok=true';;
+    *) ssh_cmd "cat $APPLY_RESULT" >&2 || true
+       fail 'second firewall Apply did not return ok=true';;
 esac
 applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'second firewall Apply did not return an applied revision'
