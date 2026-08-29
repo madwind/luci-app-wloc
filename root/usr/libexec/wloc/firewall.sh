@@ -61,21 +61,31 @@ firewall_lock_acquire() {
     FIREWALL_LOCK_HELD=1
 }
 
-# The editor owns exactly two tables. This check deliberately only looks at
-# table headers and command forms; nft --check remains the syntax validator.
+# The editor owns exactly two tables. Normalize lightweight statement
+# boundaries for this ownership check only; nft --check remains the syntax
+# validator.
+firewall_ownership_stream() {
+    awk '{
+        part_count = split($0, parts, /[;}]/)
+        for (part = 1; part <= part_count; part++)
+            print parts[part]
+    }' "$1"
+}
+
 firewall_validate_ownership() {
     local source="$1"
-    if grep -Eq '^[[:space:]]*(add|flush|include|delete|destroy|reset|insert|replace)([[:space:]]|$)' "$source"; then
+    if firewall_ownership_stream "$source" |
+        grep -Eq '^[[:space:]]*(add|flush|include|delete|destroy|reset|insert|replace)([[:space:]]|$)'; then
         firewall_error_code='unsupported_firewall_command'
         firewall_error='Only declarative definitions of table bridge wloc and table inet wloc are supported.'
         return 1
     fi
-    if ! awk '
+    if ! firewall_ownership_stream "$source" | awk '
         /^[[:space:]]*table([[:space:]]|$)/ &&
             $0 !~ /^[[:space:]]*table[[:space:]]+(bridge|inet)[[:space:]]+wloc([[:space:]]|$)/ {
             exit 1
         }
-    ' "$source"; then
+    '; then
         firewall_error_code='unsupported_firewall_command'
         firewall_error='WLOC owns only table bridge wloc and table inet wloc.'
         return 1

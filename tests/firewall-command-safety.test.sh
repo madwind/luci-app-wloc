@@ -122,6 +122,26 @@ for header in \
         || fail "non-owned table left a staged snapshot: $header"
 done
 
+for input in \
+    'table inet wloc { }; flush ruleset' \
+    'table inet wloc { }; table inet foreign { }'; do
+    source="$fixture_root/same-line-$RANDOM.nft"
+    printf '%s\n' "$input" >"$source"
+    echo "  -> reject same-line ownership bypass: $input"
+    if firewall_validate_file "$source"; then
+        fail "same-line ownership bypass passed validation: $input"
+    fi
+    [ "${firewall_error_code:-}" = unsupported_firewall_command ] \
+        || fail "same-line ownership bypass returned the wrong error: $input"
+    [ "$check_before" = "$(cksum "$CHECK_LOG")" ] \
+        || fail "same-line ownership bypass reached nft --check: $input"
+    if firewall_apply_file "$source"; then
+        fail "same-line ownership bypass was applied: $input"
+    fi
+    [ "$apply_before" = "$(cksum "$APPLY_LOG")" ] \
+        || fail "same-line ownership bypass reached the nft transaction: $input"
+done
+
 for command in \
     'flush ruleset' \
     'include "/etc/nftables.d/*.nft"' \
