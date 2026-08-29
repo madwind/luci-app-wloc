@@ -100,14 +100,12 @@ grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
 if grep -Eq '/etc/init.d/wloc (enable|start|disable)' "$ROOT/Makefile"; then
     fail 'package hooks still duplicate standard enable/start/disable actions'
 fi
-grep -Fq '/etc/init.d/wloc stop' "$ROOT/Makefile" \
-    || fail 'package prerm does not stop WLOC before cleanup'
-prerm_stop_line="$(grep -nF '/etc/init.d/wloc stop' "$ROOT/Makefile" | cut -d: -f1 | head -n 1)"
 prerm_cleanup_line="$(grep -nF 'firewall.sh remove-runtime' "$ROOT/Makefile" | cut -d: -f1 | head -n 1)"
-[ -n "$prerm_stop_line" ] && [ -n "$prerm_cleanup_line" ] \
-    || fail 'package prerm lifecycle actions are incomplete'
-[ "$prerm_stop_line" -lt "$prerm_cleanup_line" ] \
-    || fail 'package prerm removes firewall state before stopping WLOC'
+if grep -Fq '/etc/init.d/wloc stop' "$ROOT/Makefile"; then
+    fail 'package prerm duplicates the standard service stop lifecycle'
+fi
+[ -n "$prerm_cleanup_line" ] \
+    || fail 'package prerm does not clean up WLOC firewall state'
 grep -Fq 'SCP_OPTIONS=' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not separate scp options'
 grep -Fq 'SCP_OPTIONS="-O ' "$QEMU_TEST" \

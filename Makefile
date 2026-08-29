@@ -59,8 +59,8 @@ endef
 
 define Package/luci-app-wloc/prerm
 #!/bin/sh
+# The package framework runs default_prerm first; keep only WLOC-specific cleanup here.
 [ -n "$${IPKG_INSTROOT}" ] || {
-	/etc/init.d/wloc stop >/dev/null 2>&1 || true
 	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
 exit 0
