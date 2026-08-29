@@ -33,6 +33,7 @@ export WLOC_RULES_HELPER="$rules_helper"
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
 export WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
+export WLOC_FIREWALL_PATH="$fixture_root/firewall.persistent.nft"
 export WLOC_FIREWALL_LOCK="$runtime/firewall.lock"
 export WLOC_FIREWALL_LOCK_COMMAND="$lock_helper"
 export WLOC_STATUS_PATH="$runtime/status.json"
@@ -100,6 +101,14 @@ if grep -Fqx cleanup "$rules_log"; then
     fail 'running daemon unexpectedly used cleanup instead of reconcile'
 fi
     [ -s "$WLOC_FIREWALL_RUNTIME" ] || fail 'successful apply did not save the firewall snapshot'
+
+echo '  -> Save uses the shared persistent path without a caller FIREWALL variable'
+unset FIREWALL
+applied_hash="$(firewall_file_hash "$WLOC_FIREWALL_RUNTIME")"
+firewall_save_snapshot "$applied_hash" \
+    || fail 'shared firewall helper could not save without caller FIREWALL'
+cmp -s "$WLOC_FIREWALL_RUNTIME" "$WLOC_FIREWALL_PATH" \
+    || fail 'shared firewall helper did not save to the persistent path'
 
 echo '  -> reconcile failures keep Apply successful and fail open'
 : >"$rules_log"

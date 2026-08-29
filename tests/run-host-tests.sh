@@ -210,6 +210,14 @@ if grep -Eq 'firewall_process_start|firewall_lock_(save_traps|restore_trap|abort
 fi
 grep -Fq 'firewall_save_snapshot' "$RPC" "$FIREWALL_HELPER" \
     || fail 'firewall Save does not use the guarded applied snapshot helper'
+grep -Fq '"$FIREWALL_RUNTIME"' "$FIREWALL_HELPER" \
+    && grep -Fq '"$FIREWALL_PERSISTENT"' "$FIREWALL_HELPER" \
+    || fail 'firewall Save does not use the helper persistent path'
+grep -Fq 'firewall_file_hash "$FIREWALL_PERSISTENT"' "$FIREWALL_HELPER" \
+    || fail 'firewall Save hash does not use the helper persistent path'
+if grep -Fq 'firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"' "$FIREWALL_HELPER"; then
+    fail 'firewall Save still depends on the caller FIREWALL variable'
+fi
 
 grep -Fq 'listener_ready' "$INIT" \
     || fail 'service start does not defer dynamic-set population until listener readiness'

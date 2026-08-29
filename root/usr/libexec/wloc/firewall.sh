@@ -281,9 +281,11 @@ firewall_save_snapshot() {
         firewall_set_error stale_applied_revision 'The applied firewall configuration changed. Refresh the page before saving.'
     else
         firewall_error_code='persistent_save_failed'
-        if firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"; then
+        if firewall_copy_atomic \
+            "$FIREWALL_RUNTIME" \
+            "$FIREWALL_PERSISTENT"; then
             FIREWALL_APPLIED_HASH="$current_hash"
-            FIREWALL_SAVED_HASH="$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
+            FIREWALL_SAVED_HASH="$(firewall_file_hash "$FIREWALL_PERSISTENT" 2>/dev/null || true)"
             rc=0
         else
             firewall_error="${firewall_error:-unable to persist the applied firewall snapshot}"
