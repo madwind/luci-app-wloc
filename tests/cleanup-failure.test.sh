@@ -1,0 +1,149 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+INIT="$ROOT/root/etc/init.d/wloc"
+RPC="$ROOT/root/usr/libexec/rpcd/luci.wloc"
+
+fail() {
+    echo "WLOC cleanup failure tests: FAIL: $*" >&2
+    exit 1
+}
+
+fixture_root="$(mktemp -d)"
+trap 'rm -rf "$fixture_root"' EXIT
+
+rules_helper="$fixture_root/rules.sh"
+cat >"$rules_helper" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$WLOC_TEST_RULES_OUTPUT" >&2
+exit "$WLOC_TEST_RULES_RC"
+EOF
+chmod +x "$rules_helper"
+
+firewall_helper="$fixture_root/firewall.sh"
+: >"$firewall_helper"
+chmod +x "$firewall_helper"
+
+schedule_helper="$fixture_root/schedule.sh"
+cat >"$schedule_helper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$schedule_helper"
+
+logger_log="$fixture_root/logger.log"
+procd_log="$fixture_root/procd.log"
+start_error="$fixture_root/start-error"
+: >"$logger_log"
+: >"$procd_log"
+
+# The init script is sourced after its rc.common shebang is removed so the
+# service functions can be exercised with host-side stubs.
+eval "$(sed '1d' "$INIT")"
+RULES="$rules_helper"
+FIREWALL_HELPER="$firewall_helper"
+SCHEDULE="$schedule_helper"
+FIREWALL="$fixture_root/firewall.nft"
+START_ERROR="$start_error"
+
+mkdir() {
+    case "$*" in
+        *'/var/run/wloc'*|*'/etc/wloc'*) :;;
+        *) command mkdir "$@";;
+    esac
+}
+rm() {
+    case "$*" in
+        *'/var/run/wloc'*|*'/etc/wloc'*) :;;
+        *) command rm "$@";;
+    esac
+}
+chmod() {
+    case "$*" in
+        *'/etc/wloc'*) :;;
+        *) command chmod "$@";;
+    esac
+}
+logger() { printf '%s\n' "$*" >>"$logger_log"; }
+procd_open_instance() { printf '%s\n' "$1" >>"$procd_log"; }
+procd_set_param() { :; }
+procd_append_param() { :; }
+procd_close_instance() { :; }
+config_load() { :; }
+config_get_bool() {
+    local destination="$1" section="$2" option="$3" value=0
+    [ "$section:$option" = 'main:enabled' ] && value=1
+    eval "$destination=\$value"
+}
+config_get() {
+    local destination="$1"
+    eval "$destination=''"
+}
+
+export WLOC_TEST_RULES_RC=1
+export WLOC_TEST_RULES_OUTPUT='managed firewall state could not be cleared'
+
+echo '  -> start refuses to launch the daemon after cleanup failure'
+if start_service; then
+    fail 'start_service reported success after cleanup failure'
+fi
+grep -Fq 'managed firewall state could not be cleared' "$start_error" \
+    || fail 'startup failure did not preserve the cleanup error'
+if grep -Fqx daemon "$procd_log"; then
+    fail 'start_service opened the daemon instance after cleanup failure'
+fi
+
+echo '  -> stop keeps cleanup failure visible'
+if stop_service; then
+    fail 'stop_service reported success after cleanup failure'
+fi
+grep -Fq 'firewall cleanup failed while stopping service' "$logger_log" \
+    || fail 'stop_service did not log cleanup failure'
+
+echo '  -> service_stopped does not let cleanup failure get masked by rm'
+if service_stopped; then
+    fail 'service_stopped reported success after cleanup failure'
+fi
+
+fake_jshn="$fixture_root/jshn.sh"
+cat >"$fake_jshn" <<'EOF'
+json_init() {
+    response_ok=''
+    response_error=''
+    response_error_code=''
+    response_detail=''
+}
+json_add_boolean() {
+    [ "$1" = ok ] && response_ok="$2"
+}
+json_add_string() {
+    case "$1" in
+        error) response_error="$2";;
+        error_code) response_error_code="$2";;
+        detail) response_detail="$2";;
+    esac
+}
+json_dump() { :; }
+EOF
+
+export WLOC_RPC_SOURCE=1
+export WLOC_JSHN_PATH="$fake_jshn"
+export WLOC_FIREWALL_HELPER_PATH="$firewall_helper"
+export WLOC_RULES_HELPER="$rules_helper"
+export WLOC_INIT_PATH="$schedule_helper"
+export WLOC_RUNTIME_DIR="$fixture_root"
+export WLOC_FIREWALL_PATH="$fixture_root/firewall.nft"
+export WLOC_FIREWALL_RUNTIME="$fixture_root/firewall.applied.nft"
+export WLOC_STATUS_PATH="$fixture_root/status.json"
+. "$RPC"
+
+echo '  -> cleanup RPC returns an explicit failure response'
+rpc_cleanup
+[ "$response_ok" = 0 ] || fail 'cleanup RPC did not return ok=false'
+[ "$response_error_code" = cleanup_failed ] \
+    || fail 'cleanup RPC returned the wrong error code'
+[ "$response_detail" = "$WLOC_TEST_RULES_OUTPUT" ] \
+    || fail 'cleanup RPC did not preserve the helper error'
+
+echo 'WLOC cleanup failure tests: PASS'

@@ -50,8 +50,10 @@ async fn reconcile_rules_async(helper: PathBuf, port: u16) -> Result<(), String>
         .map_err(|error| format!("rules task failed: {error}"))?
 }
 
-async fn cleanup_rules_async(helper: PathBuf) {
-    let _ = tokio::task::spawn_blocking(move || run_rules(&helper, "cleanup", &[])).await;
+async fn cleanup_rules_async(helper: PathBuf) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || run_rules(&helper, "cleanup", &[]))
+        .await
+        .map_err(|error| format!("cleanup rules task failed: {error}"))?
 }
 
 fn record_startup_error(error: &str) {
@@ -176,13 +178,25 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 true
             }
             Err(error) => {
-                cleanup_rules_async(config.rules_helper.clone()).await;
-                status.update_detail(
-                    "lease_failed",
-                    "action=rules_removed fail_open=true retry_seconds=10 phase=initial_start",
-                    Some(&error),
-                    |c| c.armed(false),
-                );
+                match cleanup_rules_async(config.rules_helper.clone()).await {
+                    Ok(()) => status.update_detail(
+                        "lease_failed",
+                        "action=rules_removed fail_open=true retry_seconds=10 phase=initial_start",
+                        Some(&error),
+                        |c| c.armed(false),
+                    ),
+                    Err(cleanup_error) => {
+                        let detail = format!(
+                            "initial rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
+                        );
+                        status.update_detail(
+                            "cleanup_failed",
+                            "armed=false retry_seconds=10 phase=initial_start",
+                            Some(&detail),
+                            |c| c.armed(false),
+                        );
+                    }
+                }
                 eprintln!(
                     "wlocd: daemon=ready interception=false error=initial_rules phase=start retry_seconds=10 ca_generated={generated}"
                 );
@@ -210,15 +224,31 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .await
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);
-                    cleanup_rules_async(lease_helper.clone()).await;
-                    if was_armed {
-                        lease_status.update_detail(
-                            "lease_failed",
-                            "action=rules_removed fail_open=true retry_seconds=10",
-                            Some(&error),
-                            |c| c.armed(false),
-                        );
-                        eprintln!("wlocd: interception=false error=lease_refresh retry_seconds=10");
+                    match cleanup_rules_async(lease_helper.clone()).await {
+                        Ok(()) if was_armed => {
+                            lease_status.update_detail(
+                                "lease_failed",
+                                "action=rules_removed fail_open=true retry_seconds=10",
+                                Some(&error),
+                                |c| c.armed(false),
+                            );
+                            eprintln!("wlocd: interception=false error=lease_refresh retry_seconds=10");
+                        }
+                        Ok(()) => {}
+                        Err(cleanup_error) => {
+                            let detail = format!(
+                                "rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
+                            );
+                            lease_status.update_detail(
+                                "cleanup_failed",
+                                "armed=false retry_seconds=10",
+                                Some(&detail),
+                                |c| c.armed(false),
+                            );
+                            eprintln!(
+                                "wlocd: interception=false error=cleanup_failed retry_seconds=10"
+                            );
+                        }
                     }
                 } else if !lease_armed.swap(true, Ordering::SeqCst) {
                     lease_status.update_detail(

@@ -17,6 +17,7 @@ FIREWALL_CONCURRENCY_TEST="$ROOT/tests/firewall-concurrency.test.sh"
 FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
 FIREWALL_SAFETY_TEST="$ROOT/tests/firewall-command-safety.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
+CLEANUP_FAILURE_TEST="$ROOT/tests/cleanup-failure.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 FIREWALL_VIEW="$HTDOCS/luci-static/resources/view/wloc/firewall.js"
 MAIN_VIEW="$HTDOCS/luci-static/resources/view/wloc/main.js"
@@ -48,6 +49,7 @@ done
 [ -f "$FIREWALL_REMOVE_TEST" ] || fail "WLOC firewall removal test not found"
 [ -f "$FIREWALL_SAFETY_TEST" ] || fail "WLOC firewall command safety test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
+[ -f "$CLEANUP_FAILURE_TEST" ] || fail "WLOC cleanup failure test not found"
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
 [ -f "$FIREWALL_VIEW" ] || fail "WLOC firewall view not found"
 [ -f "$MAIN_VIEW" ] || fail "WLOC main view not found"
@@ -178,6 +180,10 @@ grep -Fq 'firewall.applied.nft' "$INIT" \
     || fail 'service start does not clear the volatile applied firewall snapshot'
 grep -Fq 'firewall.applied.nft.next' "$INIT" \
     || fail 'service start does not clear the staged firewall snapshot'
+grep -Fq 'firewall.applied.nft' "$INIT" \
+    || fail 'service start does not clear the volatile applied firewall snapshot'
+grep -Fq 'firewall.applied.nft.next' "$INIT" \
+    || fail 'service start does not clear the staged firewall snapshot'
 grep -Fq 'procd_open_instance daemon' "$INIT" \
     || fail 'daemon procd instance is not explicitly named'
 grep -Fq 'procd_open_instance schedule' "$INIT" \
@@ -276,6 +282,7 @@ sh "$FIREWALL_CONCURRENCY_TEST"
 sh "$FIREWALL_REMOVE_TEST"
 sh "$FIREWALL_SAFETY_TEST"
 sh "$RPC_FIREWALL_TEST"
+sh "$CLEANUP_FAILURE_TEST"
 
 echo '==> nftables editor behavior'
 

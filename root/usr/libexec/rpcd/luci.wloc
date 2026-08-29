@@ -26,6 +26,20 @@ firewall_rpc_error() {
     json_dump
 }
 
+cleanup_rules() {
+    cleanup_error=''
+    if cleanup_error="$("$RULES" cleanup 2>&1)"; then
+        return 0
+    fi
+    [ -n "$cleanup_error" ] || cleanup_error='The WLOC firewall cleanup command failed.'
+    return 1
+}
+
+cleanup_failure_response() {
+    firewall_rpc_error cleanup_failed \
+        'Unable to clean up WLOC firewall rules.' "$cleanup_error"
+}
+
 firewall_response_state() {
     local state_armed state_last_event
     runtime_ready=0
@@ -47,9 +61,14 @@ firewall_response_state() {
     json_get_var state_last_event last_event
     case "$state_armed" in 1|true|yes) runtime_ready=1;; esac
     case "$state_last_event" in
-        lease_failed)
+        lease_failed|cleanup_failed)
             recovering=1
-            runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.'
+            case "$state_last_event" in
+                cleanup_failed)
+                    runtime_warning='Runtime rule cleanup failed; WLOC will retry automatically.'
+                    ;;
+                *) runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.';;
+            esac
             ;;
     esac
 }
@@ -357,6 +376,10 @@ emit_status() {
                 service_reason='Runtime rule refresh failed'
                 [ -z "$last_error" ] || service_reason="$service_reason: $last_error"
                 ;;
+            cleanup_failed)
+                service_reason='Runtime rule cleanup failed'
+                [ -z "$last_error" ] || service_reason="$service_reason: $last_error"
+                ;;
             esac
     elif [ "$daemon_running" -eq 1 ] && [ "$conflict" -eq 1 ]; then
         service_reason='transparent-proxy path conflict; redirected packets are not reaching the WLOC listener'
@@ -452,6 +475,40 @@ emit_configured_access_points() {
     json_dump
 }
 
+rpc_disable() {
+    uci -q set wloc.main.enabled='0'
+    uci -q commit wloc
+    if cleanup_rules; then
+        "$INIT" stop >/dev/null 2>&1 || true
+        emit_status
+    else
+        "$INIT" stop >/dev/null 2>&1 || true
+        cleanup_failure_response
+    fi
+}
+
+rpc_regenerate_ca() {
+    if cleanup_rules; then
+        "$INIT" stop >/dev/null 2>&1 || true
+        rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
+            /etc/wloc/ca.pem /etc/wloc/ca.info.json \
+            /www/wloc-ca.mobileconfig
+        [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
+        emit_status
+    else
+        "$INIT" stop >/dev/null 2>&1 || true
+        cleanup_failure_response
+    fi
+}
+
+rpc_cleanup() {
+    if cleanup_rules; then
+        emit_status
+    else
+        cleanup_failure_response
+    fi
+}
+
 service_daemon_running() {
     local response running
     service_status_available=0
@@ -494,24 +551,13 @@ call)
         fi
         ;;
     disable)
-        uci -q set wloc.main.enabled='0'
-        uci -q commit wloc
-        "$RULES" cleanup
-        "$INIT" stop >/dev/null 2>&1 || true
-        emit_status
+        rpc_disable
         ;;
     regenerate_ca)
-        "$RULES" cleanup
-        "$INIT" stop >/dev/null 2>&1 || true
-        rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
-            /etc/wloc/ca.pem /etc/wloc/ca.info.json \
-            /www/wloc-ca.mobileconfig
-        [ "$(uci -q get wloc.main.enabled || echo 0)" = 1 ] && "$INIT" start >/dev/null 2>&1
-        emit_status
+        rpc_regenerate_ca
         ;;
     cleanup)
-        "$RULES" cleanup
-        emit_status
+        rpc_cleanup
         ;;
     logs)
         load_runtime_state

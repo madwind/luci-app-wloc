@@ -115,7 +115,14 @@ start_service() {
     config_get_bool debug main debug 0
     config_get_bool runtime_log main runtime_log 0
 
-    "$RULES" cleanup
+    cleanup_detail=''
+    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+        :
+    else
+        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
+        startup_failure "firewall cleanup failed: $cleanup_detail; interception remains disabled"
+        return 1
+    fi
     [ "$enabled" -eq 1 ] || return 0
     case "$listen_port" in ''|*[!0-9]*) startup_failure 'invalid local listen port; interception remains disabled'; return 1;; esac
     [ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
@@ -156,14 +163,30 @@ start_service() {
 }
 
 stop_service() {
+    local rc=0 cleanup_detail
     "$SCHEDULE" stop >/dev/null 2>&1 || true
-    "$RULES" cleanup
+    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+        :
+    else
+        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
+        logger -t wlocd "firewall cleanup failed while stopping service: $cleanup_detail"
+        rc=1
+    fi
+    return "$rc"
 }
 
 service_stopped() {
+    local rc=0 cleanup_detail
     "$SCHEDULE" stop >/dev/null 2>&1 || true
-    "$RULES" cleanup
-    rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log "$START_ERROR"
+    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+        :
+    else
+        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
+        logger -t wlocd "firewall cleanup failed after service stop: $cleanup_detail"
+        rc=1
+    fi
+    rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log "$START_ERROR" || rc=1
+    return "$rc"
 }
 
 reload_service() {
