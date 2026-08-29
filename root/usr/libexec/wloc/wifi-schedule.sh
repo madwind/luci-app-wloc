@@ -6,6 +6,7 @@
 STATE_DIR="${WLOC_SCHEDULE_STATE_DIR:-/var/run/wloc}"
 STATE_FILE="$STATE_DIR/wifi-schedule.state"
 DESIRED_FILE="$STATE_DIR/wifi-schedule.desired.$$"
+WLOC_SCHEDULE_DESIRED_ERROR=0
 
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
@@ -60,7 +61,11 @@ desired_contains() {
 
 desired_add() {
     local section="$1"
-    desired_contains "$section" || printf '%s\n' "$section" >>"$DESIRED_FILE"
+    desired_contains "$section" && return 0
+    if ! printf '%s\n' "$section" >>"$DESIRED_FILE"; then
+        WLOC_SCHEDULE_DESIRED_ERROR=1
+        return 1
+    fi
 }
 
 reload_wifi() {
@@ -163,6 +168,7 @@ reconcile() {
         return 1
     }
     WLOC_SCHEDULE_CHANGED=0
+    WLOC_SCHEDULE_DESIRED_ERROR=0
     : >"$DESIRED_FILE" || {
         schedule_error 'unable to create schedule desired-state file; scheduled state was not changed'
         return 1
@@ -170,6 +176,11 @@ reconcile() {
     config_load wloc || return 1
     WLOC_NOW_MINUTES="$(time_minutes "$(date +%H:%M)")"
     config_foreach collect_active_wifi wifi
+    if [ "$WLOC_SCHEDULE_DESIRED_ERROR" -ne 0 ]; then
+        rm -f "$DESIRED_FILE"
+        schedule_error 'unable to build schedule desired state; scheduled state was not changed'
+        return 1
+    fi
 
     while IFS= read -r section; do
         [ -n "$section" ] || continue

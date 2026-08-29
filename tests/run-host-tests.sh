@@ -23,6 +23,7 @@ FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 FIREWALL_VIEW="$HTDOCS/luci-static/resources/view/wloc/firewall.js"
 MAIN_VIEW="$HTDOCS/luci-static/resources/view/wloc/main.js"
 RUNTIME_INTEGRATION_TEST="$ROOT/tests/runtime-integration.sh"
+BUILD_SCRIPT="$ROOT/scripts/build-openwrt-25.12.5.sh"
 
 fail() {
     echo "host tests: FAIL: $*" >&2
@@ -55,6 +56,7 @@ done
 [ -f "$FIREWALL_VIEW" ] || fail "WLOC firewall view not found"
 [ -f "$MAIN_VIEW" ] || fail "WLOC main view not found"
 [ -f "$RUNTIME_INTEGRATION_TEST" ] || fail "OpenWrt runtime integration test not found"
+[ -f "$BUILD_SCRIPT" ] || fail "OpenWrt build script not found"
 
 
 echo '==> Shell syntax'
@@ -210,6 +212,19 @@ grep -Fq 'sync_ingress_interfaces ||' "$RULES" \
 if grep -Eq 'ORDER_STATE|ORDER_CHECK_STAMP|PRIORITY_STATE|PRIORITY_DETAILS|analyze_prerouting_proxies|write_priority_details|read_wloc_priority|read_wloc_chain|order_check_due|mark_order_checked|check_prerouting_order' "$RULES"; then
     fail 'obsolete prerouting priority/order state remains in rules.sh'
 fi
+
+
+echo '==> OpenWrt source staging'
+if grep -Fq 'cp -a "$PROJECT/src"' "$BUILD_SCRIPT"; then
+    fail 'OpenWrt build script still copies the whole Rust source tree'
+fi
+grep -Fq 'cp "$PROJECT/src/Makefile" "$PACKAGE_DST/src/"' "$BUILD_SCRIPT" \
+    || fail 'OpenWrt build script does not copy the Rust package Makefile'
+grep -Fq 'cp "$PROJECT/src/wloc-rs/Cargo.toml" "$PROJECT/src/wloc-rs/Cargo.lock"' "$BUILD_SCRIPT" \
+    && grep -Fq '    "$PACKAGE_DST/src/wloc-rs/"' "$BUILD_SCRIPT" \
+    || fail 'OpenWrt build script does not copy the locked Cargo inputs'
+grep -Fq 'cp -a "$PROJECT/src/wloc-rs/src" "$PACKAGE_DST/src/wloc-rs/"' "$BUILD_SCRIPT" \
+    || fail 'OpenWrt build script does not copy the Rust source directory'
 
 
 echo '==> Fixed Apple WLOC domains'
@@ -920,6 +935,37 @@ fake_disabled=0
 reconcile
 [ "$fake_disabled" = 0 ] || fail 'schedule changed state for a missing interface'
 [ "$reload_count" -eq $((restore_reload_count + 1)) ] || fail 'schedule reloaded WiFi for a missing interface'
+
+echo '  -> failed desired-state writes do not mutate schedule state'
+WLOC_AP_LIB_LOADED=0
+fake_wireless_exists=1
+fake_disabled=1
+schedule_enabled_value=1
+printf '%s\n' 'wifi_ap|0' >"$fixture_root/wifi-schedule.state"
+desired_state_checksum="$(cksum "$fixture_root/wifi-schedule.state")"
+desired_state_reload_count="$reload_count"
+fail_desired_append=0
+printf() {
+    if [ "$fail_desired_append" -eq 1 ] \
+        && [ "${FUNCNAME[1]:-}" = desired_add ] \
+        && [ "$1" = '%s\n' ] \
+        && [ "$#" -eq 2 ]; then
+        return 1
+    fi
+    builtin printf "$@"
+}
+fail_desired_append=1
+if reconcile; then
+    fail 'schedule reported success after a desired-state write failure'
+fi
+[ "$fake_disabled" = 1 ] || fail 'desired-state write failure changed UCI'
+[ "$desired_state_checksum" = "$(cksum "$fixture_root/wifi-schedule.state")" ] \
+    || fail 'desired-state write failure changed schedule state'
+[ "$reload_count" -eq "$desired_state_reload_count" ] \
+    || fail 'desired-state write failure reloaded WiFi'
+fail_desired_append=0
+rm -f "$fixture_root/wifi-schedule.state"
+unset -f printf
 
 echo '  -> failed schedule state saves do not mutate UCI or reload WiFi'
 fake_wireless_exists=1
