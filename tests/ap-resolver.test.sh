@@ -37,6 +37,21 @@ ubus() { return 1; }
 
 eval "$(sed '/^wloc_ap_get_hostapd_status()/,$d' "$AP_LIB")"
 
+wloc_ap_valid_ifname 'phy0-ap0' \
+    || { echo 'valid interface name was rejected' >&2; exit 1; }
+if wloc_ap_valid_ifname 'phy 0-ap0'; then
+    echo 'interface name with whitespace was accepted' >&2
+    exit 1
+fi
+if wloc_ap_valid_ifname 'phy0/ap0'; then
+    echo 'interface name with a slash was accepted' >&2
+    exit 1
+fi
+if wloc_ap_valid_ifname 'phy-1234567890123'; then
+    echo 'overlong interface name was accepted' >&2
+    exit 1
+fi
+
 [ "$(wloc_ap_find_section_by_ifname 'phy0-ap0')" = wifi0 ]
 if wloc_ap_find_section_by_ifname 'PHY0-AP0' >/dev/null 2>"$fixture_root/error"; then
     echo 'case-sensitive interface lookup unexpectedly succeeded' >&2

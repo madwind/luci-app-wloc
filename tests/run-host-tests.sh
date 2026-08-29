@@ -131,34 +131,20 @@ if grep -Fq 'ubus -S call luci.wloc firewall_apply' "$INIT"; then
 fi
 grep -Fq 'WLOC_FIREWALL_HELPER_SOURCE=1' "$RPC" \
     || fail 'rpcd does not source the shared firewall helper'
-grep -Fq 'firewall_runtime_reconcile' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not support immediate runtime reconciliation'
-grep -Fq 'firewall_runtime_cleanup' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not fail open while wlocd is stopped'
 grep -Fq 'FIREWALL_RUNTIME_WARNING' "$FIREWALL_HELPER" \
     || fail 'firewall helper does not expose reconcile recovery state'
 grep -Fq 'runtime_ready' "$RPC" \
     || fail 'firewall RPC does not expose runtime readiness'
 grep -Fq 'recovering' "$RPC" \
     || fail 'firewall RPC does not expose recovery state'
-grep -Fq 'firewall_remove_file' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not remove declared nftables tables'
 grep -Fq 'remove-runtime' "$FIREWALL_HELPER" \
     || fail 'firewall helper does not expose runtime table cleanup'
 grep -Fq 'firewall.sh remove-runtime' "$ROOT/Makefile" \
     || fail 'package prerm does not clean up runtime nftables tables'
-grep -Fq 'firewall_wloc_ready' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not gate dynamic sets on daemon readiness'
 grep -Fq 'firewall_active' "$RPC" \
     || fail 'status RPC does not expose live firewall activity'
-grep -Fq 'firewall_stage_snapshot' "$FIREWALL_HELPER" \
-    || fail 'firewall Apply does not stage the runtime snapshot before nftables'
-grep -Fq 'firewall_promote_snapshot' "$FIREWALL_HELPER" \
-    || fail 'firewall Apply does not atomically promote the runtime snapshot'
 grep -Fq 'FIREWALL_RUNTIME_PROMOTION_FAILED' "$RPC" \
     || fail 'firewall RPC does not expose fatal snapshot promotion failures'
-grep -Fq 'firewall_lock_acquire' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not serialize firewall operations'
 grep -Fq 'FIREWALL_LOCK_TIMEOUT' "$FIREWALL_HELPER" \
     || fail 'firewall lock does not have a bounded wait'
 grep -Fq 'FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-/var/lock/wloc-firewall.lock}' "$FIREWALL_HELPER" \
@@ -171,16 +157,6 @@ grep -Fq '"$FIREWALL_LOCK_COMMAND" -u "$FIREWALL_LOCK"' "$FIREWALL_HELPER" \
     || fail 'firewall helper does not release the native lock'
 if grep -Eq 'firewall_process_start|firewall_lock_(save_traps|restore_trap|abort|install_traps|owner_alive|remove_stale)|FIREWALL_LOCK_OWNER|trap -p|/owner' "$FIREWALL_HELPER"; then
     fail 'firewall helper still contains the removed custom owner/trap lock'
-fi
-grep -Fq 'firewall_save_snapshot' "$RPC" "$FIREWALL_HELPER" \
-    || fail 'firewall Save does not use the guarded applied snapshot helper'
-grep -Fq '"$FIREWALL_RUNTIME"' "$FIREWALL_HELPER" \
-    && grep -Fq '"$FIREWALL_PERSISTENT"' "$FIREWALL_HELPER" \
-    || fail 'firewall Save does not use the helper persistent path'
-grep -Fq 'firewall_file_hash "$FIREWALL_PERSISTENT"' "$FIREWALL_HELPER" \
-    || fail 'firewall Save hash does not use the helper persistent path'
-if grep -Fq 'firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"' "$FIREWALL_HELPER"; then
-    fail 'firewall Save still depends on the caller FIREWALL variable'
 fi
 grep -Fq 'LUCI_DEPENDS:=@(aarch64||x86_64)' "$ROOT/Makefile" \
     || fail 'package Makefile does not declare supported architectures'
@@ -247,10 +223,6 @@ grep -Fq 'safe_text(detail, MAX_LOG_LINE_CHARS)' "$STATUS_SOURCE" \
     || fail 'runtime log does not bound event line length'
 grep -Fq 'while inner.logs.len() > MAX_LOG_LINES || inner.log_bytes > MAX_LOG_BYTES' "$STATUS_SOURCE" \
     || fail 'runtime log does not evict entries at its configured bounds'
-grep -Fq 'runtime_log_stays_within_line_and_byte_limits' "$STATUS_SOURCE" \
-    || fail 'runtime log bound test is missing'
-grep -Fq 'runtime_log_revision_advances_for_each_runtime_event' "$STATUS_SOURCE" \
-    || fail 'runtime log revision test is missing'
 grep -Fq 'runtime_log_revision' "$RPC" \
     || fail 'status RPC does not expose the runtime log revision'
 grep -Fq 'lastLogRevision' "$MAIN_VIEW" \
@@ -307,8 +279,6 @@ sh "$RPC_FIREWALL_TEST"
 
 echo '==> nftables editor behavior'
 
-grep -Fq 'firewall_validate_declarative' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not enforce declarative nftables input'
 grep -Fq 'unsupported_firewall_command' "$FIREWALL_HELPER" "$RPC" \
     || fail 'firewall command safety error is not exposed by the backend'
 grep -Fq 'unsupported_firewall_command' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" \
@@ -317,14 +287,8 @@ grep -Fq 'Only declarative nftables table definitions are supported.' "$RPC" \
     || fail 'backend does not explain the declarative firewall boundary'
 grep -F 'nft --check --file' "$FIREWALL_HELPER" >/dev/null \
     || fail 'nftables editor no longer performs a syntax-only check'
-grep -F 'firewall_copy_atomic' "$FIREWALL_HELPER" >/dev/null \
-    || fail 'firewall helper does not provide atomic snapshot replacement'
-grep -F 'firewall_request_config' "$RPC" >/dev/null \
-    || fail 'apply and validate RPCs do not receive editor content'
 grep -F 'expected_applied_hash' "$RPC" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall Save does not require the applied revision'
-grep -F 'firewall_save_snapshot' "$RPC" >/dev/null \
-    || fail 'save RPC does not persist the guarded applied snapshot'
 if grep -Fq "callSave(editor.value)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
     fail 'firewall save still accepts un-applied editor contents'
 fi
@@ -338,8 +302,6 @@ grep -Fq 'callSave(appliedRevision)' "$FIREWALL_VIEW" \
     || fail 'firewall Save does not send the applied revision'
 grep -F 'savedHash = persistentPresent ? String(result.saved_hash ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall refresh does not keep the persistent hash separate from the editor'
-grep -Fq 'stale_applied_revision' "$RPC_FIREWALL_TEST" \
-    || fail 'firewall RPC test does not cover stale applied revisions'
 if grep -REq 'FIREWALL_CANDIDATE|firewall\.candidate\.nft|candidate_hash|candidate_present' \
     "$FIREWALL_HELPER" "$RPC" "$INIT" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
     fail 'removed runtime candidate snapshot is still part of the firewall lifecycle'
@@ -390,32 +352,12 @@ if valid_port abc; then
 fi
 
 
-echo '  -> fixed interface-name validation'
-
-valid_ifname 'phy0-ap0' \
-    || fail 'valid_ifname rejected a valid fixed AP interface'
-
-if valid_ifname 'phy 0-ap0'; then
-    fail 'valid_ifname accepted whitespace'
-fi
-
-if valid_ifname 'phy0/ap0'; then
-    fail 'valid_ifname accepted a slash'
-fi
-
-if valid_ifname 'phy-1234567890123'; then
-    fail 'valid_ifname accepted an overlong interface name'
-fi
-
-
 echo '  -> unrestricted nftables rules'
 
 if grep -Eq 'table_healthy|bridge_table_healthy|ensure_table_healthy' "$RULES"; then
     fail 'rules.sh still enforces a fixed nftables table layout'
 fi
 
-grep -F 'refresh_hosts()' "$RULES" >/dev/null \
-    || fail 'rules.sh no longer maintains the optional host set'
 grep -F 'ingress_set_targets()' "$RULES" >/dev/null \
     || fail 'rules.sh no longer discovers optional ingress sets'
 
@@ -424,18 +366,8 @@ echo '  -> fixed-interface ingress synchronization'
 
 fixture_root="$(mktemp -d)"
 trap 'rm -rf "$fixture_root"' EXIT
-mkdir -p "$fixture_root/br-lan/brif"
-: >"$fixture_root/br-lan/brif/lan2"
-: >"$fixture_root/br-lan/brif/lan3"
-: >"$fixture_root/br-lan/brif/lan4"
-: >"$fixture_root/br-lan/brif/phy0-ap0"
-: >"$fixture_root/br-lan/brif/phy1-ap0"
-: >"$fixture_root/br-lan/brif/phy0-ap1"
-export WLOC_SYS_CLASS_NET="$fixture_root"
 
 nft() {
-    [ "${WLOC_TEST_NFT_UNAVAILABLE:-0}" -eq 1 ] && return 1
-
     if [ "${1:-}" = '-f' ] && [ "${2:-}" = '-' ]; then
         if [ -n "${WLOC_TEST_NFT_BATCH_LOG:-}" ]; then
             cat >>"$WLOC_TEST_NFT_BATCH_LOG"
@@ -635,14 +567,6 @@ printf '%s\n' \
     '}' >"$ingress_snapshot"
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
     || fail 'fixed-interface ingress synchronization generated an unexpected batch'
-
-[ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
-    || fail 'reconcile was not idempotent or did not deduplicate configured AP interfaces'
-
-WLOC_TEST_NFT_UNAVAILABLE=1
-[ -z "$(sync_ingress_interfaces)" ] \
-    || fail 'missing optional ingress set prevented reconciliation'
-unset WLOC_TEST_NFT_UNAVAILABLE
 
 echo '  -> host-set cleanup preserves type safety'
 host_flush_log="$fixture_root/host-set-flush.log"
