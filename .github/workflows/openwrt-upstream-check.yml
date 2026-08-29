@@ -1,4 +1,4 @@
-name: Upstream Check
+name: OpenWrt Upstream Check
 
 run-name: OpenWrt · ${{ github.event_name }}
 
