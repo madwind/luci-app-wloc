@@ -416,6 +416,7 @@ _firewall_apply_file() {
         firewall_error="${firewall_error:-unable to build nftables apply transaction}"
         return 1
     fi
+    firewall_error_code='nft_apply_failed'
     detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
     rm -f "$transaction"
     if [ "$rc" -ne 0 ]; then

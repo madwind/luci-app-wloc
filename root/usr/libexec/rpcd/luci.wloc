@@ -217,7 +217,7 @@ emit_firewall_validate() {
                     'Another firewall operation is already in progress. Please retry.' "$firewall_error";;
             unsupported_firewall_command)
                 firewall_rpc_error unsupported_firewall_command \
-                    'Only declarative nftables table definitions are supported.' "$firewall_error";;
+                    'Only table bridge wloc and table inet wloc definitions are supported.' "$firewall_error";;
             *)
                 json_init; json_add_boolean ok 0; json_add_boolean valid 0
                 json_add_string error 'nftables syntax check failed'
@@ -377,7 +377,7 @@ firewall_status_values() {
     firewall_collect_active
     firewall_is_active="$FIREWALL_ACTIVE_FOUND"
     counters="$(printf '%s\n' "$FIREWALL_INET_ACTIVE" | awk '
-        /wloc owned (AP|ingress) redirect/ {
+        /wloc owned AP redirect/ {
             if (match($0, /counter packets [0-9]+/)) {
                 value = substr($0, RSTART + 16, RLENGTH - 16)
                 attempts += value
