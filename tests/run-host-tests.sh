@@ -15,6 +15,7 @@ AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
 FIREWALL_CONCURRENCY_TEST="$ROOT/tests/firewall-concurrency.test.sh"
 FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
+FIREWALL_SAFETY_TEST="$ROOT/tests/firewall-command-safety.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 QEMU_TEST="$ROOT/tests/openwrt-lifecycle.test.sh"
@@ -42,6 +43,7 @@ done
 [ -f "$LIFECYCLE_TEST" ] || fail "WLOC lifecycle test not found"
 [ -f "$FIREWALL_CONCURRENCY_TEST" ] || fail "WLOC firewall concurrency test not found"
 [ -f "$FIREWALL_REMOVE_TEST" ] || fail "WLOC firewall removal test not found"
+[ -f "$FIREWALL_SAFETY_TEST" ] || fail "WLOC firewall command safety test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
 [ -f "$QEMU_TEST" ] || fail "OpenWrt lifecycle test not found"
@@ -287,13 +289,19 @@ echo '==> WLOC lifecycle behavior'
 sh "$LIFECYCLE_TEST"
 sh "$FIREWALL_CONCURRENCY_TEST"
 sh "$FIREWALL_REMOVE_TEST"
+sh "$FIREWALL_SAFETY_TEST"
 sh "$RPC_FIREWALL_TEST"
 
 echo '==> nftables editor behavior'
 
-if grep -Fq 'Only top-level table declarations are allowed.' "$RPC"; then
-    fail 'nftables editor still rejects valid top-level commands'
-fi
+grep -Fq 'firewall_validate_declarative' "$FIREWALL_HELPER" \
+    || fail 'firewall helper does not enforce declarative nftables input'
+grep -Fq 'unsupported_firewall_command' "$FIREWALL_HELPER" "$RPC" \
+    || fail 'firewall command safety error is not exposed by the backend'
+grep -Fq 'unsupported_firewall_command' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" \
+    || fail 'LuCI does not map the unsupported firewall command error'
+grep -Fq 'Only declarative nftables table definitions are supported.' "$RPC" \
+    || fail 'backend does not explain the declarative firewall boundary'
 grep -F 'nft --check --file' "$FIREWALL_HELPER" >/dev/null \
     || fail 'nftables editor no longer performs a syntax-only check'
 grep -F 'firewall_copy_atomic' "$FIREWALL_HELPER" >/dev/null \

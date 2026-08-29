@@ -132,14 +132,20 @@ emit_firewall_validate() {
     printf '%s' "$firewall_config" >"$source"
     if firewall_validate_file "$source"; then
         json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
-    elif [ "${firewall_error_code:-}" = firewall_busy ]; then
-        firewall_rpc_error firewall_busy \
-            'Another firewall operation is already in progress. Please retry.' "$firewall_error"
     else
-        json_init; json_add_boolean ok 0; json_add_boolean valid 0
-        json_add_string error 'nftables syntax check failed'
-        json_add_string error_code nft_check_failed
-        json_add_string detail "$firewall_error"; json_dump
+        case "${firewall_error_code:-nft_check_failed}" in
+            firewall_busy)
+                firewall_rpc_error firewall_busy \
+                    'Another firewall operation is already in progress. Please retry.' "$firewall_error";;
+            unsupported_firewall_command)
+                firewall_rpc_error unsupported_firewall_command \
+                    'Only declarative nftables table definitions are supported.' "$firewall_error";;
+            *)
+                json_init; json_add_boolean ok 0; json_add_boolean valid 0
+                json_add_string error 'nftables syntax check failed'
+                json_add_string error_code nft_check_failed
+                json_add_string detail "$firewall_error"; json_dump;;
+        esac
     fi
     rm -f "$source"
 }
@@ -200,6 +206,9 @@ emit_firewall_apply() {
                 snapshot_stage_failed)
                     firewall_rpc_error snapshot_stage_failed \
                         'The runtime snapshot could not be staged.' "$firewall_error";;
+                unsupported_firewall_command)
+                    firewall_rpc_error unsupported_firewall_command \
+                        'Only declarative nftables table definitions are supported.' "$firewall_error";;
                 nft_check_failed)
                     firewall_rpc_error nft_check_failed \
                         'The nftables syntax check failed.' "$firewall_error";;

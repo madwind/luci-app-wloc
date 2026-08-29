@@ -18,7 +18,7 @@ case "$mode" in
         (
             trap 'rmdir "$lock_dir" 2>/dev/null; exit 0' INT TERM HUP
             while :; do
-                sleep 1
+                sleep 0.1
             done
         ) &
         printf '%s\n' "$!" >"$holder_file"

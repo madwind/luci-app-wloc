@@ -14,6 +14,7 @@ function firewallError(result, fallback) {
         no_applied_snapshot: 'No successfully applied firewall rules are available to save.',
         snapshot_stage_failed: 'The runtime snapshot could not be staged.',
         nft_check_failed: 'The nftables syntax check failed.',
+        unsupported_firewall_command: 'Only declarative nftables table definitions are supported.',
         nft_apply_failed: 'The nftables transaction failed.',
         snapshot_promote_failed: 'The runtime snapshot could not be committed.',
         persistent_save_failed: 'The applied firewall rules could not be saved persistently.'
@@ -332,15 +333,15 @@ return view.extend({
 
         var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Enter any valid nftables ruleset. WLOC does not require a particular table, chain, priority, or redirect rule. An empty file means that no custom rules are loaded.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Enter declarative nftables table definitions. WLOC replaces only the tables listed here. An empty file means that no custom rules are loaded.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Firewall file')),
                 statusTable,
-                E('div', { 'class': 'alert-message warning' }, _('This is a full nftables editor. An invalid or logically unsafe ruleset can interrupt network access, LuCI, or SSH. Apply is temporary; rebooting without Save restores the last saved rules.')),
+                E('div', { 'class': 'alert-message warning' }, _('This editor accepts table definitions only; destructive global nftables commands are rejected. An invalid or logically unsafe table can interrupt network access, LuCI, or SSH. Apply is temporary; rebooting without Save restores the last saved rules.')),
                 E('div', { 'class': 'cbi-section-descr' }, _('WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged.')),
                 E('label', { 'class': 'cbi-section-descr', 'for': 'wloc-firewall-editor' }, _('nftables ruleset')),
                 editor,
-                E('div', { 'class': 'cbi-section-descr' }, _('Check syntax only validates the editor. Apply temporarily loads it without changing the persistent file. Save is enabled only after the current editor contents have been applied. No WLOC rule layout is enforced.')),
+                E('div', { 'class': 'cbi-section-descr' }, _('Check syntax only validates the editor. Apply temporarily loads these tables without changing the persistent file. Save is enabled only after the current editor contents have been applied.')),
                 E('div', { 'class': 'cbi-page-actions' }, [ formatButton, checkButton, saveButton, applyButton, refreshButton ]),
                 feedback
             ]),

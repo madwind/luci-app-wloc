@@ -152,6 +152,16 @@ emit_firewall_save "$hash_c"
 cmp -s "$fixture_root/applied-c.nft" "$persistent" \
     || fail 'current-revision Save did not persist the applied snapshot'
 
+echo '  -> destructive nftables commands are rejected before Apply'
+runtime_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+firewall_config='flush ruleset'
+emit_firewall_apply
+[ "$response_ok" = 0 ] || fail 'destructive firewall command unexpectedly applied'
+[ "$response_error_code" = unsupported_firewall_command ] \
+    || fail 'destructive firewall command returned the wrong RPC error code'
+[ "$runtime_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+    || fail 'destructive firewall command changed the applied snapshot'
+
 echo '  -> reconcile failure returns a warning without failing Apply'
 export WLOC_TEST_RULES_RC=1
 firewall_config="$(cat "$applied_source")"
@@ -165,7 +175,7 @@ export WLOC_TEST_RULES_RC=0
 
 echo '  -> syntax failure keeps both snapshots'
 CHECK_RC=1
-firewall_config='table inet rejected {'
+firewall_config='table inet rejected { }'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
     || fail 'syntax failure replaced the applied runtime snapshot'
@@ -174,7 +184,7 @@ CHECK_RC=0
 
 echo '  -> transaction failure keeps both snapshots'
 APPLY_RC=1
-firewall_config='table inet rejected {'
+firewall_config='table inet rejected { }'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
     || fail 'transaction failure replaced the applied runtime snapshot'

@@ -64,14 +64,91 @@ firewall_tables() {
         $1 == "table" && $2 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $3 ~ /^[A-Za-z0-9_.-]+$/ {
             print $2, $3
         }
-        $1 == "add" && $2 == "table" && $3 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $4 ~ /^[A-Za-z0-9_.-]+$/ {
-            print $3, $4
-        }
     ' "$1"
 }
 
-firewall_is_command_script() {
-    grep -Eq '^[[:space:]]*(flush|add|delete|destroy|insert|replace|reset|include)([[:space:]]|$)' "$1"
+firewall_validate_declarative() {
+    local source="$1"
+    if grep -Eq '^[[:space:]]*(add|flush|include|delete|destroy|reset|insert|replace)([[:space:]]|$)' "$source"; then
+        firewall_error_code='unsupported_firewall_command'
+        firewall_error='Only declarative nftables table definitions are supported.'
+        return 1
+    fi
+    if ! awk '
+        BEGIN {
+            depth = 0
+            top_started = 0
+            quote = ""
+            escaped = 0
+            valid = 1
+        }
+        {
+            in_comment = 0
+            for (i = 1; i <= length($0); i++) {
+                character = substr($0, i, 1)
+                if (in_comment)
+                    break
+                if (quote != "") {
+                    if (escaped)
+                        escaped = 0
+                    else if (character == "\\")
+                        escaped = 1
+                    else if (character == quote)
+                        quote = ""
+                    continue
+                }
+                if (character == "\"" || character == "\047") {
+                    quote = character
+                    continue
+                }
+                if (character == "#") {
+                    in_comment = 1
+                    continue
+                }
+                if (depth == 0 && !top_started) {
+                    if (character ~ /[[:space:]]/)
+                        continue
+                    if (character !~ /[A-Za-z_]/) {
+                        valid = 0
+                        exit 1
+                    }
+                    word = character
+                    i++
+                    while (i <= length($0) && substr($0, i, 1) ~ /[A-Za-z0-9_-]/) {
+                        word = word substr($0, i, 1)
+                        i++
+                    }
+                    i--
+                    if (word != "table") {
+                        valid = 0
+                        exit 1
+                    }
+                    top_started = 1
+                    continue
+                }
+                if (character == "{") {
+                    depth++
+                } else if (character == "}") {
+                    if (depth == 0) {
+                        valid = 0
+                        exit 1
+                    }
+                    depth--
+                    if (depth == 0)
+                        top_started = 0
+                }
+            }
+        }
+        END {
+            if (valid && depth == 0 && !top_started && quote == "")
+                exit 0
+            exit 1
+        }
+    ' "$source"; then
+        firewall_error_code='unsupported_firewall_command'
+        firewall_error='Only declarative nftables table definitions are supported.'
+        return 1
+    fi
 }
 
 firewall_collect_active() {
@@ -384,6 +461,7 @@ _firewall_validate_file() {
         firewall_error='nftables configuration file is not readable'
         return 1
     }
+    firewall_validate_declarative "$source" || return 1
     mkdir -p "$FIREWALL_RUNTIME_DIR" || {
         firewall_error='unable to create WLOC runtime directory'
         return 1
@@ -393,21 +471,19 @@ _firewall_validate_file() {
         return 1
     }
     : >"$check"
-    if ! firewall_is_command_script "$source"; then
-        tables="$(firewall_tables "$source")"
-        while read -r family name; do
-            [ -n "$family" ] || continue
-            if nft list table "$family" "$name" >/dev/null 2>&1; then
-                printf 'delete table %s %s\n' "$family" "$name" >>"$check" || {
-                    rm -f "$check"
-                    firewall_error='unable to build nftables check transaction'
-                    return 1
-                }
-            fi
-        done <<EOF
+    tables="$(firewall_tables "$source")"
+    while read -r family name; do
+        [ -n "$family" ] || continue
+        if nft list table "$family" "$name" >/dev/null 2>&1; then
+            printf 'delete table %s %s\n' "$family" "$name" >>"$check" || {
+                rm -f "$check"
+                firewall_error='unable to build nftables check transaction'
+                return 1
+            }
+        fi
+    done <<EOF
 $tables
 EOF
-    fi
     if ! cat "$source" >>"$check"; then
         rm -f "$check"
         firewall_error='unable to read nftables configuration'
@@ -462,22 +538,20 @@ _firewall_apply_file() {
         return 1
     }
     : >"$transaction"
-    if ! firewall_is_command_script "$source"; then
-        tables="$( { firewall_tables "$FIREWALL_RUNTIME"; firewall_tables "$source"; } | awk '!seen[$0]++')"
-        while read -r family name; do
-            [ -n "$family" ] || continue
-            if nft list table "$family" "$name" >/dev/null 2>&1; then
-                printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
-                    rm -f "$transaction"
-                    rm -f "$FIREWALL_RUNTIME_NEXT"
-                    firewall_error='unable to build nftables apply transaction'
-                    return 1
-                }
-            fi
-        done <<EOF
+    tables="$( { firewall_tables "$FIREWALL_RUNTIME"; firewall_tables "$source"; } | awk '!seen[$0]++')"
+    while read -r family name; do
+        [ -n "$family" ] || continue
+        if nft list table "$family" "$name" >/dev/null 2>&1; then
+            printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
+                rm -f "$transaction"
+                rm -f "$FIREWALL_RUNTIME_NEXT"
+                firewall_error='unable to build nftables apply transaction'
+                return 1
+            }
+        fi
+    done <<EOF
 $tables
 EOF
-    fi
     if ! cat "$source" >>"$transaction"; then
         rm -f "$transaction"
         rm -f "$FIREWALL_RUNTIME_NEXT"

@@ -87,9 +87,13 @@ firewall_remove_runtime || fail 'persistent fallback removal failed'
 grep -Fqx 'delete table inet persistent_only' "$apply_log" \
     || fail 'persistent fallback table was not removed'
 
-echo '  -> command scripts are best effort'
+echo '  -> legacy command snapshots are ignored during cleanup'
 command_script="$fixture_root/firewall.commands.nft"
 printf '%s\n' 'flush table inet unrelated' >"$command_script"
+: >"$check_log"
+: >"$apply_log"
 firewall_remove_file "$command_script" \
-    || fail 'best-effort command script cleanup failed'
+    || fail 'legacy command snapshot cleanup failed'
+[ ! -s "$check_log" ] || fail 'legacy command snapshot reached nft --check'
+[ ! -s "$apply_log" ] || fail 'legacy command snapshot reached the nft transaction'
 echo 'WLOC firewall removal tests: PASS'
