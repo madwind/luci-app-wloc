@@ -1,6 +1,6 @@
-name: WLOC / OpenWrt smoke
+name: OpenWrt Smoke
 
-run-name: OpenWrt x86_64 smoke / ${{ github.ref_name }}
+run-name: x86_64 · ${{ github.ref_name }}
 
 on:
   push:

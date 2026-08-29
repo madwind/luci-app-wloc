@@ -1,6 +1,6 @@
-name: WLOC / OpenWrt upstream maintenance
+name: Upstream Check
 
-run-name: Upstream check / ${{ github.event_name }} / ${{ github.ref_name }}
+run-name: OpenWrt · ${{ github.event_name }}
 
 on:
   schedule:

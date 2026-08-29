@@ -1,6 +1,6 @@
-name: WLOC / checks
+name: CI
 
-run-name: Checks / ${{ github.ref_name }}
+run-name: CI · ${{ github.ref_name }}
 
 on:
   push:

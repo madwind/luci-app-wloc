@@ -1,6 +1,6 @@
-name: WLOC / release packages
+name: Release
 
-run-name: Release packages / ${{ github.ref_name }}
+run-name: Release · ${{ github.ref_name }}
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build:
-    name: Build APK / ${{ matrix.target }}/${{ matrix.subtarget }}
+    name: Build · ${{ matrix.target }}/${{ matrix.subtarget }}
     needs: host-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 90
