@@ -437,7 +437,11 @@ nft() {
     [ "${WLOC_TEST_NFT_UNAVAILABLE:-0}" -eq 1 ] && return 1
 
     if [ "${1:-}" = '-f' ] && [ "${2:-}" = '-' ]; then
-        cat
+        if [ -n "${WLOC_TEST_NFT_BATCH_LOG:-}" ]; then
+            cat >>"$WLOC_TEST_NFT_BATCH_LOG"
+        else
+            cat
+        fi
         return 0
     fi
     if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = apple_wloc_v4 ]; then
@@ -453,6 +457,14 @@ nft() {
                 printf '%s\n' 'type ipv4_addr' 'flags timeout'
                 return 0
                 ;;
+            host_mixed_bad)
+                printf '%s\n' 'type inet_service' 'flags timeout'
+                return 0
+                ;;
+            host_mixed_good)
+                printf '%s\n' 'type ipv4_addr' 'flags timeout'
+                return 0
+                ;;
         esac
     fi
     if [ "${1:-}" = flush ] && [ "${5:-}" = apple_wloc_v4 ]; then
@@ -464,6 +476,10 @@ nft() {
             return 1
         fi
         if [ "${4:-}" = incompatible ]; then
+            printf '%s\n' 'type ipv4_addr' 'flags timeout'
+            return 0
+        fi
+        if [ "${4:-}" = mixed_bad ]; then
             printf '%s\n' 'type ipv4_addr' 'flags timeout'
             return 0
         fi
@@ -560,6 +576,29 @@ if sync_ingress_interfaces; then
     fail 'incompatible ingress set was treated as compatible'
 fi
 
+ingress_batch_log="$fixture_root/mixed-ingress-batch.log"
+printf '%s\n' \
+    'table bridge mixed_good {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet mixed_bad {' \
+    '    set target_ingress_interfaces {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
+: >"$ingress_batch_log"
+WLOC_TEST_NFT_BATCH_LOG="$ingress_batch_log"
+if sync_ingress_interfaces; then
+    fail 'mixed ingress sets were reported as successfully reconciled'
+fi
+unset WLOC_TEST_NFT_BATCH_LOG
+[ ! -s "$ingress_batch_log" ] \
+    || fail 'mixed ingress sets were partially updated'
+
 rm -f "$ingress_snapshot"
 printf '%s\n' \
     'table bridge fallback_wloc {' \
@@ -652,6 +691,29 @@ clear_host_sets \
     || fail 'missing host set made cleanup fail'
 [ ! -s "$host_flush_log" ] \
     || fail 'missing host set unexpectedly received a flush'
+
+printf '%s\n' \
+    'table inet host_mixed_good {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet host_mixed_bad {' \
+    '    set apple_wloc_v4 {' \
+    '        type inet_service' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_flush_log"
+if clear_host_sets; then
+    fail 'mixed host-set cleanup was reported as successful'
+fi
+grep -Fqx 'flush set inet host_mixed_good apple_wloc_v4' "$host_flush_log" \
+    || fail 'compatible host set was not processed when another target was incompatible'
+if grep -Fqx 'flush set inet host_mixed_bad apple_wloc_v4' "$host_flush_log"; then
+    fail 'incompatible host set was flushed in a mixed cleanup'
+fi
 
 echo '  -> empty applied snapshots take precedence over persistent rules'
 empty_applied_snapshot="$fixture_root/empty-firewall.applied.nft"

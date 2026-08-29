@@ -37,12 +37,17 @@ when they are declared with the expected types: `apple_wloc_v4` (`ipv4_addr`,
 `flags timeout`) receives resolved Apple host addresses, and
 `target_ingress_interfaces` (`ifname`, `flags timeout`) receives the configured
 AP interfaces. Other tables, rules, and sets are left unchanged. If a set is
-absent or has another type, WLOC skips its maintenance without rejecting the
-rest of the table definitions. WLOC discovers each managed set from the
+absent, WLOC skips its maintenance. If a declared managed set has another type,
+WLOC reports the configuration error and leaves that set untouched without
+rejecting the rest of the table definitions. Ingress reconciliation validates
+all declared targets before sending its single nftables transaction, so a mixed
+compatible/incompatible group is not partially updated. Cleanup checks targets
+independently: missing sets are skipped, compatible sets are maintained,
+incompatible sets are left untouched, and any failure is reported after the
+other targets have been checked. WLOC discovers each managed set from the
 currently applied firewall snapshot (falling back to the persistent snapshot
 before the first successful Apply), so its enclosing table may use any supported
-family and name. Every compatible declaration is synchronized in one nftables
-transaction; an incompatible declaration is reported and left untouched.
+family and name.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
