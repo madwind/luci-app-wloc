@@ -26,14 +26,19 @@ crosses midnight. If the fixed interface is missing or ambiguous, WLOC records
 a warning and leaves every other AP unchanged; it never falls back to another
 AP or the whole wireless configuration.
 
-The nftables editor accepts any ruleset accepted by `nft`; WLOC does not require
-specific tables, chains, priorities, comments, or redirect forms. WLOC only
-maintains two optional sets when they are declared with the expected types:
-`apple_wloc_v4` (`ipv4_addr`, `flags timeout`) receives resolved Apple host
-addresses, and `target_ingress_interfaces` (`ifname`, `flags timeout`) receives
-the configured AP interfaces. Other rules and sets are left unchanged. If a
-set is absent or has another type, WLOC skips its maintenance without rejecting
-the rest of the ruleset.
+The nftables editor accepts declarative table definitions only, for example
+`table inet wloc { ... }` or `table bridge wloc { ... }`. Normal table contents
+such as sets, maps, chains, rules, counters, and flowtables are checked by
+`nft`. Destructive global commands such as `flush ruleset`, `include`, `delete`,
+`destroy`, `reset`, `insert`, and `replace` are intentionally rejected before
+any nftables transaction runs. WLOC does not require a particular table name,
+chain, priority, comment, or redirect form. It only maintains two optional sets
+when they are declared with the expected types: `apple_wloc_v4` (`ipv4_addr`,
+`flags timeout`) receives resolved Apple host addresses, and
+`target_ingress_interfaces` (`ifname`, `flags timeout`) receives the configured
+AP interfaces. Other tables, rules, and sets are left unchanged. If a set is
+absent or has another type, WLOC skips its maintenance without rejecting the
+rest of the table definitions.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
@@ -147,23 +152,44 @@ without contacting the upstream server.
 
 The LuCI **Interception status** reports whether the service is actually usable:
 `Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. In the
-firewall editor, **Check syntax** only validates the editor, **Apply** loads the
-editor contents temporarily, and **Save** persists the currently applied rules.
-Applied rules are never written to the persistent file until you confirm
-that network, LuCI, and SSH still work; rebooting without Save restores the last
-saved rules. WLOC immediately reconciles its dynamic sets when the listener is
-ready; if the daemon or a runtime update is temporarily unavailable, the sets
-remain fail-open and the daemon retries automatically. Normal firewall or
-runtime recovery does not require a manual **Restart service**.
+firewall editor, **Check syntax** validates the table definitions, **Apply**
+only changes runtime firewall state, and **Save** persists exactly the currently
+applied revision. Rebooting without Save restores the last saved persistent
+rules. Applied rules are never written to the persistent file until you confirm
+that network, LuCI, and SSH still work. All firewall state transitions use the
+native OpenWrt lock at `/var/lock/wloc-firewall.lock`.
+
+The firewall snapshots have distinct roles:
+
+```text
+/etc/wloc/firewall.nft
+    persistent rules loaded after reboot
+
+/var/run/wloc/firewall.applied.nft
+    authoritative runtime snapshot of the successfully applied revision
+
+/var/run/wloc/firewall.applied.nft.next
+    temporary staging file used during Apply only
+```
+
+WLOC immediately reconciles its dynamic sets when the listener is ready; if the
+daemon or a runtime update is temporarily unavailable, the sets remain
+fail-open and the daemon retries automatically. Normal firewall or runtime
+recovery does not require a manual **Restart service**.
 When the package is uninstalled, its lifecycle hook first removes tables
 declared by the last applied snapshot (falling back to the persistent file
 when no snapshot exists) through a checked nftables delete transaction.
-Unrelated tables are not touched. Custom command scripts may change external
-nftables state that WLOC cannot reliably reverse, so their uninstall cleanup
-is necessarily best-effort.
+Unrelated tables are not touched. Since the editor accepts declarations rather
+than arbitrary command scripts, WLOC can identify the owned tables for cleanup.
 
-For a real-system lifecycle check, provide an OpenWrt x86_64 QEMU image with
-root SSH key access and run the optional test:
+For a real-system lifecycle check, the release workflow uses the OpenWrt
+ImageBuilder to create an x86_64 QEMU image with a temporary root SSH key in a
+network overlay. The WLOC APK is then copied into the guest and installed by
+the lifecycle test, so package hooks and service behavior are exercised as
+they are on OpenWrt.
+
+You can also provide an OpenWrt x86_64 QEMU image with root SSH key access and
+run the optional test directly:
 
 The release workflow runs the same check in a dedicated **OpenWrt x86_64
 lifecycle** job after the x86_64 APK build. It verifies package hooks,

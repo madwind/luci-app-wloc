@@ -372,8 +372,9 @@ _firewall_remove_file() {
         return 1
     }
     : >"$transaction"
-    # A command script has no generic inverse. Remove only table declarations
-    # that can be identified explicitly; all other commands are best-effort.
+    # Only declarative table declarations are owned. Legacy command snapshots
+    # may still exist after an upgrade, but they have no generic inverse and
+    # are therefore ignored during cleanup.
     tables="$(firewall_tables "$source" | awk '!seen[$0]++')"
     while read -r family name; do
         [ -n "$family" ] || continue

@@ -18,6 +18,9 @@ FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
 FIREWALL_SAFETY_TEST="$ROOT/tests/firewall-command-safety.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
+FIREWALL_VIEW="$HTDOCS/luci-static/resources/view/wloc/firewall.js"
+MAIN_VIEW="$HTDOCS/luci-static/resources/view/wloc/main.js"
+STATUS_SOURCE="$ROOT/src/wloc-rs/src/status.rs"
 QEMU_TEST="$ROOT/tests/openwrt-lifecycle.test.sh"
 
 fail() {
@@ -46,6 +49,9 @@ done
 [ -f "$FIREWALL_SAFETY_TEST" ] || fail "WLOC firewall command safety test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
+[ -f "$FIREWALL_VIEW" ] || fail "WLOC firewall view not found"
+[ -f "$MAIN_VIEW" ] || fail "WLOC main view not found"
+[ -f "$STATUS_SOURCE" ] || fail "WLOC status source not found"
 [ -f "$QEMU_TEST" ] || fail "OpenWrt lifecycle test not found"
 
 
@@ -275,6 +281,34 @@ fi
 grep -Fq 'state restarting' "$RPC" \
     || fail 'restart RPC does not return an immediate accepted state'
 
+echo '==> Runtime log behavior'
+
+grep -Fq 'const MAX_LOG_LINES: usize = 240;' "$STATUS_SOURCE" \
+    || fail 'runtime log does not define a line bound'
+grep -Fq 'const MAX_LOG_BYTES: usize = 96 * 1024;' "$STATUS_SOURCE" \
+    || fail 'runtime log does not define a byte bound'
+grep -Fq 'const MAX_LOG_LINE_CHARS: usize = 600;' "$STATUS_SOURCE" \
+    || fail 'runtime log does not define a line-length bound'
+grep -Fq 'safe_text(detail, MAX_LOG_LINE_CHARS)' "$STATUS_SOURCE" \
+    || fail 'runtime log does not bound event line length'
+grep -Fq 'while inner.logs.len() > MAX_LOG_LINES || inner.log_bytes > MAX_LOG_BYTES' "$STATUS_SOURCE" \
+    || fail 'runtime log does not evict entries at its configured bounds'
+grep -Fq 'runtime_log_stays_within_line_and_byte_limits' "$STATUS_SOURCE" \
+    || fail 'runtime log bound test is missing'
+grep -Fq 'runtime_log_revision_advances_for_each_runtime_event' "$STATUS_SOURCE" \
+    || fail 'runtime log revision test is missing'
+grep -Fq 'runtime_log_revision' "$RPC" \
+    || fail 'status RPC does not expose the runtime log revision'
+grep -Fq 'lastLogRevision' "$MAIN_VIEW" \
+    || fail 'LuCI does not retain the last runtime log revision'
+grep -Fq 'revision === lastLogRevision' "$MAIN_VIEW" \
+    || fail 'LuCI runtime log polling is not revision based'
+grep -Fq 'poll.add(refresh, 10)' "$MAIN_VIEW" \
+    || fail 'LuCI status polling is not configured'
+if grep -REq 'logread[[:space:]]+(-f|--follow)' "$RPC" "$MAIN_VIEW"; then
+    fail 'runtime log UI still uses a long-running logread stream'
+fi
+
 echo '==> WLOC recovery behavior'
 
 grep -Fq 'DNS_RETRY_SECONDS=10' "$RULES" \
@@ -344,8 +378,14 @@ grep -F 'callApply(editor.value)' "$ROOT/htdocs/luci-static/resources/view/wloc/
     || fail 'firewall apply does not receive editor contents'
 grep -F 'initialEditorContent(result)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall refresh does not restore applied rules'
+grep -Fq 'editor.value = initialEditorContent(result);' "$FIREWALL_VIEW" \
+    || fail 'firewall reload does not put the applied rules back in the editor'
+grep -Fq 'callSave(appliedRevision)' "$FIREWALL_VIEW" \
+    || fail 'firewall Save does not send the applied revision'
 grep -F 'savedHash = persistentPresent ? String(result.saved_hash ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall refresh does not keep the persistent hash separate from the editor'
+grep -Fq 'stale_applied_revision' "$RPC_FIREWALL_TEST" \
+    || fail 'firewall RPC test does not cover stale applied revisions'
 if grep -REq 'FIREWALL_CANDIDATE|firewall\.candidate\.nft|candidate_hash|candidate_present' \
     "$FIREWALL_HELPER" "$RPC" "$INIT" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
     fail 'removed runtime candidate snapshot is still part of the firewall lifecycle'

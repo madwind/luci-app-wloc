@@ -29,6 +29,8 @@ const api = loadFirewallView();
 const persistent = 'table inet saved {\n}\n';
 const applied = 'table inet applied {\n}\n';
 
+// A browser reload after Apply must restore the unsaved applied revision so
+// that the next Save targets the same snapshot the user actually confirmed.
 let state = api.initialEditorState({
     config: persistent,
     applied: applied,
@@ -40,6 +42,8 @@ let state = api.initialEditorState({
 assert.strictEqual(state.content, applied);
 assert.strictEqual(state.saveEnabled, true);
 
+// Once the applied revision matches the persistent revision, Save is no
+// longer needed and must remain disabled.
 state = api.initialEditorState({
     config: persistent,
     applied: persistent,
