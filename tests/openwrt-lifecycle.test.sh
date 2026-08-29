@@ -31,7 +31,7 @@ if [ -z "${WLOC_OPENWRT_IMAGE:-}" ] || [ -z "${WLOC_OPENWRT_APK:-}" ] || [ -z "$
     exit 0
 fi
 
-for command in basename grep qemu-system-x86_64 scp ssh seq sleep tail; do
+for command in basename grep qemu-system-x86_64 scp ssh ssh-keyscan seq sleep tail; do
     command -v "$command" >/dev/null 2>&1 \
         || fail "required command not found: $command"
 done
@@ -42,9 +42,16 @@ done
 SSH_PORT=${WLOC_OPENWRT_SSH_PORT:-22022}
 MEMORY=${WLOC_OPENWRT_MEMORY:-256M}
 SSH_TARGET="root@127.0.0.1"
-SSH_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -p $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-SCP_OPTIONS="-O -i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SSH_PUBLIC_KEY="${WLOC_OPENWRT_SSH_PUBLIC_KEY:-$WLOC_OPENWRT_SSH_KEY.pub}"
+[ -f "$SSH_PUBLIC_KEY" ] || fail "SSH public key not found: $SSH_PUBLIC_KEY"
+SSH_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -p $SSH_PORT -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SCP_OPTIONS="-O -i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SSH_BOOTSTRAP_OPTIONS="-p $SSH_PORT -o BatchMode=no -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SCP_BOOTSTRAP_OPTIONS="-O -P $SSH_PORT -o BatchMode=no -o ConnectTimeout=2 -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 CONSOLE_LOG="$(mktemp)"
+SSH_ASKPASS_SCRIPT="$(mktemp)"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$SSH_ASKPASS_SCRIPT"
+chmod 0700 "$SSH_ASKPASS_SCRIPT"
 QEMU_PID=''
 
 cleanup() {
@@ -53,11 +60,26 @@ cleanup() {
         wait "$QEMU_PID" 2>/dev/null || true
     fi
     rm -f "$CONSOLE_LOG"
+    rm -f "$SSH_ASKPASS_SCRIPT"
 }
 trap cleanup EXIT INT TERM HUP
 
 ssh_cmd() {
     ssh $SSH_OPTIONS "$SSH_TARGET" "$@"
+}
+
+ssh_bootstrap_cmd() {
+    SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=:0 \
+        ssh $SSH_BOOTSTRAP_OPTIONS "$SSH_TARGET" "$@"
+}
+
+scp_bootstrap() {
+    SSH_ASKPASS="$SSH_ASKPASS_SCRIPT" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=:0 \
+        scp $SCP_BOOTSTRAP_OPTIONS "$@"
 }
 
 service_value() {
@@ -83,15 +105,60 @@ rpc_value() {
     ssh_cmd "$command | jsonfilter -e '$path'"
 }
 
-wait_for_ssh() {
+wait_for_ssh_transport() {
     local attempt
     for attempt in $(seq 1 60); do
-        if ssh_cmd true >/dev/null 2>&1; then
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            fail 'QEMU exited before OpenWrt SSH became available'
+        fi
+        if ssh-keyscan -T 2 -p "$SSH_PORT" 127.0.0.1 >/dev/null 2>&1; then
             return 0
         fi
         sleep 2
     done
     return 1
+}
+
+wait_for_key_ssh() {
+    local attempt
+    for attempt in $(seq 1 15); do
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            fail 'QEMU exited while waiting for SSH key authentication'
+        fi
+        if ssh_cmd true >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+bootstrap_ssh() {
+    local attempt empty_password_login=0
+
+    phase SSH 'checking fresh-image root SSH access'
+    for attempt in $(seq 1 10); do
+        if ssh_bootstrap_cmd true >/dev/null 2>&1; then
+            empty_password_login=1
+            break
+        fi
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            fail 'QEMU exited while bootstrapping SSH'
+        fi
+        sleep 1
+    done
+
+    if [ "$empty_password_login" -eq 1 ]; then
+        phase SSH 'installing lifecycle SSH key'
+        scp_bootstrap "$SSH_PUBLIC_KEY" "$SSH_TARGET:/tmp/wloc-lifecycle.pub" >/dev/null \
+            || fail 'unable to copy the lifecycle SSH public key to OpenWrt'
+        ssh_bootstrap_cmd "mkdir -p /etc/dropbear; mv /tmp/wloc-lifecycle.pub /etc/dropbear/authorized_keys; chmod 0600 /etc/dropbear/authorized_keys" \
+            || fail 'unable to install the lifecycle SSH public key'
+    fi
+
+    wait_for_key_ssh \
+        || fail 'OpenWrt accepted neither the lifecycle SSH key nor root empty-password bootstrap'
+    phase SSH 'key installed'
 }
 
 reboot_guest() {
@@ -163,8 +230,9 @@ qemu-system-x86_64 \
 QEMU_PID=$!
 
 phase BOOT 'waiting for OpenWrt SSH'
-wait_for_ssh || fail 'OpenWrt SSH did not become ready'
-phase BOOT 'first boot ready'
+wait_for_ssh_transport || fail 'OpenWrt SSH did not become ready'
+phase BOOT 'official OpenWrt image booted'
+bootstrap_ssh
 ssh_cmd "command -v ubus >/dev/null && command -v jsonfilter >/dev/null" \
     || fail 'OpenWrt does not provide ubus and jsonfilter'
 
@@ -175,7 +243,7 @@ ssh_cmd "apk add --allow-untrusted /tmp/$apk_name" >/dev/null \
     || fail 'apk could not install luci-app-wloc'
 ssh_cmd "command -v rpcd >/dev/null && [ -x /etc/init.d/wloc ]" \
     || fail 'package install did not provide rpcd or the wloc init script'
-phase APK 'package installed'
+phase APK 'WLOC installed'
 
 phase PROCD 'verifying default_postinst'
 ssh_cmd /etc/init.d/wloc enabled \
@@ -198,7 +266,7 @@ instance_running schedule \
     || fail 'procd schedule instance is not running'
 ssh_cmd ubus call luci.wloc status >/dev/null \
     || fail 'luci.wloc status RPC failed'
-phase PROCD 'instances verified'
+phase PROCD 'service verified'
 
 phase FIREWALL 'applying unsaved rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
@@ -220,14 +288,14 @@ ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
     || fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'Apply changed the persistent firewall file'
-phase FIREWALL 'unsaved Apply active'
+phase FIREWALL 'Apply without Save'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'reboot without Save did not restore the persistent firewall file'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
     fail 'unsaved firewall rules survived reboot'
 fi
-phase FIREWALL 'persistent rollback verified'
+phase FIREWALL 'rollback verified'
 
 phase FIREWALL 'applying and saving rules'
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
@@ -254,7 +322,7 @@ reboot_guest
     || fail 'saved firewall rules did not survive reboot'
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
     || fail 'saved firewall table was not restored after reboot'
-phase FIREWALL 'persistent Save verified'
+phase FIREWALL 'Save verified'
 
 daemon_pid="$(daemon_pid 2>/dev/null || true)"
 case "$daemon_pid" in
@@ -334,7 +402,7 @@ ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
     || fail 'staged firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -d /var/run/wloc/firewall.lock && test ! -e /var/run/wloc/firewall.lock/owner" \
     || fail 'WLOC runtime state remained after package uninstall'
-phase UNINSTALL 'package and runtime state removed'
+phase UNINSTALL 'cleanup verified'
 
 phase COMPLETE 'all lifecycle checks passed'
 echo 'OpenWrt lifecycle tests: PASS'

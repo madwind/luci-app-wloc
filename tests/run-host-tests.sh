@@ -174,6 +174,32 @@ fi
 if grep -Fq -- '-snapshot' "$QEMU_TEST"; then
     fail 'QEMU lifecycle test still uses snapshot mode'
 fi
+grep -Fq 'ssh-keyscan -T 2 -p' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not wait for the SSH transport'
+grep -Fq 'SSH_BOOTSTRAP_OPTIONS=' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not define fresh-image SSH bootstrap options'
+grep -Fq 'SSH_ASKPASS_REQUIRE=force' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not automate the empty-password SSH bootstrap'
+grep -Fq '/etc/dropbear/authorized_keys' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not install the lifecycle SSH key'
+grep -Fq "phase BOOT 'official OpenWrt image booted'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark the official image boot'
+grep -Fq "phase SSH 'key installed'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark SSH key initialization'
+grep -Fq "phase APK 'WLOC installed'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark WLOC installation'
+grep -Fq "phase PROCD 'service verified'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark service verification'
+grep -Fq "phase FIREWALL 'Apply without Save'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark the unsaved Apply phase'
+grep -Fq "phase FIREWALL 'rollback verified'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark rollback verification'
+grep -Fq "phase FIREWALL 'Save verified'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark Save verification'
+grep -Fq "phase PROCD 'respawn verified'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark respawn verification'
+grep -Fq "phase UNINSTALL 'cleanup verified'" "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not mark uninstall cleanup'
 grep -Fq 'scp $SCP_OPTIONS "$WLOC_OPENWRT_APK"' "$QEMU_TEST" \
     || fail 'QEMU lifecycle test does not install the APK inside the guest'
 SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
