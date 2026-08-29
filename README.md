@@ -26,30 +26,27 @@ crosses midnight. If the fixed interface is missing or ambiguous, WLOC records
 a warning and leaves every other AP unchanged; it never falls back to another
 AP or the whole wireless configuration.
 
-The nftables editor accepts declarative table definitions only. Every table
-header must use the single-line `table FAMILY NAME {` format, such as
-`table inet wloc {` or `table bridge wloc {`; do not split the header or put the
-opening brace on a separate line. Normal table contents
-such as sets, maps, chains, rules, counters, and flowtables are checked by
-`nft`. Destructive global commands such as `flush ruleset`, `include`, `delete`,
-`destroy`, `reset`, `insert`, and `replace` are intentionally rejected before
-any nftables transaction runs. WLOC does not require a particular table name,
-chain, priority, comment, or redirect form. It only maintains two optional sets
-when they are declared with the expected types: `apple_wloc_v4` (`ipv4_addr`,
-`flags timeout`) receives resolved Apple host addresses, and
-`target_ingress_interfaces` (`ifname`, `flags timeout`) receives the configured
-AP interfaces. Other tables, rules, and sets are left unchanged. If a set is
-absent, WLOC skips its maintenance. If a declared managed set has another type,
-WLOC reports the configuration error and leaves that set untouched without
-rejecting the rest of the table definitions. Ingress reconciliation validates
-all declared targets before sending its single nftables transaction, so a mixed
-compatible/incompatible group is not partially updated. Cleanup checks targets
-independently: missing sets are skipped, compatible sets are maintained,
-incompatible sets are left untouched, and any failure is reported after the
-other targets have been checked. WLOC discovers each managed set from the
-currently applied firewall snapshot (falling back to the persistent snapshot
-before the first successful Apply), so its enclosing table may use any supported
-family and name.
+WLOC owns exactly two nftables tables:
+
+```text
+table bridge wloc
+table inet wloc
+```
+
+The nftables editor accepts declarative definitions for those two tables only.
+Every table header must use the single-line `table FAMILY NAME {` format; do not
+split the header or put the opening brace on a separate line. Normal table
+contents such as sets, maps, chains, rules, counters, and flowtables are
+validated by `nft --check`. Destructive commands such as `flush ruleset`,
+`include`, `delete`, `destroy`, `reset`, `insert`, `replace`, and `add table`
+are rejected before any nftables transaction runs. WLOC does not inspect,
+modify, or delete any other table, family, or table name.
+
+WLOC maintains two fixed managed sets when they exist: `apple_wloc_v4`
+(`ipv4_addr`, `flags timeout`) in `table inet wloc` receives resolved Apple
+addresses, and `target_ingress_interfaces` (`ifname`, `flags timeout`) in
+`table bridge wloc` receives configured AP interfaces. If a table or set is
+absent, its maintenance is skipped; nftables reports all other set errors.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
@@ -208,21 +205,16 @@ The firewall snapshots have distinct roles:
 
 /var/run/wloc/firewall.applied.nft.next
     staging snapshot used while applying a new firewall revision
-    normally promoted or removed immediately; may be retained after a
-    snapshot-promotion failure so recovery and remove-runtime can identify
-    tables belonging to the failed revision
+    normally promoted or removed immediately; it is not an ownership database
 ```
 
 WLOC immediately reconciles its dynamic sets when the listener is ready; if the
 daemon or a runtime update is temporarily unavailable, the sets remain
 fail-open and the daemon retries automatically. Normal firewall or runtime
 recovery does not require a manual **Restart service**.
-When the package is uninstalled, its lifecycle hook removes tables declared by
-the applied runtime snapshot and any retained staged recovery snapshot,
-falling back to the persistent snapshot only when neither runtime snapshot is
-available, through a checked nftables delete transaction.
-Unrelated tables are not touched. Since the editor accepts declarations rather
-than arbitrary command scripts, WLOC can identify the owned tables for cleanup.
+When the package is uninstalled, its lifecycle hook deletes `table bridge wloc`
+and `table inet wloc` and removes the runtime snapshots. Unrelated tables are
+not touched.
 
 ## Manual OpenWrt runtime integration
 

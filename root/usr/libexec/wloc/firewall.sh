@@ -11,6 +11,9 @@ FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
 FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-/var/lock/wloc-firewall.lock}
 FIREWALL_LOCK_COMMAND=${WLOC_FIREWALL_LOCK_COMMAND:-lock}
 FIREWALL_LOCK_TIMEOUT=${WLOC_FIREWALL_LOCK_TIMEOUT:-5}
+FIREWALL_BRIDGE_FAMILY=bridge
+FIREWALL_INET_FAMILY=inet
+FIREWALL_TABLE=wloc
 FIREWALL_LOCK_HELD=0
 
 firewall_set_error() {
@@ -58,136 +61,71 @@ firewall_lock_acquire() {
     FIREWALL_LOCK_HELD=1
 }
 
-firewall_tables() {
-    [ -r "$1" ] || return 0
-    awk '
-        $1 == "table" && $2 ~ /^(ip|ip6|inet|arp|bridge|netdev)$/ && $3 ~ /^[A-Za-z0-9_.-]+$/ {
-            print $2, $3
-        }
-    ' "$1"
-}
-
-firewall_validate_declarative() {
+# The editor owns exactly two tables. This check deliberately only looks at
+# table headers and command forms; nft --check remains the syntax validator.
+firewall_validate_ownership() {
     local source="$1"
     if grep -Eq '^[[:space:]]*(add|flush|include|delete|destroy|reset|insert|replace)([[:space:]]|$)' "$source"; then
         firewall_error_code='unsupported_firewall_command'
-        firewall_error='Only declarative nftables table definitions are supported.'
+        firewall_error='Only declarative definitions of table bridge wloc and table inet wloc are supported.'
         return 1
     fi
     if ! awk '
-        BEGIN {
-            depth = 0
-            top_started = 0
-            quote = ""
-            escaped = 0
-            valid = 1
-        }
-        {
-            in_comment = 0
-            for (i = 1; i <= length($0); i++) {
-                character = substr($0, i, 1)
-                if (in_comment)
-                    break
-                if (quote != "") {
-                    if (escaped)
-                        escaped = 0
-                    else if (character == "\\")
-                        escaped = 1
-                    else if (character == quote)
-                        quote = ""
-                    continue
-                }
-                if (character == "\"" || character == "\047") {
-                    quote = character
-                    continue
-                }
-                if (character == "#") {
-                    in_comment = 1
-                    continue
-                }
-                if (depth == 0 && !top_started) {
-                    if (character ~ /[[:space:]]/)
-                        continue
-                    if (character !~ /[A-Za-z_]/) {
-                        valid = 0
-                        exit 1
-                    }
-                    word = character
-                    i++
-                    while (i <= length($0) && substr($0, i, 1) ~ /[A-Za-z0-9_-]/) {
-                        word = word substr($0, i, 1)
-                        i++
-                    }
-                    i--
-                    if (word != "table") {
-                        valid = 0
-                        exit 1
-                    }
-                    header = substr($0, i + 1)
-                    if (header !~ /^[[:space:]]+(ip|ip6|inet|arp|bridge|netdev)[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]+\{/) {
-                        valid = 0
-                        exit 1
-                    }
-                    top_started = 1
-                    continue
-                }
-                if (character == "{") {
-                    depth++
-                } else if (character == "}") {
-                    if (depth == 0) {
-                        valid = 0
-                        exit 1
-                    }
-                    depth--
-                    if (depth == 0)
-                        top_started = 0
-                }
-            }
-        }
-        END {
-            if (valid && depth == 0 && !top_started && quote == "")
-                exit 0
+        /^[[:space:]]*table([[:space:]]|$)/ &&
+            $0 !~ /^[[:space:]]*table[[:space:]]+(bridge|inet)[[:space:]]+wloc([[:space:]]|$)/ {
             exit 1
         }
     ' "$source"; then
         firewall_error_code='unsupported_firewall_command'
-        firewall_error='Only declarative nftables table definitions are supported.'
+        firewall_error='WLOC owns only table bridge wloc and table inet wloc.'
         return 1
     fi
 }
 
+firewall_append_table_deletes() {
+    local destination="$1" family
+    for family in "$FIREWALL_BRIDGE_FAMILY" "$FIREWALL_INET_FAMILY"; do
+        if nft list table "$family" "$FIREWALL_TABLE" >/dev/null 2>&1; then
+            printf 'delete table %s %s\n' "$family" "$FIREWALL_TABLE" >>"$destination" || {
+                firewall_error='unable to build the nftables transaction'
+                return 1
+            }
+        fi
+    done
+}
+
 firewall_collect_active() {
-    local source="$1" active family name table_count active_count table_dump
+    local active bridge_dump inet_dump
     FIREWALL_ACTIVE=''
-    FIREWALL_TABLE_COUNT=0
+    FIREWALL_BRIDGE_ACTIVE=''
+    FIREWALL_INET_ACTIVE=''
+    FIREWALL_BRIDGE_ACTIVE_FOUND=0
+    FIREWALL_INET_ACTIVE_FOUND=0
+    FIREWALL_TABLE_COUNT=2
     FIREWALL_ACTIVE_TABLE_COUNT=0
     FIREWALL_ACTIVE_FOUND=0
-    [ -r "$source" ] || return 1
     active=''
-    table_count=0
-    active_count=0
-    while read -r family name; do
-        [ -n "$family" ] || continue
-        table_count=$((table_count + 1))
-        if table_dump="$(nft list table "$family" "$name" 2>/dev/null)"; then
-            active_count=$((active_count + 1))
-            if [ -n "$active" ]; then
-                active="$active
 
-$table_dump"
-            else
-                active="$table_dump"
-            fi
-        fi
-    done <<EOF
-$(firewall_tables "$source")
-EOF
-    FIREWALL_ACTIVE="$active"
-    FIREWALL_TABLE_COUNT="$table_count"
-    FIREWALL_ACTIVE_TABLE_COUNT="$active_count"
-    if [ "$table_count" -eq "$active_count" ]; then
-        FIREWALL_ACTIVE_FOUND=1
+    if bridge_dump="$(nft list table "$FIREWALL_BRIDGE_FAMILY" "$FIREWALL_TABLE" 2>/dev/null)"; then
+        FIREWALL_BRIDGE_ACTIVE_FOUND=1
+        FIREWALL_ACTIVE_TABLE_COUNT=$((FIREWALL_ACTIVE_TABLE_COUNT + 1))
+        FIREWALL_BRIDGE_ACTIVE="$bridge_dump"
+        active="$bridge_dump"
     fi
+    if inet_dump="$(nft list table "$FIREWALL_INET_FAMILY" "$FIREWALL_TABLE" 2>/dev/null)"; then
+        FIREWALL_INET_ACTIVE_FOUND=1
+        FIREWALL_ACTIVE_TABLE_COUNT=$((FIREWALL_ACTIVE_TABLE_COUNT + 1))
+        FIREWALL_INET_ACTIVE="$inet_dump"
+        if [ -n "$active" ]; then
+            active="$active
+
+$inet_dump"
+        else
+            active="$inet_dump"
+        fi
+    fi
+    FIREWALL_ACTIVE="$active"
+    [ "$FIREWALL_ACTIVE_TABLE_COUNT" -eq 2 ] && FIREWALL_ACTIVE_FOUND=1
     return 0
 }
 
@@ -197,7 +135,7 @@ firewall_active() {
         firewall_lock_acquire || return 1
         locked_here=1
     fi
-    if firewall_collect_active "$1" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
+    if firewall_collect_active && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
         rc=0
     else
         rc=1
@@ -360,90 +298,26 @@ firewall_runtime_cleanup() {
     fi
 }
 
-_firewall_remove_files() {
-    local transaction detail rc family name tables source readable=0
+_firewall_remove_tables() {
+    local family
     firewall_error=''
     firewall_error_code='nft_apply_failed'
-    for source in "$@"; do
-        [ -r "$source" ] && readable=1
-    done
-    [ "$readable" -eq 1 ] || {
-        firewall_error='nftables configuration file is not readable'
-        return 1
-    }
-    mkdir -p "$FIREWALL_RUNTIME_DIR" || {
-        firewall_error='unable to create WLOC runtime directory'
-        return 1
-    }
-    transaction="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-remove.XXXXXX")" || {
-        firewall_error='unable to create nftables removal transaction'
-        return 1
-    }
-    : >"$transaction"
-    # Only declarative table declarations are owned. Legacy command snapshots
-    # may still exist after an upgrade, but they have no generic inverse and
-    # are therefore ignored during cleanup.
-    tables="$(for source in "$@"; do firewall_tables "$source"; done | awk '!seen[$0]++')"
-    while read -r family name; do
-        [ -n "$family" ] || continue
-        if nft list table "$family" "$name" >/dev/null 2>&1; then
-            printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
-                rm -f "$transaction"
-                firewall_error='unable to build nftables removal transaction'
+    for family in "$FIREWALL_BRIDGE_FAMILY" "$FIREWALL_INET_FAMILY"; do
+        if nft list table "$family" "$FIREWALL_TABLE" >/dev/null 2>&1; then
+            if ! nft delete table "$family" "$FIREWALL_TABLE" >/dev/null 2>&1; then
+                firewall_error="failed to remove nftables table $family $FIREWALL_TABLE"
                 return 1
-            }
+            fi
         fi
-    done <<EOF
-$tables
-EOF
-    if [ ! -s "$transaction" ]; then
-        rm -f "$transaction"
-        return 0
-    fi
-    detail="$(nft --check --file "$transaction" 2>&1)" && rc=0 || rc=$?
-    if [ "$rc" -ne 0 ]; then
-        rm -f "$transaction"
-        firewall_error_code='nft_check_failed'
-        firewall_error="${detail:-nftables removal syntax check failed}"
-        return 1
-    fi
-    detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
-    rm -f "$transaction"
-    [ "$rc" -eq 0 ] || {
-        firewall_error="${detail:-failed to remove nftables tables}"
-        return 1
-    }
-}
-
-_firewall_remove_file() {
-    _firewall_remove_files "$1"
-}
-
-firewall_remove_file() {
-    local locked_here=0 rc
-    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
-        firewall_lock_acquire || return 1
-        locked_here=1
-    fi
-    if _firewall_remove_file "$@"; then
-        rc=0
-    else
-        rc=$?
-    fi
-    if [ "$locked_here" -eq 1 ]; then
-        firewall_lock_release
-    fi
-    return "$rc"
+    done
 }
 
 _firewall_remove_runtime() {
-    if [ -r "$FIREWALL_RUNTIME" ] || [ -r "$FIREWALL_RUNTIME_NEXT" ]; then
-        _firewall_remove_files \
-            "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT" || return 1
-    elif [ -r "$FIREWALL_PERSISTENT" ]; then
-        _firewall_remove_file "$FIREWALL_PERSISTENT" || return 1
+    _firewall_remove_tables || return 1
+    if ! rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"; then
+        firewall_error='unable to remove WLOC runtime firewall snapshots'
+        return 1
     fi
-    rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"
 }
 
 firewall_remove_runtime() {
@@ -454,7 +328,7 @@ firewall_remove_runtime() {
         firewall_lock_acquire || return 1
         locked_here=1
     fi
-    if _firewall_remove_runtime "$@"; then
+    if _firewall_remove_runtime; then
         rc=0
     else
         rc=$?
@@ -466,14 +340,14 @@ firewall_remove_runtime() {
 }
 
 _firewall_validate_file() {
-    local source="$1" check detail rc family name tables
+    local source="$1" check detail rc
     firewall_error=''
     firewall_error_code='nft_check_failed'
     [ -r "$source" ] || {
         firewall_error='nftables configuration file is not readable'
         return 1
     }
-    firewall_validate_declarative "$source" || return 1
+    firewall_validate_ownership "$source" || return 1
     mkdir -p "$FIREWALL_RUNTIME_DIR" || {
         firewall_error='unable to create WLOC runtime directory'
         return 1
@@ -483,22 +357,9 @@ _firewall_validate_file() {
         return 1
     }
     : >"$check"
-    tables="$(firewall_tables "$source")"
-    while read -r family name; do
-        [ -n "$family" ] || continue
-        if nft list table "$family" "$name" >/dev/null 2>&1; then
-            printf 'delete table %s %s\n' "$family" "$name" >>"$check" || {
-                rm -f "$check"
-                firewall_error='unable to build nftables check transaction'
-                return 1
-            }
-        fi
-    done <<EOF
-$tables
-EOF
-    if ! cat "$source" >>"$check"; then
+    if ! firewall_append_table_deletes "$check" || ! cat "$source" >>"$check"; then
         rm -f "$check"
-        firewall_error='unable to read nftables configuration'
+        firewall_error="${firewall_error:-unable to build nftables check transaction}"
         return 1
     fi
     detail="$(nft --check --file "$check" 2>&1)" && rc=0 || rc=$?
@@ -527,7 +388,7 @@ firewall_validate_file() {
 }
 
 _firewall_apply_file() {
-    local source="$1" transaction detail rc family name tables promotion_error rollback_error cleanup_error
+    local source="$1" transaction detail rc promotion_error rollback_error cleanup_error
     firewall_error=''
     firewall_error_code='nft_apply_failed'
     FIREWALL_RUNTIME_STATE_SET=0
@@ -550,27 +411,11 @@ _firewall_apply_file() {
         return 1
     }
     : >"$transaction"
-    tables="$( { firewall_tables "$FIREWALL_RUNTIME"; firewall_tables "$source"; } | awk '!seen[$0]++')"
-    while read -r family name; do
-        [ -n "$family" ] || continue
-        if nft list table "$family" "$name" >/dev/null 2>&1; then
-            printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
-                rm -f "$transaction"
-                rm -f "$FIREWALL_RUNTIME_NEXT"
-                firewall_error='unable to build nftables apply transaction'
-                return 1
-            }
-        fi
-    done <<EOF
-$tables
-EOF
-    if ! cat "$source" >>"$transaction"; then
-        rm -f "$transaction"
-        rm -f "$FIREWALL_RUNTIME_NEXT"
-        firewall_error='unable to read nftables configuration'
+    if ! firewall_append_table_deletes "$transaction" || ! cat "$source" >>"$transaction"; then
+        rm -f "$transaction" "$FIREWALL_RUNTIME_NEXT"
+        firewall_error="${firewall_error:-unable to build nftables apply transaction}"
         return 1
     fi
-    firewall_error_code='nft_apply_failed'
     detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
     rm -f "$transaction"
     if [ "$rc" -ne 0 ]; then
@@ -583,14 +428,14 @@ EOF
         promotion_error="${firewall_error:-fatal consistency error: unable to promote applied nftables snapshot}"
         rollback_error=''
         cleanup_error=''
-        if ! _firewall_remove_file "$FIREWALL_RUNTIME_NEXT"; then
-            rollback_error="${firewall_error:-unable to remove the newly applied nftables tables}"
+        if ! _firewall_remove_tables; then
+            rollback_error="${firewall_error:-unable to remove the newly applied WLOC tables}"
         fi
-        if ! rm -f "$FIREWALL_RUNTIME"; then
+        if ! rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"; then
             if [ -n "$rollback_error" ]; then
-                rollback_error="$rollback_error; unable to invalidate the previous applied snapshot"
+                rollback_error="$rollback_error; unable to invalidate firewall snapshots"
             else
-                rollback_error='unable to invalidate the previous applied snapshot'
+                rollback_error='unable to invalidate firewall snapshots'
             fi
         fi
         if ! firewall_runtime_cleanup; then
@@ -661,27 +506,20 @@ if [ "${WLOC_FIREWALL_HELPER_SOURCE:-0}" -ne 1 ]; then
             }
             ;;
         active)
-            firewall_active "${2:-}" || {
-                printf '%s\n' "${firewall_error:-nftables configuration file is not readable}" >&2
+            firewall_active || {
+                printf '%s\n' "${firewall_error:-both WLOC nftables tables are not active}" >&2
                 exit 1
             }
-            printf '%s\n' "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
-            [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ] || exit 1
-            ;;
-        remove)
-            firewall_remove_file "${2:-}" || {
-                printf '%s\n' "${firewall_error:-failed to remove nftables tables}" >&2
-                exit 1
-            }
+            printf '%s\n' "${FIREWALL_ACTIVE:-# No WLOC nftables tables are active.}"
             ;;
         remove-runtime)
             firewall_remove_runtime || {
-                printf '%s\n' "${firewall_error:-failed to remove runtime nftables tables}" >&2
+                printf '%s\n' "${firewall_error:-failed to remove WLOC nftables tables}" >&2
                 exit 1
             }
             ;;
         *)
-            printf '%s\n' 'usage: firewall.sh {validate|apply|active|remove} FILE | remove-runtime' >&2
+            printf '%s\n' 'usage: firewall.sh {validate|apply|active} FILE | remove-runtime' >&2
             exit 2
             ;;
     esac

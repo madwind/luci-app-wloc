@@ -142,19 +142,8 @@ firewall_response_state() {
 }
 
 _firewall_response() {
-    local active_source
     firewall_response_state
-    if [ -r "$FIREWALL_RUNTIME" ]; then
-        active_source="$FIREWALL_RUNTIME"
-    else
-        active_source="$FIREWALL"
-    fi
-    firewall_collect_active "$active_source" || {
-        FIREWALL_ACTIVE=''
-        FIREWALL_ACTIVE_FOUND=0
-        FIREWALL_TABLE_COUNT=0
-        FIREWALL_ACTIVE_TABLE_COUNT=0
-    }
+    firewall_collect_active
     json_init
     json_add_boolean ok 1
     json_add_string path "$FIREWALL"
@@ -167,8 +156,10 @@ _firewall_response() {
     json_add_boolean runtime_ready "$runtime_ready"
     json_add_boolean recovering "$recovering"
     json_add_string warning "$runtime_warning"
-    json_add_string active "${FIREWALL_ACTIVE:-# No custom nftables tables are active.}"
+    json_add_string active "${FIREWALL_ACTIVE:-# No WLOC nftables tables are active.}"
     json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
+    json_add_boolean bridge_active "$FIREWALL_BRIDGE_ACTIVE_FOUND"
+    json_add_boolean inet_active "$FIREWALL_INET_ACTIVE_FOUND"
     json_add_int table_count "$FIREWALL_TABLE_COUNT"
     json_add_int active_table_count "$FIREWALL_ACTIVE_TABLE_COUNT"
     json_dump
@@ -377,20 +368,15 @@ package_version() {
 }
 
 firewall_status_values() {
-    local active_source table_dump counters
-    if [ -f "$FIREWALL_RUNTIME" ]; then
-        active_source="$FIREWALL_RUNTIME"
+    local counters
+    if [ -s "$FIREWALL_RUNTIME" ] || [ -s "$FIREWALL" ]; then
+        rules_present=1
     else
-        active_source="$FIREWALL"
+        rules_present=0
     fi
-    [ -s "$active_source" ] && rules_present=1 || rules_present=0
-    firewall_is_active=0
-    table_dump=''
-    if [ -s "$active_source" ] && firewall_collect_active "$active_source"; then
-        table_dump="$FIREWALL_ACTIVE"
-        [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ] && firewall_is_active=1
-    fi
-    counters="$(printf '%s\n' "$table_dump" | awk '
+    firewall_collect_active
+    firewall_is_active="$FIREWALL_ACTIVE_FOUND"
+    counters="$(printf '%s\n' "$FIREWALL_INET_ACTIVE" | awk '
         /wloc owned (AP|ingress) redirect/ {
             if (match($0, /counter packets [0-9]+/)) {
                 value = substr($0, RSTART + 16, RLENGTH - 16)
