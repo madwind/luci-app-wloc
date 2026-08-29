@@ -131,7 +131,12 @@ case "$PACKAGE_DST" in "$SDK_DIR/package/"*) ;; *) echo 'unsafe package destinat
 rm -rf "$PACKAGE_DST"
 mkdir -p "$PACKAGE_DST"
 cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DST/"
-cp -a "$PROJECT/src" "$PROJECT/htdocs" "$PROJECT/root" "$PACKAGE_DST/"
+mkdir -p "$PACKAGE_DST/src/wloc-rs"
+cp "$PROJECT/src/Makefile" "$PACKAGE_DST/src/"
+cp "$PROJECT/src/wloc-rs/Cargo.toml" "$PROJECT/src/wloc-rs/Cargo.lock" \
+    "$PACKAGE_DST/src/wloc-rs/"
+cp -a "$PROJECT/src/wloc-rs/src" "$PACKAGE_DST/src/wloc-rs/"
+cp -a "$PROJECT/htdocs" "$PROJECT/root" "$PACKAGE_DST/"
 [ -d "$PROJECT/po" ] && cp -a "$PROJECT/po" "$PACKAGE_DST/"
 
 # WSL/DrvFs exposes files copied from a Windows worktree as 0777 even when
