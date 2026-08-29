@@ -177,6 +177,7 @@ DAEMON_RUNNING=1
 : >"$rules_log"
 snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
 if ! (
+	trap - EXIT
 	firewall_promote_snapshot() { return 1; }
 	if firewall_apply_file "$promotion_firewall"; then
 		fail 'snapshot promotion failure was reported as success'

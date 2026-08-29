@@ -23,7 +23,7 @@ printf '%s\n' \
 	'table bridge wloc_b {' \
 	'}' >"$applied"
 printf '%s\n' 'table inet persistent_only {' '}' >"$persistent"
-printf '%s\n' 'staged' >"$staged"
+printf '%s\n' 'table inet unrelated {' '}' >"$staged"
 
 check_log="$fixture_root/check.log"
 apply_log="$fixture_root/apply.log"

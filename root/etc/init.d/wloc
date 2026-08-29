@@ -91,8 +91,9 @@ startup_warning() {
 start_service() {
 	mkdir -p /var/run/wloc
 	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
-		/var/run/wloc/package.version "$START_ERROR" \
-		"$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"
+		/var/run/wloc/package.version "$START_ERROR"
+	# The firewall helper owns both runtime snapshots and serializes startup
+	# Apply with every other firewall state transition.
 	# Apply the user-managed nftables configuration before the daemon starts.
 	# This direct helper keeps service startup independent of rpcd availability.
 	if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$FIREWALL" 2>&1)"; then

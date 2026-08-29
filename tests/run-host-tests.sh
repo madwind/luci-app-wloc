@@ -13,6 +13,7 @@ INIT="$ROOTFS/etc/init.d/wloc"
 AP_TEST="$ROOT/tests/ap-discovery.test.js"
 AP_RESOLVER_TEST="$ROOT/tests/ap-resolver.test.sh"
 LIFECYCLE_TEST="$ROOT/tests/firewall-lifecycle.test.sh"
+FIREWALL_CONCURRENCY_TEST="$ROOT/tests/firewall-concurrency.test.sh"
 FIREWALL_REMOVE_TEST="$ROOT/tests/firewall-remove-lifecycle.test.sh"
 RPC_FIREWALL_TEST="$ROOT/tests/rpc-firewall-lifecycle.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
@@ -39,6 +40,7 @@ done
 [ -f "$AP_TEST" ] || fail "AP discovery test not found"
 [ -f "$AP_RESOLVER_TEST" ] || fail "AP resolver test not found"
 [ -f "$LIFECYCLE_TEST" ] || fail "WLOC lifecycle test not found"
+[ -f "$FIREWALL_CONCURRENCY_TEST" ] || fail "WLOC firewall concurrency test not found"
 [ -f "$FIREWALL_REMOVE_TEST" ] || fail "WLOC firewall removal test not found"
 [ -f "$RPC_FIREWALL_TEST" ] || fail "WLOC RPC firewall test not found"
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
@@ -246,6 +248,7 @@ fi
 echo '==> WLOC lifecycle behavior'
 
 sh "$LIFECYCLE_TEST"
+sh "$FIREWALL_CONCURRENCY_TEST"
 sh "$FIREWALL_REMOVE_TEST"
 sh "$RPC_FIREWALL_TEST"
 

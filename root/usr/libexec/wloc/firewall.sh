@@ -8,6 +8,161 @@ FIREWALL_RUNTIME_NEXT=${WLOC_FIREWALL_RUNTIME_NEXT:-${FIREWALL_RUNTIME}.next}
 FIREWALL_PERSISTENT=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
+FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-${FIREWALL_RUNTIME_DIR}/firewall.lock}
+FIREWALL_LOCK_TIMEOUT=${WLOC_FIREWALL_LOCK_TIMEOUT:-5}
+FIREWALL_LOCK_HELD=0
+FIREWALL_LOCK_OWNER=''
+
+firewall_set_error() {
+    firewall_error_code="$1"
+    firewall_error="$2"
+}
+
+firewall_process_start() {
+    if [ -r "/proc/$$/stat" ]; then
+        awk '{ print $22; exit }' "/proc/$$/stat"
+    else
+        printf '%s' unknown
+    fi
+}
+
+firewall_lock_save_traps() {
+    FIREWALL_LOCK_SAVED_EXIT_TRAP="$(trap -p EXIT 2>/dev/null || true)"
+    [ -n "$FIREWALL_LOCK_SAVED_EXIT_TRAP" ] || \
+        FIREWALL_LOCK_SAVED_EXIT_TRAP="$(trap -p 0 2>/dev/null || true)"
+    FIREWALL_LOCK_SAVED_INT_TRAP="$(trap -p INT 2>/dev/null || true)"
+    FIREWALL_LOCK_SAVED_TERM_TRAP="$(trap -p TERM 2>/dev/null || true)"
+    FIREWALL_LOCK_SAVED_HUP_TRAP="$(trap -p HUP 2>/dev/null || true)"
+}
+
+firewall_lock_restore_trap() {
+    local signal="$1" saved="$2"
+    if [ -n "$saved" ]; then
+        eval "$saved"
+    else
+        trap - "$signal"
+    fi
+}
+
+firewall_lock_release() {
+    local owner=''
+    [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ] || return 0
+    if [ -r "$FIREWALL_LOCK/owner" ]; then
+        owner="$(cat "$FIREWALL_LOCK/owner" 2>/dev/null || true)"
+    fi
+    if [ "$owner" = "$FIREWALL_LOCK_OWNER" ]; then
+        rm -f "$FIREWALL_LOCK/owner"
+        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
+    fi
+    FIREWALL_LOCK_HELD=0
+    FIREWALL_LOCK_OWNER=''
+    firewall_lock_restore_trap EXIT "${FIREWALL_LOCK_SAVED_EXIT_TRAP:-}"
+    firewall_lock_restore_trap INT "${FIREWALL_LOCK_SAVED_INT_TRAP:-}"
+    firewall_lock_restore_trap TERM "${FIREWALL_LOCK_SAVED_TERM_TRAP:-}"
+    firewall_lock_restore_trap HUP "${FIREWALL_LOCK_SAVED_HUP_TRAP:-}"
+    FIREWALL_LOCK_SAVED_EXIT_TRAP=''
+    FIREWALL_LOCK_SAVED_INT_TRAP=''
+    FIREWALL_LOCK_SAVED_TERM_TRAP=''
+    FIREWALL_LOCK_SAVED_HUP_TRAP=''
+}
+
+firewall_lock_abort() {
+    local status="$1"
+    firewall_lock_release
+    exit "$status"
+}
+
+firewall_lock_install_traps() {
+    firewall_lock_save_traps
+    trap 'firewall_lock_release' EXIT
+    trap 'firewall_lock_abort 130' INT
+    trap 'firewall_lock_abort 143' TERM
+    trap 'firewall_lock_abort 129' HUP
+}
+
+firewall_lock_owner_alive() {
+    local owner pid start current
+    [ -r "$FIREWALL_LOCK/owner" ] || return 2
+    owner="$(cat "$FIREWALL_LOCK/owner" 2>/dev/null || true)"
+    pid="${owner%% *}"
+    start="${owner#* }"
+    case "$pid" in
+        ''|*[!0-9]*) return 2;;
+    esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    case "$start" in
+        ''|unknown) return 0;;
+    esac
+    [ -r "/proc/$pid/stat" ] || return 0
+    current="$(awk '{ print $22; exit }' "/proc/$pid/stat")"
+    [ "$current" = "$start" ]
+}
+
+firewall_lock_remove_stale() {
+    local owner_rc
+    [ -d "$FIREWALL_LOCK" ] || return 1
+    if [ ! -e "$FIREWALL_LOCK/owner" ]; then
+        rmdir "$FIREWALL_LOCK" 2>/dev/null
+        return $?
+    fi
+    if firewall_lock_owner_alive; then
+        return 1
+    else
+        owner_rc=$?
+    fi
+    [ "$owner_rc" -eq 1 ] || return 1
+    rm -f "$FIREWALL_LOCK/owner" || return 1
+    rmdir "$FIREWALL_LOCK" 2>/dev/null
+}
+
+firewall_lock_acquire() {
+    local lock_parent timeout attempt owner_start
+    [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ] && return 0
+    firewall_error_code=''
+    firewall_error=''
+    lock_parent="${FIREWALL_LOCK%/*}"
+    [ "$lock_parent" = "$FIREWALL_LOCK" ] && lock_parent='.'
+    mkdir -p "$lock_parent" || {
+        firewall_set_error firewall_lock_failed 'unable to create the firewall lock directory'
+        return 1
+    }
+    timeout="$FIREWALL_LOCK_TIMEOUT"
+    case "$timeout" in
+        ''|*[!0-9]*) timeout=5;;
+    esac
+    attempt=0
+    while ! mkdir "$FIREWALL_LOCK" 2>/dev/null; do
+        if firewall_lock_remove_stale; then
+            continue
+        fi
+        if [ "$attempt" -ge "$timeout" ]; then
+            firewall_set_error firewall_busy 'Another firewall operation is already in progress. Please retry.'
+            return 1
+        fi
+        sleep 1 || {
+            firewall_set_error firewall_busy 'Another firewall operation is already in progress. Please retry.'
+            return 1
+        }
+        attempt=$((attempt + 1))
+    done
+    chmod 0700 "$FIREWALL_LOCK" 2>/dev/null || {
+        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
+        firewall_set_error firewall_lock_failed 'unable to initialize the firewall lock'
+        return 1
+    }
+    owner_start="$(firewall_process_start)"
+    FIREWALL_LOCK_OWNER="$$ $owner_start"
+    if ! printf '%s\n' "$FIREWALL_LOCK_OWNER" >"$FIREWALL_LOCK/owner" || \
+        ! chmod 0600 "$FIREWALL_LOCK/owner"; then
+        rm -f "$FIREWALL_LOCK/owner"
+        rmdir "$FIREWALL_LOCK" 2>/dev/null || true
+        FIREWALL_LOCK_OWNER=''
+        firewall_set_error firewall_lock_failed 'unable to record the firewall lock owner'
+        return 1
+    fi
+    FIREWALL_LOCK_HELD=1
+    firewall_lock_install_traps
+}
 
 firewall_tables() {
 	[ -r "$1" ] || return 0
@@ -82,7 +237,7 @@ firewall_sync_file() {
 	sync >/dev/null 2>&1
 }
 
-firewall_copy_atomic() {
+_firewall_copy_atomic() {
 	local source="$1" destination="$2" directory temporary
 	[ -r "$source" ] || {
 		firewall_error='source file is not readable'
@@ -110,8 +265,26 @@ firewall_copy_atomic() {
 	fi
 }
 
+firewall_copy_atomic() {
+    local locked_here=0 rc
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if _firewall_copy_atomic "$@"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
+}
+
 firewall_stage_snapshot() {
 	local source="$1"
+	firewall_error_code='snapshot_stage_failed'
 	[ "$FIREWALL_RUNTIME_NEXT" != "$FIREWALL_RUNTIME" ] || {
 		firewall_error='runtime snapshot staging path must differ from the applied snapshot'
 		return 1
@@ -128,6 +301,7 @@ firewall_stage_snapshot() {
 
 firewall_promote_snapshot() {
 	local staged="$1"
+	firewall_error_code='snapshot_promote_failed'
 	[ -f "$staged" ] || {
 		firewall_error='fatal consistency error: staged nftables snapshot is missing'
 		return 1
@@ -166,9 +340,10 @@ firewall_runtime_cleanup() {
 	fi
 }
 
-firewall_remove_file() {
+_firewall_remove_file() {
 	local source="$1" transaction detail rc family name tables
 	firewall_error=''
+	firewall_error_code='nft_apply_failed'
 	[ -r "$source" ] || {
 		firewall_error='nftables configuration file is not readable'
 		return 1
@@ -204,6 +379,7 @@ EOF
 	detail="$(nft --check --file "$transaction" 2>&1)" && rc=0 || rc=$?
 	if [ "$rc" -ne 0 ]; then
 		rm -f "$transaction"
+		firewall_error_code='nft_check_failed'
 		firewall_error="${detail:-nftables removal syntax check failed}"
 		return 1
 	fi
@@ -215,7 +391,24 @@ EOF
 	}
 }
 
-firewall_remove_runtime() {
+firewall_remove_file() {
+    local locked_here=0 rc
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if _firewall_remove_file "$@"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
+}
+
+_firewall_remove_runtime() {
 	local source=''
 	if [ -r "$FIREWALL_RUNTIME" ]; then
 		source="$FIREWALL_RUNTIME"
@@ -223,17 +416,34 @@ firewall_remove_runtime() {
 		source="$FIREWALL_PERSISTENT"
 	fi
 	if [ -n "$source" ]; then
-		firewall_remove_file "$source" || return 1
-	fi
-	if [ -r "$FIREWALL_RUNTIME_NEXT" ] && [ "$FIREWALL_RUNTIME_NEXT" != "$source" ]; then
-		firewall_remove_file "$FIREWALL_RUNTIME_NEXT" || return 1
+		_firewall_remove_file "$source" || return 1
 	fi
 	rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"
 }
 
-firewall_validate_file() {
+firewall_remove_runtime() {
+    local locked_here=0 rc
+    firewall_error_code=''
+    firewall_error=''
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if _firewall_remove_runtime "$@"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
+}
+
+_firewall_validate_file() {
 	local source="$1" check detail rc family name tables
 	firewall_error=''
+	firewall_error_code='nft_check_failed'
 	[ -r "$source" ] || {
 		firewall_error='nftables configuration file is not readable'
 		return 1
@@ -275,9 +485,27 @@ EOF
 	}
 }
 
-firewall_apply_file() {
+firewall_validate_file() {
+    local locked_here=0 rc
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if _firewall_validate_file "$@"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
+}
+
+_firewall_apply_file() {
 	local source="$1" transaction detail rc family name tables
 	firewall_error=''
+	firewall_error_code='nft_apply_failed'
 	FIREWALL_RUNTIME_STATE_SET=0
 	FIREWALL_RUNTIME_READY=0
 	FIREWALL_RUNTIME_RECOVERING=0
@@ -352,6 +580,24 @@ EOF
 		FIREWALL_RUNTIME_RECOVERING=1
 		FIREWALL_RUNTIME_WARNING='Runtime dynamic sets are waiting for the WLOC listener; WLOC will retry automatically.'
 	fi
+}
+
+firewall_apply_file() {
+    local locked_here=0 rc
+    FIREWALL_RUNTIME_PROMOTION_FAILED=0
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if _firewall_apply_file "$@"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
 }
 
 if [ "${WLOC_FIREWALL_HELPER_SOURCE:-0}" -ne 1 ]; then
