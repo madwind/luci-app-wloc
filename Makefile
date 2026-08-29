@@ -7,7 +7,6 @@ PKG_VERSION:=$(WLOC_VERSION)
 PKG_RELEASE:=$(WLOC_RELEASE)
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE NOTICE
-PKG_MAINTAINER:=luci-app-wloc maintainers
 
 LUCI_TITLE:=Apple WLOC movement-following location proxy for OpenWrt
 

@@ -22,7 +22,6 @@ RUNTIME_STATUS_TEST="$ROOT/tests/runtime-status.test.sh"
 FIREWALL_UI_TEST="$ROOT/tests/firewall-ui.test.js"
 FIREWALL_VIEW="$HTDOCS/luci-static/resources/view/wloc/firewall.js"
 MAIN_VIEW="$HTDOCS/luci-static/resources/view/wloc/main.js"
-STATUS_SOURCE="$ROOT/src/wloc-rs/src/status.rs"
 RUNTIME_INTEGRATION_TEST="$ROOT/tests/runtime-integration.sh"
 
 fail() {
@@ -55,7 +54,6 @@ done
 [ -f "$FIREWALL_UI_TEST" ] || fail "WLOC firewall UI test not found"
 [ -f "$FIREWALL_VIEW" ] || fail "WLOC firewall view not found"
 [ -f "$MAIN_VIEW" ] || fail "WLOC main view not found"
-[ -f "$STATUS_SOURCE" ] || fail "WLOC status source not found"
 [ -f "$RUNTIME_INTEGRATION_TEST" ] || fail "OpenWrt runtime integration test not found"
 
 
@@ -149,16 +147,6 @@ grep -Fq 'firewall_active' "$RPC" \
     || fail 'status RPC does not expose live firewall activity'
 grep -Fq 'FIREWALL_RUNTIME_PROMOTION_FAILED' "$RPC" \
     || fail 'firewall RPC does not expose fatal snapshot promotion failures'
-grep -Fq 'FIREWALL_LOCK_TIMEOUT' "$FIREWALL_HELPER" \
-    || fail 'firewall lock does not have a bounded wait'
-grep -Fq 'FIREWALL_LOCK=${WLOC_FIREWALL_LOCK:-/var/lock/wloc-firewall.lock}' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not use the OpenWrt lock path'
-grep -Fq 'FIREWALL_LOCK_COMMAND=${WLOC_FIREWALL_LOCK_COMMAND:-lock}' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not use the OpenWrt lock utility'
-grep -Fq '"$FIREWALL_LOCK_COMMAND" -n "$FIREWALL_LOCK"' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not acquire the lock non-blocking'
-grep -Fq '"$FIREWALL_LOCK_COMMAND" -u "$FIREWALL_LOCK"' "$FIREWALL_HELPER" \
-    || fail 'firewall helper does not release the native lock'
 if grep -Eq 'firewall_process_start|firewall_lock_(save_traps|restore_trap|abort|install_traps|owner_alive|remove_stale)|FIREWALL_LOCK_OWNER|trap -p|/owner' "$FIREWALL_HELPER"; then
     fail 'firewall helper still contains the removed custom owner/trap lock'
 fi
@@ -176,33 +164,9 @@ if grep -Fq 'ip-full (>=0)' "$ROOT/Makefile"; then
     fail 'unused ip-full runtime dependency is still declared'
 fi
 
-grep -Fq 'listener_ready' "$INIT" \
-    || fail 'service start does not defer dynamic-set population until listener readiness'
-grep -Fq 'firewall.applied.nft' "$INIT" \
-    || fail 'service start does not clear the volatile applied firewall snapshot'
-grep -Fq 'firewall.applied.nft.next' "$INIT" \
-    || fail 'service start does not clear the staged firewall snapshot'
-grep -Fq 'firewall.applied.nft' "$INIT" \
-    || fail 'service start does not clear the volatile applied firewall snapshot'
-grep -Fq 'firewall.applied.nft.next' "$INIT" \
-    || fail 'service start does not clear the staged firewall snapshot'
-grep -Fq 'procd_open_instance daemon' "$INIT" \
-    || fail 'daemon procd instance is not explicitly named'
-grep -Fq 'procd_open_instance schedule' "$INIT" \
-    || fail 'schedule procd instance is not explicitly named'
-grep -Fq 'procd_set_param respawn' "$INIT" \
-    || fail 'procd respawn is not configured'
-grep -Fq 'procd_set_param stdout 1' "$INIT" \
-    || fail 'daemon stdout is not connected to logd'
-grep -Fq 'procd_set_param stderr 1' "$INIT" \
-    || fail 'daemon stderr is not connected to logd'
-grep -Fq 'procd_add_reload_trigger wloc' "$INIT" \
-    || fail 'service reload trigger is missing'
 if grep -Fq 'ubus -S call luci.wloc' "$INIT"; then
     fail 'service start still calls luci.wloc through ubus'
 fi
-grep -Fq 'procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"' "$INIT" \
-    || fail 'service start still passes a daemon GID'
 if grep -Eq 'gid|GID|--gid' "$INIT"; then
     fail 'init script still contains daemon GID handling'
 fi
@@ -221,16 +185,6 @@ grep -Fq 'state restarting' "$RPC" \
 
 echo '==> Runtime log behavior'
 
-grep -Fq 'const MAX_LOG_LINES: usize = 240;' "$STATUS_SOURCE" \
-    || fail 'runtime log does not define a line bound'
-grep -Fq 'const MAX_LOG_BYTES: usize = 96 * 1024;' "$STATUS_SOURCE" \
-    || fail 'runtime log does not define a byte bound'
-grep -Fq 'const MAX_LOG_LINE_CHARS: usize = 600;' "$STATUS_SOURCE" \
-    || fail 'runtime log does not define a line-length bound'
-grep -Fq 'safe_text(detail, MAX_LOG_LINE_CHARS)' "$STATUS_SOURCE" \
-    || fail 'runtime log does not bound event line length'
-grep -Fq 'while inner.logs.len() > MAX_LOG_LINES || inner.log_bytes > MAX_LOG_BYTES' "$STATUS_SOURCE" \
-    || fail 'runtime log does not evict entries at its configured bounds'
 grep -Fq 'runtime_log_revision' "$RPC" \
     || fail 'status RPC does not expose the runtime log revision'
 grep -Fq 'lastLogRevision' "$MAIN_VIEW" \

@@ -12,7 +12,6 @@ IPKG_INSTROOT=${IPKG_INSTROOT:-}
 CONFIG_LIST_STATE=${CONFIG_LIST_STATE:-}
 NO_CALLBACK=${NO_CALLBACK:-}
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
-[ -r /usr/share/libubox/jshn.sh ] && . /usr/share/libubox/jshn.sh
 
 wloc_ap_valid_ifname() {
     case "$1" in

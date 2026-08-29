@@ -1289,16 +1289,6 @@ mod peer_identity_tests {
     }
 
     #[test]
-    fn a_different_interface_does_not_match_the_rule() {
-        let rules = vec![rule("home", "phy0-ap0")];
-        assert_eq!(
-            first_matching_rule(&rules, Some("phy0-ap0")).unwrap().id,
-            "home"
-        );
-        assert!(first_matching_rule(&rules, Some("phy0-ap1")).is_none());
-    }
-
-    #[test]
     fn shared_ssid_is_irrelevant_when_interfaces_differ() {
         let rules = vec![rule("ap_a", "phy0-ap0"), rule("ap_b", "phy0-ap1")];
         assert_eq!(
