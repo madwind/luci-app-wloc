@@ -55,7 +55,7 @@ fail() {
     ssh_cmd "ubus call luci.wloc status" >&2 || true
     ssh_cmd "logread -e wlocd | tail -n 80" >&2 || true
     ssh_cmd "nft list tables" >&2 || true
-    ssh_cmd "nft list table inet wloc_lifecycle" >&2 || true
+    ssh_cmd "nft list table inet wloc" >&2 || true
     ssh_cmd "uci show wloc" >&2 || true
     echo '===== end remote diagnostics =====' >&2
     exit 1
@@ -237,7 +237,7 @@ phase PROCD 'service verified'
 
 phase FIREWALL 'applying unsaved rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
-FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; }; }'
+FIREWALL_B='table inet wloc { set apple_wloc_v4 { type ipv4_addr; flags timeout; }; }'
 APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
 ssh_cmd "$APPLY_COMMAND > $REMOTE_APPLY_RESULT" \
     || fail 'firewall Apply did not return a response'
@@ -250,7 +250,7 @@ esac
 applied_hash="$(rpc_value "cat $REMOTE_APPLY_RESULT" '@.applied_hash')"
 [ -n "$applied_hash" ] || fail 'firewall Apply did not return an applied revision'
 ssh_cmd "rm -f $REMOTE_APPLY_RESULT"
-ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+ssh_cmd "nft list table inet wloc >/dev/null" \
     || fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'Apply changed the persistent firewall file'
@@ -258,7 +258,7 @@ phase FIREWALL 'Apply without Save'
 reboot_device
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'reboot without Save did not restore the persistent firewall file'
-if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
+if ssh_cmd "nft list table inet wloc >/dev/null 2>&1"; then
     fail 'unsaved firewall rules survived reboot'
 fi
 phase FIREWALL 'rollback verified'
@@ -286,7 +286,7 @@ persistent_b="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 reboot_device
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_b" ] \
     || fail 'saved firewall rules did not survive reboot'
-ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+ssh_cmd "nft list table inet wloc >/dev/null" \
     || fail 'saved firewall table was not restored after reboot'
 phase FIREWALL 'Save verified'
 
@@ -336,7 +336,7 @@ ssh_cmd /etc/init.d/wloc stop >/dev/null \
 if instance_running daemon || instance_running schedule; then
     fail 'a WLOC procd instance remained running after stop'
 fi
-if ssh_cmd "nft list set inet wloc_lifecycle apple_wloc_v4 2>/dev/null | grep -Eq 'elements[[:space:]]*=[[:space:]]*\\{[^}0-9]*[0-9]'"; then
+if ssh_cmd "nft list set inet wloc apple_wloc_v4 2>/dev/null | grep -Eq 'elements[[:space:]]*=[[:space:]]*\\{[^}0-9]*[0-9]'"; then
     fail 'WLOC dynamic host-set elements remained after stop'
 fi
 phase STOP 'service stopped and dynamic state removed'
@@ -348,7 +348,7 @@ wait_for_instance daemon \
     || fail 'WLOC daemon did not start before uninstall'
 wait_for_instance schedule \
     || fail 'WLOC schedule did not start before uninstall'
-ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+ssh_cmd "nft list table inet wloc >/dev/null" \
     || fail 'WLOC firewall table was not active before uninstall'
 ssh_cmd "test -s /var/run/wloc/firewall.applied.nft" \
     || fail 'runtime firewall snapshot was not present before uninstall'
@@ -360,7 +360,7 @@ if instance_running daemon || instance_running schedule; then
 fi
 ssh_cmd "test ! -x /etc/init.d/wloc" \
     || fail 'WLOC init service remained after package uninstall'
-if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
+if ssh_cmd "nft list table inet wloc >/dev/null 2>&1"; then
     fail 'WLOC nftables table remained after package uninstall'
 fi
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
