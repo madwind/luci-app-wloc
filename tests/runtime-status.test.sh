@@ -38,8 +38,8 @@ nft() {
         inet:wloc)
             printf '%s\n' \
                 'table inet wloc {' \
-                '    counter packets 3 bytes 100 comment "wloc owned AP redirect"' \
-                '    counter packets 77 bytes 100 comment "wloc owned ingress redirect"' \
+                '    counter packets 3 bytes 100 comment "wloc owned ingress redirect"' \
+                '    counter packets 77 bytes 100 comment "wloc owned other redirect"' \
                 '}'
             ;;
         *) return 1;;
@@ -54,14 +54,14 @@ firewall_status_values
 [ "$firewall_is_active" = 1 ] || fail 'both WLOC tables were not reported active'
 [ "$FIREWALL_ACTIVE_TABLE_COUNT" = 2 ] || fail 'fixed table count was not reported as 2/2'
 [ "$attempts" = 3 ] || fail 'inet WLOC redirect counter was not reported'
-[ "$intercepted" = 3 ] || fail 'bridge or non-AP counters leaked into status'
+[ "$intercepted" = 3 ] || fail 'bridge or non-matching counters leaked into status'
 
 echo '  -> a missing fixed table reports partial active state'
 nft() {
     [ "${1:-}" = list ] && [ "${2:-}" = table ] || return 1
     [ "${3:-}:${4:-}" = 'inet:wloc' ] && printf '%s\n' \
         'table inet wloc {' \
-        '    counter packets 4 bytes 100 comment "wloc owned AP redirect"' \
+        '    counter packets 4 bytes 100 comment "wloc owned ingress redirect"' \
         '}'
 }
 firewall_status_values
