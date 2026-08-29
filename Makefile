@@ -20,7 +20,6 @@ LUCI_DEPENDS:=@(aarch64||x86_64)
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
 	nftables (>=0), \
-	ip-full (>=0), \
 	jshn (>=0)
 
 LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per fixed wireless interface. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
@@ -46,15 +45,6 @@ export RUST_TARGET RUST_LINKER_ENV TARGET_CC_NOCACHE TARGET_AR TARGET_CFLAGS
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
 /etc/wloc/firewall.nft
-endef
-
-define Package/luci-app-wloc/postinst
-#!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-    rm -rf /tmp/luci-modulecache/
-    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-}
-exit 0
 endef
 
 define Package/luci-app-wloc/prerm
