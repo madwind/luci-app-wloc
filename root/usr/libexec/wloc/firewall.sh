@@ -4,7 +4,7 @@
 
 FIREWALL_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
 FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-${FIREWALL_RUNTIME_DIR}/firewall.applied.nft}
-FIREWALL_CANDIDATE=${WLOC_FIREWALL_CANDIDATE:-${FIREWALL_RUNTIME_DIR}/firewall.candidate.nft}
+FIREWALL_RUNTIME_NEXT=${WLOC_FIREWALL_RUNTIME_NEXT:-${FIREWALL_RUNTIME}.next}
 FIREWALL_PERSISTENT=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_STATUS_PATH=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
@@ -75,6 +75,13 @@ firewall_file_hash() {
 	fi
 }
 
+firewall_sync_file() {
+	local path="$1"
+	command -v sync >/dev/null 2>&1 || return 0
+	sync -f "$path" >/dev/null 2>&1 && return 0
+	sync >/dev/null 2>&1
+}
+
 firewall_copy_atomic() {
 	local source="$1" destination="$2" directory temporary
 	[ -r "$source" ] || {
@@ -91,9 +98,42 @@ firewall_copy_atomic() {
 		firewall_error='unable to create firewall snapshot'
 		return 1
 	}
-	if ! cp "$source" "$temporary" || ! chmod 0600 "$temporary" || ! mv -f "$temporary" "$destination"; then
+	if ! cp "$source" "$temporary" || ! chmod 0600 "$temporary" || ! firewall_sync_file "$temporary"; then
+		rm -f "$temporary"
+		firewall_error='unable to write firewall snapshot'
+		return 1
+	fi
+	if ! mv -f "$temporary" "$destination"; then
 		rm -f "$temporary"
 		firewall_error='unable to atomically replace firewall snapshot'
+		return 1
+	fi
+}
+
+firewall_stage_snapshot() {
+	local source="$1"
+	[ "$FIREWALL_RUNTIME_NEXT" != "$FIREWALL_RUNTIME" ] || {
+		firewall_error='runtime snapshot staging path must differ from the applied snapshot'
+		return 1
+	}
+	if ! rm -f "$FIREWALL_RUNTIME_NEXT"; then
+		firewall_error='unable to clear the previous staged firewall snapshot'
+		return 1
+	fi
+	firewall_copy_atomic "$source" "$FIREWALL_RUNTIME_NEXT" || {
+		firewall_error="unable to stage applied nftables snapshot: ${firewall_error:-unknown error}"
+		return 1
+	}
+}
+
+firewall_promote_snapshot() {
+	local staged="$1"
+	[ -f "$staged" ] || {
+		firewall_error='fatal consistency error: staged nftables snapshot is missing'
+		return 1
+	}
+	if ! mv -f "$staged" "$FIREWALL_RUNTIME" || [ ! -f "$FIREWALL_RUNTIME" ]; then
+		firewall_error='fatal consistency error: nftables transaction succeeded but the applied snapshot could not be promoted'
 		return 1
 	fi
 }
@@ -185,7 +225,10 @@ firewall_remove_runtime() {
 	if [ -n "$source" ]; then
 		firewall_remove_file "$source" || return 1
 	fi
-	rm -f "$FIREWALL_RUNTIME" "$FIREWALL_CANDIDATE"
+	if [ -r "$FIREWALL_RUNTIME_NEXT" ] && [ "$FIREWALL_RUNTIME_NEXT" != "$source" ]; then
+		firewall_remove_file "$FIREWALL_RUNTIME_NEXT" || return 1
+	fi
+	rm -f "$FIREWALL_RUNTIME" "$FIREWALL_RUNTIME_NEXT"
 }
 
 firewall_validate_file() {
@@ -239,12 +282,18 @@ firewall_apply_file() {
 	FIREWALL_RUNTIME_READY=0
 	FIREWALL_RUNTIME_RECOVERING=0
 	FIREWALL_RUNTIME_WARNING=''
-	firewall_validate_file "$source" || return 1
+	FIREWALL_RUNTIME_PROMOTION_FAILED=0
 	mkdir -p "$FIREWALL_RUNTIME_DIR" || {
 		firewall_error='unable to create WLOC runtime directory'
 		return 1
 	}
+	firewall_stage_snapshot "$source" || return 1
+	if ! firewall_validate_file "$source"; then
+		rm -f "$FIREWALL_RUNTIME_NEXT"
+		return 1
+	fi
 	transaction="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply.XXXXXX")" || {
+		rm -f "$FIREWALL_RUNTIME_NEXT"
 		firewall_error='unable to create nftables apply transaction'
 		return 1
 	}
@@ -256,6 +305,7 @@ firewall_apply_file() {
 			if nft list table "$family" "$name" >/dev/null 2>&1; then
 				printf 'delete table %s %s\n' "$family" "$name" >>"$transaction" || {
 					rm -f "$transaction"
+					rm -f "$FIREWALL_RUNTIME_NEXT"
 					firewall_error='unable to build nftables apply transaction'
 					return 1
 				}
@@ -266,23 +316,25 @@ EOF
 	fi
 	if ! cat "$source" >>"$transaction"; then
 		rm -f "$transaction"
+		rm -f "$FIREWALL_RUNTIME_NEXT"
 		firewall_error='unable to read nftables configuration'
 		return 1
 	fi
 	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
 	rm -f "$transaction"
 	if [ "$rc" -ne 0 ]; then
+		rm -f "$FIREWALL_RUNTIME_NEXT"
 		firewall_error="${detail:-failed to apply nftables rules}"
 		return 1
 	fi
-	mkdir -p "${FIREWALL_RUNTIME%/*}" || {
-		firewall_error='unable to create WLOC firewall snapshot directory'
+	if ! firewall_promote_snapshot "$FIREWALL_RUNTIME_NEXT"; then
+		FIREWALL_RUNTIME_PROMOTION_FAILED=1
+		firewall_error="${firewall_error:-fatal consistency error: unable to promote applied nftables snapshot}"
+		detail="$firewall_error"
+		firewall_runtime_cleanup || true
+		firewall_error="$detail"
 		return 1
-	}
-	firewall_copy_atomic "$source" "$FIREWALL_RUNTIME" || {
-		firewall_error="unable to save applied nftables snapshot: ${firewall_error:-unknown error}"
-		return 1
-	}
+	fi
 	FIREWALL_RUNTIME_STATE_SET=1
 	if firewall_wloc_ready; then
 		if firewall_runtime_reconcile; then

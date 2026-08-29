@@ -145,9 +145,9 @@ without contacting the upstream server.
 
 The LuCI **Interception status** reports whether the service is actually usable:
 `Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. In the
-firewall editor, **Check syntax** only validates the editor, **Apply** loads a
-candidate temporarily, and **Save** persists the currently applied candidate.
-An applied candidate is never written to the persistent file until you confirm
+firewall editor, **Check syntax** only validates the editor, **Apply** loads the
+editor contents temporarily, and **Save** persists the currently applied rules.
+Applied rules are never written to the persistent file until you confirm
 that network, LuCI, and SSH still work; rebooting without Save restores the last
 saved rules. WLOC immediately reconciles its dynamic sets when the listener is
 ready; if the daemon or a runtime update is temporarily unavailable, the sets

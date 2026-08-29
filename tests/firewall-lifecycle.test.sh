@@ -30,6 +30,7 @@ export WLOC_TEST_RULES_LOG="$rules_log"
 export WLOC_RULES_HELPER="$rules_helper"
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
+export WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
 export WLOC_STATUS_PATH="$runtime/status.json"
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$HELPER"
@@ -102,7 +103,7 @@ DAEMON_RUNNING=1
 export WLOC_TEST_RULES_RC=1
 firewall_apply_file "$firewall_source" || fail 'reconcile failure was reported as Apply failure'
 grep -Fqx 'reconcile 61520' "$rules_log" \
-	|| fail 'reconcile was not attempted for the applied candidate'
+	|| fail 'reconcile was not attempted for the applied rules'
 grep -Fqx cleanup "$rules_log" \
 	|| fail 'reconcile failure did not clean up dynamic sets'
 [ "$FIREWALL_RUNTIME_STATE_SET" -eq 1 ] || fail 'successful nft Apply did not set runtime state'
@@ -122,6 +123,21 @@ if grep -Fqx 'reconcile 61520' "$rules_log"; then
 	fail 'stopped daemon was reconciled'
 fi
 
+echo '  -> snapshot staging failures do not touch nftables'
+staging_parent="$fixture_root/staging-parent"
+printf '%s\n' 'not a directory' >"$staging_parent"
+snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+transaction_before="$(cksum "$nft_transaction_log")"
+FIREWALL_RUNTIME_NEXT="$staging_parent/firewall.applied.nft.next"
+if firewall_apply_file "$firewall_source" 2>/dev/null; then
+	fail 'snapshot staging failure was reported as success'
+fi
+[ "$snapshot_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+	|| fail 'snapshot staging failure changed the applied snapshot'
+[ "$transaction_before" = "$(cksum "$nft_transaction_log")" ] \
+	|| fail 'snapshot staging failure changed nftables state'
+FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
+
 echo '  -> nft apply failures are returned'
 snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
 NFTP_APPLY_RC=1
@@ -134,13 +150,13 @@ NFTP_APPLY_RC=0
 
 echo '  -> syntax failures keep the last applied snapshot and persistent file'
 saved_firewall="$fixture_root/firewall.saved.nft"
-candidate_firewall="$fixture_root/firewall.candidate.nft"
+new_firewall="$fixture_root/firewall.new.nft"
 printf '%s\n' 'table inet saved {' '}' >"$saved_firewall"
-printf '%s\n' 'table inet candidate {' '}' >"$candidate_firewall"
+printf '%s\n' 'table inet new {' '}' >"$new_firewall"
 cp "$saved_firewall" "$WLOC_FIREWALL_RUNTIME"
 snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
 NFTP_CHECK_RC=1
-if firewall_apply_file "$candidate_firewall"; then
+if firewall_apply_file "$new_firewall"; then
 	fail 'nft syntax failure was reported as success'
 fi
 [ "$snapshot_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
@@ -148,10 +164,32 @@ fi
 NFTP_CHECK_RC=0
 cmp -s "$saved_firewall" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'syntax failure changed the persistent firewall fixture'
-firewall_copy_atomic "$candidate_firewall" "$saved_firewall" \
-	|| fail 'atomic save of an applied candidate failed'
-cmp -s "$candidate_firewall" "$saved_firewall" \
+firewall_copy_atomic "$new_firewall" "$saved_firewall" \
+	|| fail 'atomic save of applied rules failed'
+cmp -s "$new_firewall" "$saved_firewall" \
 	|| fail 'atomic save did not replace the persistent fixture'
+
+echo '  -> snapshot promotion failures are fatal and retain staged diagnostics'
+promotion_firewall="$fixture_root/firewall.promoted.nft"
+printf '%s\n' 'table inet promoted {' '}' >"$promotion_firewall"
+printf '%s\n' '{}' >"$WLOC_STATUS_PATH"
+DAEMON_RUNNING=1
+: >"$rules_log"
+snapshot_before="$(cksum "$WLOC_FIREWALL_RUNTIME")"
+if ! (
+	firewall_promote_snapshot() { return 1; }
+	if firewall_apply_file "$promotion_firewall"; then
+		fail 'snapshot promotion failure was reported as success'
+	fi
+	[ "$snapshot_before" = "$(cksum "$WLOC_FIREWALL_RUNTIME")" ] \
+		|| fail 'snapshot promotion failure replaced the applied snapshot'
+	[ -s "$FIREWALL_RUNTIME_NEXT" ] \
+		|| fail 'snapshot promotion failure did not retain the staged snapshot'
+	grep -Fqx cleanup "$rules_log" \
+		|| fail 'snapshot promotion failure did not clean up dynamic sets'
+); then
+	fail 'snapshot promotion failure handling failed'
+fi
 
 echo '  -> active state checks the declared tables'
 NFTP_ACTIVE_RC=0

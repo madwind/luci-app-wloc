@@ -152,11 +152,19 @@ grep -Fq 'firewall_wloc_ready' "$FIREWALL_HELPER" \
 	|| fail 'firewall helper does not gate dynamic sets on daemon readiness'
 grep -Fq 'firewall_active' "$RPC" \
 	|| fail 'status RPC does not expose live firewall activity'
+grep -Fq 'firewall_stage_snapshot' "$FIREWALL_HELPER" \
+	|| fail 'firewall Apply does not stage the runtime snapshot before nftables'
+grep -Fq 'firewall_promote_snapshot' "$FIREWALL_HELPER" \
+	|| fail 'firewall Apply does not atomically promote the runtime snapshot'
+grep -Fq 'FIREWALL_RUNTIME_PROMOTION_FAILED' "$RPC" \
+	|| fail 'firewall RPC does not expose fatal snapshot promotion failures'
 
 grep -Fq 'listener_ready' "$INIT" \
 	|| fail 'service start does not defer dynamic-set population until listener readiness'
 grep -Fq 'firewall.applied.nft' "$INIT" \
 	|| fail 'service start does not clear the volatile applied firewall snapshot'
+grep -Fq 'firewall.applied.nft.next' "$INIT" \
+	|| fail 'service start does not clear the staged firewall snapshot'
 grep -Fq 'procd_open_instance daemon' "$INIT" \
 	|| fail 'daemon procd instance is not explicitly named'
 grep -Fq 'procd_open_instance schedule' "$INIT" \
@@ -249,9 +257,13 @@ fi
 grep -F 'callApply(editor.value)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
 	|| fail 'firewall apply does not receive editor contents'
 grep -F 'initialEditorContent(result)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
-	|| fail 'firewall refresh does not restore an applied candidate'
+	|| fail 'firewall refresh does not restore applied rules'
 grep -F 'savedHash = persistentPresent ? contentHash(result.config ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
 	|| fail 'firewall refresh does not keep the persistent hash separate from the editor'
+if grep -REq 'FIREWALL_CANDIDATE|firewall\.candidate\.nft|candidate_hash|candidate_present' \
+	"$FIREWALL_HELPER" "$RPC" "$INIT" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
+	fail 'removed runtime candidate snapshot is still part of the firewall lifecycle'
+fi
 if grep -Fq 'Save & apply' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
 	fail 'firewall editor still exposes a combined Save & apply action'
 fi

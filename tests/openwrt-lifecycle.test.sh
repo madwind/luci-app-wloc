@@ -152,17 +152,17 @@ case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
 	*) fail 'firewall Apply did not return ok=true';;
 esac
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
-	|| fail 'applied firewall candidate is not active'
+	|| fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
 	|| fail 'Apply changed the persistent firewall file'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
 	|| fail 'reboot without Save did not restore the persistent firewall file'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
-	fail 'unsaved firewall candidate survived reboot'
+	fail 'unsaved firewall rules survived reboot'
 fi
 
-echo '  -> Apply and Save persists the candidate across reboot'
+echo '  -> Apply and Save persists the applied rules across reboot'
 case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
 	true|1) ;;
 	*) fail 'second firewall Apply did not return ok=true';;
@@ -177,7 +177,7 @@ persistent_b="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 	|| fail 'Save did not replace the persistent firewall file'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_b" ] \
-	|| fail 'saved firewall candidate did not survive reboot'
+	|| fail 'saved firewall rules did not survive reboot'
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
 	|| fail 'saved firewall table was not restored after reboot'
 

@@ -15,7 +15,7 @@ runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
 persistent="$fixture_root/firewall.saved.nft"
 applied="$runtime/firewall.applied.nft"
-candidate="$runtime/firewall.candidate.nft"
+staged="$runtime/firewall.applied.nft.next"
 
 printf '%s\n' \
 	'table inet wloc_a {' \
@@ -23,7 +23,7 @@ printf '%s\n' \
 	'table bridge wloc_b {' \
 	'}' >"$applied"
 printf '%s\n' 'table inet persistent_only {' '}' >"$persistent"
-printf '%s\n' 'candidate' >"$candidate"
+printf '%s\n' 'staged' >"$staged"
 
 check_log="$fixture_root/check.log"
 apply_log="$fixture_root/apply.log"
@@ -55,7 +55,7 @@ nft() {
 
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_RUNTIME="$applied"
-export WLOC_FIREWALL_CANDIDATE="$candidate"
+export WLOC_FIREWALL_RUNTIME_NEXT="$staged"
 export WLOC_FIREWALL_PATH="$persistent"
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$HELPER"
@@ -74,7 +74,7 @@ if grep -Fq 'unrelated' "$check_log" "$apply_log"; then
 	fail 'unrelated nftables table was selected for removal'
 fi
 [ ! -e "$applied" ] || fail 'applied snapshot was not removed after cleanup'
-[ ! -e "$candidate" ] || fail 'candidate snapshot was not removed after cleanup'
+[ ! -e "$staged" ] || fail 'staged snapshot was not removed after cleanup'
 
 echo '  -> fallback to persistent rules when no applied snapshot exists'
 : >"$check_log"

@@ -15,11 +15,11 @@ trap 'rm -rf "$fixture_root"' EXIT
 runtime="$fixture_root/runtime"
 mkdir -p "$runtime"
 persistent="$fixture_root/firewall.saved.nft"
-candidate="$fixture_root/firewall.candidate.nft"
+applied_source="$fixture_root/firewall.applied-input.nft"
 printf '%s' 'table inet saved {
 }' >"$persistent"
-printf '%s' 'table inet candidate {
-}' >"$candidate"
+printf '%s' 'table inet applied {
+}' >"$applied_source"
 
 fake_jshn="$fixture_root/jshn.sh"
 cat >"$fake_jshn" <<'EOF'
@@ -85,21 +85,18 @@ export WLOC_RULES_HELPER="$rules_helper"
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_PATH="$persistent"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
-export WLOC_FIREWALL_CANDIDATE="$runtime/firewall.candidate.nft"
 export WLOC_STATUS_PATH="$runtime/status.json"
 . "$RPC"
 
 echo '  -> apply updates runtime only'
 printf '%s' '{}' >"$WLOC_STATUS_PATH"
 export WLOC_TEST_RULES_RC=0
-firewall_config="$(cat "$candidate")"
+firewall_config="$(cat "$applied_source")"
 emit_firewall_apply
-cmp -s "$candidate" "$WLOC_FIREWALL_RUNTIME" \
+cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'apply did not update the applied runtime snapshot'
-cmp -s "$persistent" "$candidate" \
+cmp -s "$persistent" "$applied_source" \
 	&& fail 'apply changed the persistent firewall file'
-cmp -s "$candidate" "$FIREWALL_CANDIDATE" \
-	|| fail 'apply did not record the candidate snapshot'
 [ "$response_ok" = 1 ] || fail 'successful apply did not return ok=true'
 [ "$response_runtime_ready" = 1 ] || fail 'successful reconcile did not return runtime_ready=true'
 [ "$response_recovering" = 0 ] || fail 'successful reconcile returned recovering=true'
@@ -107,7 +104,7 @@ cmp -s "$candidate" "$FIREWALL_CANDIDATE" \
 
 echo '  -> reconcile failure returns a warning without failing Apply'
 export WLOC_TEST_RULES_RC=1
-firewall_config="$(cat "$candidate")"
+firewall_config="$(cat "$applied_source")"
 emit_firewall_apply
 [ "$response_ok" = 1 ] || fail 'reconcile failure returned ok=false'
 [ "$response_runtime_ready" = 0 ] || fail 'reconcile failure returned runtime_ready=true'
@@ -120,26 +117,22 @@ echo '  -> syntax failure keeps both snapshots'
 CHECK_RC=1
 firewall_config='table inet rejected {'
 emit_firewall_apply
-cmp -s "$candidate" "$WLOC_FIREWALL_RUNTIME" \
+cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'syntax failure replaced the applied runtime snapshot'
-cmp -s "$candidate" "$FIREWALL_CANDIDATE" \
-	|| fail 'syntax failure replaced the candidate snapshot'
 CHECK_RC=0
 
 echo '  -> transaction failure keeps both snapshots'
 APPLY_RC=1
 firewall_config='table inet rejected {'
 emit_firewall_apply
-cmp -s "$candidate" "$WLOC_FIREWALL_RUNTIME" \
+cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'transaction failure replaced the applied runtime snapshot'
-cmp -s "$candidate" "$FIREWALL_CANDIDATE" \
-	|| fail 'transaction failure replaced the candidate snapshot'
 APPLY_RC=0
 
 echo '  -> save ignores un-applied request content'
 firewall_config='table inet ignored {'
 emit_firewall_save
-cmp -s "$candidate" "$persistent" \
+cmp -s "$applied_source" "$persistent" \
 	|| fail 'save did not copy the applied snapshot to persistent storage'
 
 echo 'WLOC RPC firewall tests: PASS'

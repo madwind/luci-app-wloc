@@ -11,7 +11,6 @@ CAINFO=${WLOC_CAINFO_PATH:-/etc/wloc/ca.info.json}
 VERSION_CACHE=${WLOC_VERSION_CACHE_PATH:-/var/run/wloc/package.version}
 FIREWALL=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-/var/run/wloc/firewall.applied.nft}
-FIREWALL_CANDIDATE=${WLOC_FIREWALL_CANDIDATE:-/var/run/wloc/firewall.candidate.nft}
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 
 WLOC_FIREWALL_HELPER_SOURCE=1
@@ -64,13 +63,10 @@ firewall_response() {
 	json_add_string path "$FIREWALL"
 	json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
 	json_add_string applied "$(cat "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-	json_add_string candidate "$(cat "$FIREWALL_CANDIDATE" 2>/dev/null || true)"
 	json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
 	json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-	json_add_string candidate_hash "$(firewall_file_hash "$FIREWALL_CANDIDATE" 2>/dev/null || true)"
 	[ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
 	[ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
-	[ -r "$FIREWALL_CANDIDATE" ] && json_add_boolean candidate_present 1 || json_add_boolean candidate_present 0
 	json_add_boolean runtime_ready "$runtime_ready"
 	json_add_boolean recovering "$recovering"
 	json_add_string warning "$runtime_warning"
@@ -107,7 +103,7 @@ emit_firewall_validate() {
 emit_firewall_save() {
 	if ! [ -r "$FIREWALL_RUNTIME" ]; then
 		json_init; json_add_boolean ok 0
-		json_add_string error 'No successfully applied firewall candidate is available to save.'
+		json_add_string error 'No successfully applied firewall rules are available to save.'
 		json_dump
 		return
 	fi
@@ -127,24 +123,21 @@ emit_firewall_save() {
 emit_firewall_apply() {
 	local source
 	mkdir -p "$FIREWALL_RUNTIME_DIR"
-	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-candidate-source.XXXXXX")" || exit 1
+	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply-source.XXXXXX")" || exit 1
 	if ! printf '%s' "$firewall_config" >"$source"; then
 		rm -f "$source"
 		json_init; json_add_boolean ok 0
-		json_add_string error 'Unable to stage the firewall candidate.'
+		json_add_string error 'Unable to stage the firewall rules.'
 		json_dump
 		return
 	fi
 	if ! firewall_apply_file "$source"; then
 		json_init; json_add_boolean ok 0
-		json_add_string error 'Failed to apply nftables candidate.'
-		json_add_string detail "$firewall_error"; json_dump
-		rm -f "$source"
-		return
-	fi
-	if ! firewall_copy_atomic "$source" "$FIREWALL_CANDIDATE"; then
-		json_init; json_add_boolean ok 0
-		json_add_string error 'Rules were applied, but the runtime candidate snapshot could not be saved.'
+		if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
+			json_add_string error 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.'
+		else
+			json_add_string error 'Failed to apply nftables rules.'
+		fi
 		json_add_string detail "$firewall_error"; json_dump
 		rm -f "$source"
 		return
