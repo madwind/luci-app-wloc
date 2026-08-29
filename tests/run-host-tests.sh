@@ -292,7 +292,7 @@ grep -F 'callApply(editor.value)' "$ROOT/htdocs/luci-static/resources/view/wloc/
     || fail 'firewall apply does not receive editor contents'
 grep -F 'initialEditorContent(result)' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall refresh does not restore applied rules'
-grep -F 'savedHash = persistentPresent ? contentHash(result.config ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+grep -F 'savedHash = persistentPresent ? String(result.saved_hash ||' "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
     || fail 'firewall refresh does not keep the persistent hash separate from the editor'
 if grep -REq 'FIREWALL_CANDIDATE|firewall\.candidate\.nft|candidate_hash|candidate_present' \
     "$FIREWALL_HELPER" "$RPC" "$INIT" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
