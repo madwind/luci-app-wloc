@@ -121,6 +121,17 @@ json_init() {
     response_error=''
     response_error_code=''
     response_detail=''
+    response_status=''
+    response_fingerprint=''
+    response_profile_url=''
+    json_fingerprint=''
+}
+json_load_file() {
+    json_fingerprint="$(sed -n 's/.*"fingerprint_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1")"
+}
+json_get_var() {
+    [ "$2" = fingerprint_sha256 ] || return 0
+    eval "$1=\$json_fingerprint"
 }
 json_add_boolean() {
     [ "$1" = ok ] && response_ok="$2"
@@ -130,6 +141,9 @@ json_add_string() {
         error) response_error="$2";;
         error_code) response_error_code="$2";;
         detail) response_detail="$2";;
+        status) response_status="$2";;
+        fingerprint) response_fingerprint="$2";;
+        profile_url) response_profile_url="$2";;
     esac
 }
 json_dump() { :; }
@@ -139,7 +153,13 @@ export WLOC_RPC_SOURCE=1
 export WLOC_JSHN_PATH="$fake_jshn"
 export WLOC_FIREWALL_HELPER_PATH="$firewall_helper"
 export WLOC_RULES_HELPER="$rules_helper"
-export WLOC_INIT_PATH="$schedule_helper"
+export WLOC_CA_KEY_PATH="$fixture_root/ca.key"
+export WLOC_CA_DER_PATH="$fixture_root/ca.der"
+export WLOC_CA_PEM_PATH="$fixture_root/ca.pem"
+export WLOC_CAINFO_PATH="$fixture_root/ca.info.json"
+export WLOC_CA_PROFILE_PATH="$fixture_root/wloc-ca.mobileconfig"
+export WLOC_CA_REGENERATION_TIMEOUT_SECONDS=1
+export WLOC_CA_REGENERATION_POLL_SECONDS=0
 export WLOC_RUNTIME_DIR="$fixture_root"
 export WLOC_FIREWALL_PATH="$fixture_root/firewall.nft"
 export WLOC_FIREWALL_RUNTIME="$fixture_root/firewall.applied.nft"
@@ -150,6 +170,7 @@ rm_log="$fixture_root/rm.log"
 : >"$init_log"
 : >"$rm_log"
 rm() {
+    [ "${WLOC_TEST_RM_RC:-0}" -eq 0 ] || return "$WLOC_TEST_RM_RC"
     case "$*" in
         *'/etc/wloc/ca.key'*|*'/www/wloc-ca.mobileconfig'*)
             printf '%s\n' "$*" >>"$rm_log"
@@ -191,5 +212,142 @@ rpc_regenerate_ca
     || fail 'regenerate CA did not preserve the helper error'
 [ ! -s "$init_log" ] || fail 'regenerate CA stopped the daemon after cleanup failure'
 [ ! -s "$rm_log" ] || fail 'regenerate CA removed CA files after cleanup failure'
+
+ca_key="$fixture_root/ca.key"
+ca_der="$fixture_root/ca.der"
+ca_pem="$fixture_root/ca.pem"
+ca_info="$fixture_root/ca.info.json"
+ca_profile="$fixture_root/wloc-ca.mobileconfig"
+daemon_state="$fixture_root/daemon-ready"
+init_helper="$fixture_root/init-ca.sh"
+cat >"$init_helper" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1" >>"$WLOC_TEST_INIT_LOG"
+case "${1:-}" in
+    stop)
+        [ "${WLOC_TEST_STOP_RC:-0}" -eq 0 ]
+        ;;
+    start)
+        [ "${WLOC_TEST_START_RC:-0}" -eq 0 ] || exit "$WLOC_TEST_START_RC"
+        if [ "${WLOC_TEST_GENERATE_CA:-0}" -eq 1 ]; then
+            printf '%s\n' generated >"$WLOC_TEST_CA_KEY"
+            printf '%s\n' generated >"$WLOC_TEST_CA_DER"
+            printf '%s\n' generated >"$WLOC_TEST_CA_PEM"
+            printf '{"fingerprint_sha256":"%s"}\n' \
+                "$WLOC_TEST_CA_FINGERPRINT" >"$WLOC_TEST_CAINFO"
+            printf '%s\n' generated >"$WLOC_TEST_CA_PROFILE"
+            if [ "${WLOC_TEST_DAEMON_READY:-0}" -eq 1 ]; then
+                : >"$WLOC_TEST_DAEMON_STATE"
+            fi
+        fi
+        ;;
+esac
+EOF
+chmod +x "$init_helper"
+export WLOC_TEST_CA_KEY="$ca_key"
+export WLOC_TEST_CA_DER="$ca_der"
+export WLOC_TEST_CA_PEM="$ca_pem"
+export WLOC_TEST_CAINFO="$ca_info"
+export WLOC_TEST_CA_PROFILE="$ca_profile"
+export WLOC_TEST_DAEMON_STATE="$daemon_state"
+INIT="$init_helper"
+service_daemon_running() {
+    [ -e "$daemon_state" ]
+}
+
+write_ca_artifacts() {
+    printf '%s\n' existing >"$ca_key"
+    printf '%s\n' existing >"$ca_der"
+    printf '%s\n' existing >"$ca_pem"
+    printf '{"fingerprint_sha256":"%s"}\n' "$1" >"$ca_info"
+    printf '%s\n' existing >"$ca_profile"
+}
+
+reset_regeneration_fixture() {
+    export WLOC_TEST_RM_RC=0
+    rm -f "$ca_key" "$ca_der" "$ca_pem" "$ca_info" "$ca_profile" "$daemon_state"
+    : >"$init_log"
+    response_ok=''
+    response_error=''
+    response_error_code=''
+    response_detail=''
+    response_status=''
+    response_fingerprint=''
+    export WLOC_TEST_STOP_RC=0
+    export WLOC_TEST_START_RC=0
+    export WLOC_TEST_GENERATE_CA=0
+    export WLOC_TEST_DAEMON_READY=0
+    export WLOC_TEST_CA_FINGERPRINT=''
+}
+
+export WLOC_TEST_RULES_RC=0
+
+echo '  -> regenerate CA reports a start failure'
+reset_regeneration_fixture
+write_ca_artifacts AAA
+export WLOC_TEST_START_RC=1
+rpc_regenerate_ca
+expected_init_log="$(printf '%s\n%s' stop start)"
+[ "$response_ok" = 0 ] || fail 'start failure did not return ok=false'
+[ "$response_error_code" = ca_regeneration_failed ] \
+    || fail 'start failure returned the wrong error code'
+[ "$response_detail" = 'WLOC did not restart after CA removal.' ] \
+    || fail 'start failure returned the wrong detail'
+[ "$(cat "$init_log")" = "$expected_init_log" ] \
+    || fail 'start failure did not stop and start exactly once'
+
+echo '  -> regenerate CA reports a removal failure'
+reset_regeneration_fixture
+write_ca_artifacts AAA
+export WLOC_TEST_RM_RC=1
+rpc_regenerate_ca
+[ "$response_ok" = 0 ] || fail 'removal failure did not return ok=false'
+[ "$response_error_code" = ca_regeneration_failed ] \
+    || fail 'removal failure returned the wrong error code'
+[ "$response_detail" = 'Unable to remove the previous CA files.' ] \
+    || fail 'removal failure returned the wrong detail'
+[ "$(cat "$init_log")" = stop ] \
+    || fail 'removal failure continued to start the service'
+
+echo '  -> regenerate CA rejects a daemon that is not ready'
+reset_regeneration_fixture
+write_ca_artifacts AAA
+export WLOC_TEST_GENERATE_CA=1
+export WLOC_TEST_DAEMON_READY=0
+export WLOC_TEST_CA_FINGERPRINT=BBB
+rpc_regenerate_ca
+[ "$response_ok" = 0 ] || fail 'daemon-not-ready did not return ok=false'
+[ "$response_error_code" = ca_regeneration_failed ] \
+    || fail 'daemon-not-ready returned the wrong error code'
+[ "$response_detail" = 'The replacement CA was not generated before the timeout.' ] \
+    || fail 'daemon-not-ready returned the wrong detail'
+
+echo '  -> regenerate CA rejects an unchanged fingerprint'
+reset_regeneration_fixture
+write_ca_artifacts AAA
+export WLOC_TEST_GENERATE_CA=1
+export WLOC_TEST_DAEMON_READY=1
+export WLOC_TEST_CA_FINGERPRINT=AAA
+rpc_regenerate_ca
+[ "$response_ok" = 0 ] || fail 'unchanged fingerprint did not return ok=false'
+[ "$response_error_code" = ca_regeneration_failed ] \
+    || fail 'unchanged fingerprint returned the wrong error code'
+[ "$response_detail" = 'The replacement CA fingerprint did not change.' ] \
+    || fail 'unchanged fingerprint returned the wrong detail'
+
+echo '  -> regenerate CA succeeds only after the replacement is ready'
+reset_regeneration_fixture
+write_ca_artifacts AAA
+export WLOC_TEST_GENERATE_CA=1
+export WLOC_TEST_DAEMON_READY=1
+export WLOC_TEST_CA_FINGERPRINT=BBB
+rpc_regenerate_ca
+[ "$response_ok" = 1 ] || fail 'successful CA regeneration did not return ok=true'
+[ "$response_status" = ready ] || fail 'successful CA regeneration returned the wrong status'
+[ "$response_fingerprint" = BBB ] || fail 'successful CA regeneration returned the wrong fingerprint'
+[ "$response_profile_url" = '/wloc-ca.mobileconfig' ] \
+    || fail 'successful CA regeneration returned the wrong profile URL'
+[ "$(cat "$init_log")" = "$expected_init_log" ] \
+    || fail 'successful CA regeneration did not stop and start exactly once'
 
 echo 'WLOC cleanup failure tests: PASS'

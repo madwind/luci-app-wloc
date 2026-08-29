@@ -8,6 +8,12 @@ FIREWALL_HELPER=${WLOC_FIREWALL_HELPER_PATH:-/usr/libexec/wloc/firewall.sh}
 STATE=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
 RUNTIME_LOG=${WLOC_RUNTIME_LOG_PATH:-/var/run/wloc/runtime.log}
 CAINFO=${WLOC_CAINFO_PATH:-/etc/wloc/ca.info.json}
+CA_KEY=${WLOC_CA_KEY_PATH:-/etc/wloc/ca.key}
+CA_DER=${WLOC_CA_DER_PATH:-/etc/wloc/ca.der}
+CA_PEM=${WLOC_CA_PEM_PATH:-/etc/wloc/ca.pem}
+CA_PROFILE=${WLOC_CA_PROFILE_PATH:-/www/wloc-ca.mobileconfig}
+CA_REGENERATION_TIMEOUT_SECONDS=${WLOC_CA_REGENERATION_TIMEOUT_SECONDS:-15}
+CA_REGENERATION_POLL_SECONDS=${WLOC_CA_REGENERATION_POLL_SECONDS:-1}
 VERSION_CACHE=${WLOC_VERSION_CACHE_PATH:-/var/run/wloc/package.version}
 FIREWALL=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_RUNTIME=${WLOC_FIREWALL_RUNTIME:-/var/run/wloc/firewall.applied.nft}
@@ -38,6 +44,68 @@ cleanup_rules() {
 cleanup_failure_response() {
     firewall_rpc_error cleanup_failed \
         'Unable to clean up WLOC firewall rules.' "$cleanup_error"
+}
+
+ca_regeneration_failure_response() {
+    firewall_rpc_error ca_regeneration_failed \
+        'Unable to regenerate the WLOC Root CA.' "$1"
+}
+
+read_ca_fingerprint() {
+    local fingerprint=''
+    [ -s "$CAINFO" ] || return 1
+    json_load_file "$CAINFO" 2>/dev/null || return 1
+    json_get_var fingerprint fingerprint_sha256
+    [ -n "$fingerprint" ] || return 1
+    printf '%s\n' "$fingerprint"
+}
+
+ca_artifacts_ready() {
+    local path fingerprint
+    for path in "$CA_KEY" "$CA_DER" "$CA_PEM" "$CAINFO" "$CA_PROFILE"; do
+        [ -s "$path" ] || return 1
+    done
+    fingerprint="$(read_ca_fingerprint 2>/dev/null || true)"
+    [ -n "$fingerprint" ]
+}
+
+wait_for_ca_regeneration() {
+    local old_fingerprint="$1" attempt=0 fingerprint
+    CA_REGENERATION_FAILURE_DETAIL='The replacement CA was not generated before the timeout.'
+    case "$CA_REGENERATION_TIMEOUT_SECONDS" in
+        ''|*[!0-9]*) return 1;;
+    esac
+    case "$CA_REGENERATION_POLL_SECONDS" in
+        ''|*[!0-9]*) return 1;;
+    esac
+    [ "$CA_REGENERATION_TIMEOUT_SECONDS" -gt 0 ] || return 1
+    CA_REGENERATED_FINGERPRINT=''
+    while [ "$attempt" -lt "$CA_REGENERATION_TIMEOUT_SECONDS" ]; do
+        if service_daemon_running && ca_artifacts_ready; then
+            fingerprint="$(read_ca_fingerprint 2>/dev/null || true)"
+            if [ -n "$fingerprint" ] && {
+                [ -z "$old_fingerprint" ] || [ "$fingerprint" != "$old_fingerprint" ]
+            }; then
+                CA_REGENERATED_FINGERPRINT="$fingerprint"
+                return 0
+            fi
+            [ -z "$old_fingerprint" ] || \
+                CA_REGENERATION_FAILURE_DETAIL='The replacement CA fingerprint did not change.'
+        fi
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt "$CA_REGENERATION_TIMEOUT_SECONDS" ] || break
+        sleep "$CA_REGENERATION_POLL_SECONDS" || return 1
+    done
+    return 1
+}
+
+ca_regeneration_success_response() {
+    json_init
+    json_add_boolean ok 1
+    json_add_string status ready
+    json_add_string fingerprint "$CA_REGENERATED_FINGERPRINT"
+    json_add_string profile_url '/wloc-ca.mobileconfig'
+    json_dump
 }
 
 firewall_response_state() {
@@ -482,7 +550,7 @@ emit_configured_access_points() {
 }
 
 rpc_regenerate_ca() {
-    local enabled
+    local enabled old_fingerprint path
     enabled="$(uci -q get wloc.main.enabled 2>/dev/null || true)"
     if [ "$enabled" != 1 ]; then
         firewall_rpc_error service_disabled \
@@ -494,12 +562,30 @@ rpc_regenerate_ca() {
         cleanup_failure_response
         return
     fi
-    "$INIT" stop >/dev/null 2>&1 || true
-    rm -f /etc/wloc/ca.key /etc/wloc/ca.der \
-        /etc/wloc/ca.pem /etc/wloc/ca.info.json \
-        /www/wloc-ca.mobileconfig
-    [ "$enabled" = 1 ] && "$INIT" start >/dev/null 2>&1
-    emit_status
+    old_fingerprint="$(read_ca_fingerprint 2>/dev/null || true)"
+    if ! "$INIT" stop >/dev/null 2>&1; then
+        ca_regeneration_failure_response 'Unable to stop the WLOC service.'
+        return
+    fi
+    if ! rm -f "$CA_KEY" "$CA_DER" "$CA_PEM" "$CAINFO" "$CA_PROFILE"; then
+        ca_regeneration_failure_response 'Unable to remove the previous CA files.'
+        return
+    fi
+    for path in "$CA_KEY" "$CA_DER" "$CA_PEM" "$CAINFO" "$CA_PROFILE"; do
+        if [ -e "$path" ]; then
+            ca_regeneration_failure_response 'Unable to remove the previous CA files.'
+            return
+        fi
+    done
+    if ! "$INIT" start >/dev/null 2>&1; then
+        ca_regeneration_failure_response 'WLOC did not restart after CA removal.'
+        return
+    fi
+    if ! wait_for_ca_regeneration "$old_fingerprint"; then
+        ca_regeneration_failure_response "$CA_REGENERATION_FAILURE_DETAIL"
+        return
+    fi
+    ca_regeneration_success_response
 }
 
 service_daemon_running() {
