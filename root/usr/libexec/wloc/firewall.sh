@@ -75,7 +75,7 @@ firewall_ownership_stream() {
 firewall_validate_ownership() {
     local source="$1"
     if firewall_ownership_stream "$source" |
-        grep -Eq '^[[:space:]]*(add|flush|include|delete|destroy|reset|insert|replace)([[:space:]]|$)'; then
+        grep -Eq '^[[:space:]]*(add|create|flush|include|delete|destroy|reset|insert|replace|rename)([[:space:]]|$)'; then
         firewall_error_code='unsupported_firewall_command'
         firewall_error='Only declarative definitions of table bridge wloc and table inet wloc are supported.'
         return 1

@@ -143,13 +143,15 @@ for input in \
 done
 
 for command in \
+    'create table inet foreign' \
     'flush ruleset' \
     'include "/etc/nftables.d/*.nft"' \
     'delete table inet wloc' \
     'destroy table inet wloc' \
     'reset rules' \
     'insert rule inet wloc input accept' \
-    'replace rule inet wloc input handle 1 accept'; do
+    'replace rule inet wloc input handle 1 accept' \
+    'rename chain inet foreign old new'; do
     source="$fixture_root/command-$RANDOM.nft"
     printf '%s\n' "$command" >"$source"
     echo "  -> reject command form: $command"
