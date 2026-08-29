@@ -397,6 +397,10 @@ nft() {
                 printf '%s\n' 'type ipv4_addr' 'flags timeout'
                 return 0
                 ;;
+            host_concatenated)
+                printf '%s\n' 'type ipv4_addr . inet_service' 'flags timeout'
+                return 0
+                ;;
         esac
     fi
     if [ "${1:-}" = flush ] && [ "${5:-}" = apple_wloc_v4 ]; then
@@ -574,6 +578,15 @@ host_snapshot="$fixture_root/host-set.applied.nft"
 host_persistent="$fixture_root/host-set.persistent.nft"
 : >"$host_persistent"
 
+host_set_compatible "$(printf '%s\n' 'type ipv4_addr' 'flags timeout')" \
+    || fail 'compatible scalar host set was rejected'
+if host_set_compatible "$(printf '%s\n' 'type inet_service' 'flags timeout')"; then
+    fail 'incompatible scalar host set was accepted'
+fi
+if host_set_compatible "$(printf '%s\n' 'type ipv4_addr . inet_service' 'flags timeout')"; then
+    fail 'concatenated host set type was accepted'
+fi
+
 printf '%s\n' \
     'table inet host_compatible {' \
     '    set apple_wloc_v4 {' \
@@ -602,6 +615,20 @@ if clear_host_sets; then
 fi
 [ ! -s "$host_flush_log" ] \
     || fail 'incompatible host set was flushed'
+
+printf '%s\n' \
+    'table inet host_concatenated {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr . inet_service' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_flush_log"
+if clear_host_sets; then
+    fail 'concatenated host set cleanup was reported as successful'
+fi
+[ ! -s "$host_flush_log" ] \
+    || fail 'concatenated host set was flushed'
 
 printf '%s\n' \
     'table inet host_missing {' \

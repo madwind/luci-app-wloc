@@ -160,8 +160,25 @@ EOF
 }
 
 host_set_compatible() {
-    printf '%s\n' "$1" | grep -q 'type ipv4_addr' &&
-        printf '%s\n' "$1" | grep -Eq 'flags timeout|^[[:space:]]*timeout[[:space:]]'
+    printf '%s\n' "$1" | awk '
+        {
+            line = $0
+            sub(/^[[:space:]]*type[[:space:]]+/, "", line)
+            gsub(/[[:space:];]+$/, "", line)
+            if (line == "ipv4_addr") type_ok = 1
+
+            line = $0
+            sub(/^[[:space:]]*flags[[:space:]]+/, "", line)
+            if (line != $0) {
+                count = split(line, flags, /[[:space:];]+/)
+                for (i = 1; i <= count; i++) {
+                    if (flags[i] == "timeout") timeout_ok = 1
+                }
+            }
+            if ($0 ~ /^[[:space:]]*timeout([[:space:];]|$)/) timeout_ok = 1
+        }
+        END { exit (type_ok && timeout_ok) ? 0 : 1 }
+    '
 }
 
 host_set_has_elements() {
