@@ -72,18 +72,24 @@ connection is redirected to WLOC first. After WLOC handles it, the daemon's
 upstream socket is ordinary router-local output, so any other proxy—including
 a transparent proxy—with a matching OUTPUT policy can process it normally.
 
-## Supported targets
+## Supported OpenWrt targets
 
-- Xiaomi AX3000T and other OpenWrt 25.12.5 MediaTek Filogic devices
-  (`aarch64_cortex-a53`)
-- NanoPi R28S (Rockchip RK3528A) with OpenWrt/FriendlyWrt 25.12
-  `rockchip/armv8` (`aarch64_generic`)
-- OpenWrt 25.12.5 x86/64 devices (`x86_64`)
+- `mediatek/filogic` (`aarch64_cortex-a53`)
+  - example: Xiaomi AX3000T
+  - other compatible OpenWrt 25.12.5 Filogic devices
+- `rockchip/armv8` (`aarch64_generic`)
+  - compatible OpenWrt 25.12.5 Rockchip armv8 devices
+  - NanoPi R28S running FriendlyWrt 25.12 uses the same
+    `aarch64_generic` package architecture; the WLOC APK is built with the
+    official OpenWrt 25.12.5 `rockchip/armv8` SDK
+- `x86/64` (`x86_64`)
 
-FriendlyWrt 25.12's open-source RK3528 build configuration uses
-`build_dir/target-aarch64_generic_musl/root-rockchip`, so the R28S package is
-published as `aarch64_generic`. This package architecture is independent of
-the compiler optimization settings used for the Cortex-A53 CPU.
+NanoPi R28S firmware in this documentation means FriendlyWrt 25.12. The WLOC
+package is built with the official OpenWrt 25.12.5 `rockchip/armv8` SDK; the
+R28S firmware distribution and the SDK used to build WLOC are separate
+concepts. FriendlyWrt's RK3528 build configuration uses
+`build_dir/target-aarch64_generic_musl/root-rockchip`, which is why the
+package architecture is `aarch64_generic`.
 
 ## Build
 
@@ -95,28 +101,38 @@ the same application version with packaging-only changes.
 
 ```sh
 # MediaTek Filogic
-bash ./scripts/build-openwrt-25.12.5.sh filogic
+bash ./scripts/build-openwrt-25.12.5.sh mediatek/filogic
 
-# NanoPi R28S
-bash ./scripts/build-openwrt-25.12.5.sh r28s
+# Rockchip ARMv8
+bash ./scripts/build-openwrt-25.12.5.sh rockchip/armv8
 
-# OpenWrt x86/64
-bash ./scripts/build-openwrt-25.12.5.sh x86_64
+# x86/64
+bash ./scripts/build-openwrt-25.12.5.sh x86/64
 ```
 
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
-`dist/filogic/`, `dist/r28s/`, or `dist/x86_64/`. The default GitHub Actions CI runs Rust
-formatting, Clippy, Rust tests, and host tests on pushes and pull requests.
+`dist/mediatek/filogic/`, `dist/rockchip/armv8/`, or `dist/x86/64/`. The default
+GitHub Actions CI runs Rust formatting, Clippy, Rust tests, and host tests on
+pushes and pull requests.
 Changes to the package Makefile, Rust source, OpenWrt root files, or build
-scripts also run an x86_64 SDK compile smoke test. The release package workflow
+scripts also run an x86/64 SDK compile smoke test. The release package workflow
 runs host tests, builds all three targets, validates the APK artifacts,
 generates SHA-256 files, and publishes the GitHub Release. It does not run the
 deep runtime integration suite. CI caches each architecture's checksum-pinned
 SDK archive and Cargo downloads, while the build script still verifies the SDK
 SHA-256 on every run. A tag must match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and
-creates a GitHub Release containing the Filogic, R28S, and x86/64 APKs and their
-SHA-256 files.
+creates a GitHub Release containing target-specific assets and their SHA-256
+files:
+
+```text
+luci-app-wloc-<version>-r<release>-mediatek-filogic.apk
+luci-app-wloc-<version>-r<release>-mediatek-filogic.apk.sha256
+luci-app-wloc-<version>-r<release>-rockchip-armv8.apk
+luci-app-wloc-<version>-r<release>-rockchip-armv8.apk.sha256
+luci-app-wloc-<version>-r<release>-x86-64.apk
+luci-app-wloc-<version>-r<release>-x86-64.apk.sha256
+```
 
 ## Install
 
@@ -214,7 +230,7 @@ authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
 
 ```sh
 WLOC_OPENWRT_APK="$(
-    find dist/filogic -maxdepth 1 -type f \
+    find dist/mediatek/filogic -maxdepth 1 -type f \
         -name 'luci-app-wloc-*.apk' -print -quit
 )"
 
@@ -225,7 +241,10 @@ sh tests/runtime-integration.sh
 ```
 
 Use the APK matching the target architecture; use artifacts under
-`dist/filogic/`, `dist/r28s/`, or `dist/x86_64/` for the corresponding target.
+`dist/mediatek/filogic/`, `dist/rockchip/armv8/`, or `dist/x86/64/` for the
+corresponding target. For NanoPi R28S running FriendlyWrt 25.12, use the
+artifact under `dist/rockchip/armv8/`; it was built with the official OpenWrt
+25.12.5 `rockchip/armv8` SDK.
 The suite installs and uninstalls the package,
 creates the temporary `wireless.wloc_test` and `wloc.test` UCI sections, changes
 WLOC firewall state, reboots the target, kills `wlocd`, and stops the service.
