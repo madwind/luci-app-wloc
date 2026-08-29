@@ -276,7 +276,6 @@ if [ -n "$APK_TOOL" ] && [ -x "$APK_TOOL" ]; then
         lib/upgrade/keep.d/luci-app-wloc \
         usr/share/luci/menu.d/luci-app-wloc.json \
         usr/share/rpcd/acl.d/luci-app-wloc.json \
-        usr/share/ucitrack/luci-app-wloc.json \
         www/luci-static/resources/view/wloc/main.js; do
         [ "$(stat -c '%a' "$APK_EXTRACT_DIR/$data_file")" = 644 ] \
             || { rm -rf "$APK_EXTRACT_DIR"; echo "$data_file mode is not 0644" >&2; exit 1; }
