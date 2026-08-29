@@ -100,10 +100,9 @@ node "$FIREWALL_UI_TEST"
 
 echo '==> Service startup behavior'
 
-grep -Fq 'rm -rf /tmp/luci-modulecache/' "$ROOT/Makefile" \
-    || fail 'package postinst does not clear the LuCI module cache'
-grep -Fq '/etc/init.d/rpcd reload' "$ROOT/Makefile" \
-    || fail 'package postinst does not reload rpcd'
+if grep -Eq '^define Package/luci-app-wloc/postinst$' "$ROOT/Makefile"; then
+    fail 'package Makefile still overrides the standard LuCI postinst'
+fi
 if grep -Eq '/etc/init.d/wloc (enable|start|disable)' "$ROOT/Makefile"; then
     fail 'package hooks still duplicate standard enable/start/disable actions'
 fi
@@ -191,10 +190,11 @@ grep -Fq 'luci-base (>=0)' "$ROOT/Makefile" \
     || fail 'runtime-only luci-base dependency is missing'
 grep -Fq 'nftables (>=0)' "$ROOT/Makefile" \
     || fail 'runtime-only nftables dependency is missing'
-grep -Fq 'ip-full (>=0)' "$ROOT/Makefile" \
-    || fail 'runtime-only ip-full dependency is missing'
 grep -Fq 'jshn (>=0)' "$ROOT/Makefile" \
     || fail 'runtime-only jshn dependency is missing'
+if grep -Fq 'ip-full (>=0)' "$ROOT/Makefile"; then
+    fail 'unused ip-full runtime dependency is still declared'
+fi
 
 grep -Fq 'listener_ready' "$INIT" \
     || fail 'service start does not defer dynamic-set population until listener readiness'
@@ -416,8 +416,8 @@ fi
 
 grep -F 'refresh_hosts()' "$RULES" >/dev/null \
     || fail 'rules.sh no longer maintains the optional host set'
-grep -F 'active_ingress_set' "$RULES" >/dev/null \
-    || fail 'rules.sh no longer maintains the optional ingress set'
+grep -F 'ingress_set_targets()' "$RULES" >/dev/null \
+    || fail 'rules.sh no longer discovers optional ingress sets'
 
 
 echo '  -> fixed-interface ingress synchronization'
@@ -439,6 +439,10 @@ nft() {
         return 0
     fi
     if [ "${1:-}" = list ] && [ "${2:-}" = set ] && [ "${5:-}" = target_ingress_interfaces ]; then
+        if [ "${4:-}" = incompatible ]; then
+            printf '%s\n' 'type ipv4_addr' 'flags timeout'
+            return 0
+        fi
         printf '%s\n' 'type ifname' 'flags timeout'
         return 0
     fi
@@ -478,6 +482,84 @@ load_ap_lib
 expected_ingress_batch='flush set bridge wloc target_ingress_interfaces
 add element bridge wloc target_ingress_interfaces { "phy0-ap0" timeout 120s }
 add element bridge wloc target_ingress_interfaces { "phy1-ap0" timeout 120s }'
+
+ingress_snapshot="$fixture_root/firewall.applied.nft"
+ingress_persistent="$fixture_root/firewall.persistent.nft"
+printf '%s\n' \
+    'table bridge custom_wloc {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
+printf '%s\n' 'table bridge persistent_wloc { }' >"$ingress_persistent"
+CUSTOM_FIREWALL="$ingress_snapshot"
+PERSISTENT_FIREWALL="$ingress_persistent"
+[ "$(ingress_set_targets)" = 'bridge custom_wloc' ] \
+    || fail 'ingress discovery did not find a custom table in the applied snapshot'
+expected_custom_ingress_batch='flush set bridge custom_wloc target_ingress_interfaces
+add element bridge custom_wloc target_ingress_interfaces { "phy0-ap0" timeout 120s }
+add element bridge custom_wloc target_ingress_interfaces { "phy1-ap0" timeout 120s }'
+[ "$(sync_ingress_interfaces)" = "$expected_custom_ingress_batch" ] \
+    || fail 'custom-table ingress synchronization generated an unexpected batch'
+
+printf '%s\n' \
+    'table bridge foo {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet bar {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
+expected_multi_ingress_batch='flush set bridge foo target_ingress_interfaces
+add element bridge foo target_ingress_interfaces { "phy0-ap0" timeout 120s }
+add element bridge foo target_ingress_interfaces { "phy1-ap0" timeout 120s }
+flush set inet bar target_ingress_interfaces
+add element inet bar target_ingress_interfaces { "phy0-ap0" timeout 120s }
+add element inet bar target_ingress_interfaces { "phy1-ap0" timeout 120s }'
+[ "$(sync_ingress_interfaces)" = "$expected_multi_ingress_batch" ] \
+    || fail 'multiple ingress sets were not synchronized in one transaction'
+
+printf '%s\n' \
+    'table bridge incompatible {' \
+    '    set target_ingress_interfaces {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
+if sync_ingress_interfaces; then
+    fail 'incompatible ingress set was treated as compatible'
+fi
+
+rm -f "$ingress_snapshot"
+printf '%s\n' \
+    'table bridge fallback_wloc {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_persistent"
+[ "$(ingress_set_targets)" = 'bridge fallback_wloc' ] \
+    || fail 'ingress discovery did not fall back to the persistent snapshot'
+
+printf '%s\n' 'table bridge no_ingress { }' >"$ingress_snapshot"
+[ -z "$(sync_ingress_interfaces)" ] \
+    || fail 'missing optional ingress set prevented reconciliation'
+
+CUSTOM_FIREWALL="$ingress_snapshot"
+PERSISTENT_FIREWALL="$ingress_persistent"
+printf '%s\n' \
+    'table bridge wloc {' \
+    '    set target_ingress_interfaces {' \
+    '        type ifname' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$ingress_snapshot"
 [ "$(sync_ingress_interfaces)" = "$expected_ingress_batch" ] \
     || fail 'fixed-interface ingress synchronization generated an unexpected batch'
 

@@ -10,6 +10,7 @@ HOST_SET=apple_wloc_v4
 # maintenance follows the active configuration rather than unsaved state.
 RULES_RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
 CUSTOM_FIREWALL=${WLOC_FIREWALL_RUNTIME:-${RULES_RUNTIME_DIR}/firewall.applied.nft}
+PERSISTENT_FIREWALL=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 STAMP=${WLOC_HOSTS_STAMP:-${RULES_RUNTIME_DIR}/hosts.refreshed}
 DNS_ATTEMPT_STAMP=${WLOC_DNS_ATTEMPT_STAMP:-${RULES_RUNTIME_DIR}/hosts.attempted}
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
@@ -20,24 +21,70 @@ DNS_REFRESH_SECONDS=300
 DNS_RETRY_SECONDS=10
 INGRESS_INTERFACE_TIMEOUT=120s
 
-active_ingress_set() {
-    local family
-    for family in bridge inet; do
-        if nft list set "$family" "$TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
-            printf '%s %s\n' "$family" "$INGRESS_SET"
-            return 0
-        fi
-    done
-    return 1
+firewall_snapshot() {
+    if [ -s "$CUSTOM_FIREWALL" ]; then
+        printf '%s\n' "$CUSTOM_FIREWALL"
+    elif [ -s "$PERSISTENT_FIREWALL" ]; then
+        printf '%s\n' "$PERSISTENT_FIREWALL"
+    fi
+    return 0
+}
+
+declarative_set_targets() {
+    local set_name snapshot
+    set_name="$1"
+    snapshot="$(firewall_snapshot)"
+    [ -n "$snapshot" ] || return 0
+    awk -v target_set="$set_name" '
+        {
+            line = $0
+            sub(/#.*/, "", line)
+            gsub(/[{};]/, "\n", line)
+            count = split(line, statements, "\n")
+            for (i = 1; i <= count; i++) {
+                fields = split(statements[i], words, /[[:space:]]+/)
+                first = 1
+                while (first <= fields && words[first] == "") first++
+                if (words[first] == "table" && words[first + 2] != "") {
+                    family = words[first + 1]
+                    table_name = words[first + 2]
+                } else if (words[first] == "add" && words[first + 1] == "table" \
+                    && words[first + 3] != "") {
+                    family = words[first + 2]
+                    table_name = words[first + 3]
+                } else if (words[first] == "set" && words[first + 1] == target_set \
+                    && family != "" && table_name != "") {
+                    print family, table_name
+                } else if (words[first] == "add" && words[first + 1] == "set" \
+                    && words[first + 2] == target_set) {
+                    print words[first + 3], words[first + 4]
+                }
+            }
+        }
+    ' "$snapshot" | awk '!seen[$0]++'
+}
+
+ingress_set_targets() {
+    declarative_set_targets "$INGRESS_SET"
 }
 
 clear_ingress_interfaces() {
-    local family set
-    read -r family set <<EOF
-$(active_ingress_set)
+    local family table_name set_dump rc=0
+    while read -r family table_name; do
+        [ -n "$family" ] || continue
+        if ! set_dump="$(nft list set "$family" "$table_name" "$INGRESS_SET" 2>/dev/null)"; then
+            continue
+        fi
+        if ! ingress_set_compatible "$set_dump"; then
+            echo "wloc: optional ingress set $family/$table_name/$INGRESS_SET has an incompatible type" >&2
+            rc=1
+            continue
+        fi
+        nft flush set "$family" "$table_name" "$INGRESS_SET" >/dev/null 2>&1 || rc=1
+    done <<EOF
+$(ingress_set_targets)
 EOF
-    [ -n "$family" ] && [ -n "$set" ] || return 0
-    nft flush set "$family" "$TABLE" "$set" >/dev/null 2>&1 || return 1
+    return "$rc"
 }
 
 clear_host_sets() {
@@ -74,33 +121,10 @@ valid_ipv4() {
 
 host_set_targets() {
     {
-        printf 'inet %s\n' "$TABLE"
-        [ ! -s "$CUSTOM_FIREWALL" ] || awk -v host_set="$HOST_SET" '
-            {
-                line = $0
-                sub(/#.*/, "", line)
-                gsub(/[{};]/, "\n", line)
-                count = split(line, statements, "\n")
-                for (i = 1; i <= count; i++) {
-                    fields = split(statements[i], words, /[[:space:]]+/)
-                    first = 1
-                    while (first <= fields && words[first] == "") first++
-                    if (words[first] == "table") {
-                        family = words[first + 1]
-                        table_name = words[first + 2]
-                    } else if (words[first] == "add" && words[first + 1] == "table") {
-                        family = words[first + 2]
-                        table_name = words[first + 3]
-                    } else if (words[first] == "set" && words[first + 1] == host_set \
-                        && family != "" && table_name != "") {
-                        print family, table_name
-                    } else if (words[first] == "add" && words[first + 1] == "set" \
-                        && words[first + 2] == host_set) {
-                        print words[first + 3], words[first + 4]
-                    }
-                }
-            }
-        ' "$CUSTOM_FIREWALL"
+        if [ ! -s "$CUSTOM_FIREWALL" ] && [ ! -s "$PERSISTENT_FIREWALL" ]; then
+            printf 'inet %s\n' "$TABLE"
+        fi
+        declarative_set_targets "$HOST_SET"
     } | awk '!seen[$0]++'
 }
 
@@ -248,6 +272,28 @@ valid_ifname() {
     [ "${#1}" -le 15 ]
 }
 
+ingress_set_compatible() {
+    printf '%s\n' "$1" | awk '
+        {
+            line = $0
+            sub(/^[[:space:]]*type[[:space:]]+/, "", line)
+            gsub(/[[:space:];]+$/, "", line)
+            if (line == "ifname") type_ok = 1
+
+            line = $0
+            sub(/^[[:space:]]*flags[[:space:]]+/, "", line)
+            if (line != $0) {
+                count = split(line, flags, /[[:space:];]+/)
+                for (i = 1; i <= count; i++) {
+                    if (flags[i] == "timeout") timeout_ok = 1
+                }
+            }
+            if ($0 ~ /^[[:space:]]*timeout([[:space:];]|$)/) timeout_ok = 1
+        }
+        END { exit (type_ok && timeout_ok) ? 0 : 1 }
+    '
+}
+
 load_ap_lib() {
     [ "${WLOC_AP_LIB_LOADED:-0}" -eq 1 ] || . "$AP_LIB"
 }
@@ -293,23 +339,25 @@ collect_wloc_ingress() {
 }
 
 sync_ingress_interfaces() {
-    local interface interfaces family set set_dump
+    local interface interfaces family table_name set_dump targets
     WLOC_RESOLVE_ERROR=''
     WLOC_INGRESS_INTERFACES=''
-    read -r family set <<EOF
-$(active_ingress_set)
-EOF
+    targets="$(ingress_set_targets)"
     # A custom ruleset may not use WLOC's optional interface set at all.
-    [ -n "$family" ] && [ -n "$set" ] || return 0
-    if ! set_dump="$(nft list set "$family" "$TABLE" "$set" 2>/dev/null)"; then
-        echo "wloc: unable to inspect $family/$TABLE/$set" >&2
-        return 1
-    fi
-    if ! printf '%s\n' "$set_dump" | grep -q 'type ifname' || \
-        ! printf '%s\n' "$set_dump" | grep -Eq 'flags timeout|^[[:space:]]*timeout[[:space:]]'; then
-        echo "wloc: optional ingress set $family/$TABLE/$set has an incompatible type" >&2
-        return 1
-    fi
+    [ -n "$targets" ] || return 0
+    while read -r family table_name; do
+        [ -n "$family" ] || continue
+        if ! set_dump="$(nft list set "$family" "$table_name" "$INGRESS_SET" 2>/dev/null)"; then
+            echo "wloc: unable to inspect $family/$table_name/$INGRESS_SET" >&2
+            return 1
+        fi
+        if ! ingress_set_compatible "$set_dump"; then
+            echo "wloc: optional ingress set $family/$table_name/$INGRESS_SET has an incompatible type" >&2
+            return 1
+        fi
+    done <<EOF
+$targets
+EOF
     load_ap_lib || return 1
     config_load wloc || return 1
     config_foreach collect_wloc_ingress wifi
@@ -319,13 +367,18 @@ EOF
     }
     interfaces="$WLOC_INGRESS_INTERFACES"
     {
-        printf 'flush set %s %s %s\n' "$family" "$TABLE" "$set"
-        for interface in $interfaces; do
-            printf 'add element %s %s %s { "%s" timeout %s }\n' \
-            "$family" "$TABLE" "$set" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
-        done
+        while read -r family table_name; do
+            [ -n "$family" ] || continue
+            printf 'flush set %s %s %s\n' "$family" "$table_name" "$INGRESS_SET"
+            for interface in $interfaces; do
+                printf 'add element %s %s %s { "%s" timeout %s }\n' \
+                "$family" "$table_name" "$INGRESS_SET" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
+            done
+        done <<EOF
+$targets
+EOF
     } | nft -f - || {
-        echo "wloc: unable to refresh $family/$TABLE/$set; custom rules were left unchanged" >&2
+        echo 'wloc: unable to refresh ingress sets; custom rules were left unchanged' >&2
         return 1
     }
 }

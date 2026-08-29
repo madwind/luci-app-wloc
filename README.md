@@ -38,7 +38,11 @@ when they are declared with the expected types: `apple_wloc_v4` (`ipv4_addr`,
 `target_ingress_interfaces` (`ifname`, `flags timeout`) receives the configured
 AP interfaces. Other tables, rules, and sets are left unchanged. If a set is
 absent or has another type, WLOC skips its maintenance without rejecting the
-rest of the table definitions.
+rest of the table definitions. WLOC discovers each managed set from the
+currently applied firewall snapshot (falling back to the persistent snapshot
+before the first successful Apply), so its enclosing table may use any supported
+family and name. Every compatible declaration is synchronized in one nftables
+transaction; an incompatible declaration is reported and left untouched.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
@@ -193,7 +197,7 @@ authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
 
 ```sh
 WLOC_OPENWRT_SSH=root@192.168.1.1 \
-WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r97.apk \
+WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r98.apk \
 WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
 sh tests/runtime-integration.sh
 ```
