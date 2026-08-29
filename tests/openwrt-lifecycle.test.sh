@@ -147,10 +147,16 @@ echo '  -> Apply and reboot without Save restores persistent rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
 FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; } }'
 APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
-case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
+APPLY_RESULT=/tmp/wloc-apply-result
+ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
+	|| fail 'firewall Apply did not return a response'
+case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
 	true|1) ;;
 	*) fail 'firewall Apply did not return ok=true';;
 esac
+applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
+[ -n "$applied_hash" ] || fail 'firewall Apply did not return an applied revision'
+ssh_cmd "rm -f $APPLY_RESULT"
 ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
 	|| fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
@@ -163,11 +169,16 @@ if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
 fi
 
 echo '  -> Apply and Save persists the applied rules across reboot'
-case "$(rpc_value "$APPLY_COMMAND" '@.ok')" in
+ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
+	|| fail 'second firewall Apply did not return a response'
+case "$(rpc_value "cat $APPLY_RESULT" '@.ok')" in
 	true|1) ;;
 	*) fail 'second firewall Apply did not return ok=true';;
 esac
-SAVE_COMMAND='ubus call luci.wloc firewall_save'
+applied_hash="$(rpc_value "cat $APPLY_RESULT" '@.applied_hash')"
+[ -n "$applied_hash" ] || fail 'second firewall Apply did not return an applied revision'
+ssh_cmd "rm -f $APPLY_RESULT"
+SAVE_COMMAND="ubus call luci.wloc firewall_save '{\"expected_applied_hash\":\"$applied_hash\"}'"
 case "$(rpc_value "$SAVE_COMMAND" '@.ok')" in
 	true|1) ;;
 	*) fail 'firewall Save did not return ok=true';;
@@ -229,12 +240,24 @@ if ssh_cmd "nft list set inet wloc_lifecycle apple_wloc_v4 2>/dev/null | grep -E
 	fail 'WLOC dynamic host-set elements remained after stop'
 fi
 
-echo '  -> package uninstall removes managed services and firewall state'
+echo '  -> uninstall while WLOC is running removes managed services and firewall state'
+ssh_cmd /etc/init.d/wloc start >/dev/null \
+	|| fail 'wloc could not be started before uninstall'
+wait_for_instance daemon \
+	|| fail 'WLOC daemon did not start before uninstall'
+wait_for_instance schedule \
+	|| fail 'WLOC schedule did not start before uninstall'
+ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
+	|| fail 'WLOC firewall table was not active before uninstall'
+ssh_cmd "test -s /var/run/wloc/firewall.applied.nft" \
+	|| fail 'runtime firewall snapshot was not present before uninstall'
 ssh_cmd "apk del luci-app-wloc" >/dev/null \
 	|| fail 'apk could not uninstall luci-app-wloc'
 if instance_running daemon || instance_running schedule; then
-	fail 'a WLOC procd instance remained after package uninstall'
+	fail 'a WLOC procd instance remained running after package uninstall'
 fi
+ssh_cmd "test ! -x /etc/init.d/wloc" \
+	|| fail 'WLOC init service remained after package uninstall'
 if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
 	fail 'WLOC nftables table remained after package uninstall'
 fi
@@ -242,5 +265,7 @@ ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
 	|| fail 'applied firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
 	|| fail 'staged firewall snapshot remained after package uninstall'
+ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -e /var/run/wloc/firewall.lock" \
+	|| fail 'WLOC runtime state remained after package uninstall'
 
 echo 'OpenWrt lifecycle tests: PASS'

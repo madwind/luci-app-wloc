@@ -126,6 +126,18 @@ grep -Fq 'apk del luci-app-wloc' "$QEMU_TEST" \
 	|| fail 'QEMU lifecycle test does not cover package uninstall'
 grep -Fq 'firewall.applied.nft' "$QEMU_TEST" \
 	|| fail 'QEMU lifecycle test does not verify runtime snapshot cleanup'
+grep -Fq '/etc/init.d/wloc start' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not uninstall while WLOC is running'
+grep -Fq 'expected_applied_hash' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not use the applied revision for Save'
+WORKFLOW="$ROOT/.github/workflows/openwrt-build.yml"
+if grep -Eq 'libguestfs|guestfish|virt-filesystems' "$WORKFLOW"; then
+	fail 'QEMU lifecycle workflow still depends on libguestfs tooling'
+fi
+grep -Fq 'losetup --find --show --partscan' "$WORKFLOW" \
+	|| fail 'QEMU lifecycle workflow does not use loop-device image preparation'
+grep -Fq 'lsblk -lnpo NAME,FSTYPE' "$WORKFLOW" \
+	|| fail 'QEMU lifecycle workflow does not discover the ext4 root partition'
 SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
 [ -f "$SMOKE_WORKFLOW" ] \
 	|| fail 'x86_64 SDK smoke workflow is missing'

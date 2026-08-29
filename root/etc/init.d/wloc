@@ -164,7 +164,7 @@ stop_service() {
 service_stopped() {
 	"$SCHEDULE" stop >/dev/null 2>&1 || true
 	"$RULES" cleanup
-	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log
+	rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log "$START_ERROR"
 }
 
 reload_service() {

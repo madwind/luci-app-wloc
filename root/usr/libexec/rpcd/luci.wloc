@@ -157,7 +157,7 @@ emit_firewall_save() {
 }
 
 emit_firewall_apply() {
-	local source
+	local source apply_rc response_rc locked_here=0
 	mkdir -p "$FIREWALL_RUNTIME_DIR"
 	source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply-source.XXXXXX")" || exit 1
 	if ! printf '%s' "$firewall_config" >"$source"; then
@@ -167,7 +167,23 @@ emit_firewall_apply() {
 		json_dump
 		return
 	fi
-	if ! firewall_apply_file "$source"; then
+	if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+		firewall_lock_acquire || {
+			firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
+				"${firewall_error:-Another firewall operation is already in progress. Please retry.}"
+			rm -f "$source"
+			return
+		}
+		locked_here=1
+	fi
+	FIREWALL_RUNTIME_PROMOTION_FAILED=0
+	if _firewall_apply_file "$source"; then
+		apply_rc=0
+	else
+		apply_rc=$?
+	fi
+	rm -f "$source"
+	if [ "$apply_rc" -ne 0 ]; then
 		if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
 			firewall_rpc_error snapshot_promote_failed \
 				'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' \
@@ -189,11 +205,20 @@ emit_firewall_apply() {
 						'The nftables transaction failed.' "$firewall_error";;
 			esac
 		fi
-		rm -f "$source"
+		if [ "$locked_here" -eq 1 ]; then
+			firewall_lock_release
+		fi
 		return
 	fi
-	rm -f "$source"
-	firewall_response
+	if _firewall_response; then
+		response_rc=0
+	else
+		response_rc=$?
+	fi
+	if [ "$locked_here" -eq 1 ]; then
+		firewall_lock_release
+	fi
+	return "$response_rc"
 }
 
 load_runtime_state() {

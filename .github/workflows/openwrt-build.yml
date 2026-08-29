@@ -103,7 +103,7 @@ jobs:
 
       - name: Install QEMU and image tooling
         shell: bash
-        run: sudo apt-get update && sudo apt-get install -y libguestfs-tools qemu-system-x86
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
 
       - name: Cache verified OpenWrt lifecycle image
         uses: actions/cache@v6
@@ -144,15 +144,32 @@ jobs:
             "        option netmask '255.255.255.0'" \
             "        option gateway '192.168.1.2'" \
             "        list dns '192.168.1.3'" > "$network_config"
-          root_partition="$(virt-filesystems -a "$image" --filesystems --long | awk '$3 == "ext4" {print $1; exit}')"
+          loopdev=''
+          mount_dir=''
+          cleanup() {
+            if [[ -n "$mount_dir" ]]; then
+              sudo umount "$mount_dir" 2>/dev/null || true
+            fi
+            if [[ -n "$loopdev" ]]; then
+              sudo losetup -d "$loopdev" 2>/dev/null || true
+            fi
+            if [[ -n "$mount_dir" ]]; then
+              rmdir "$mount_dir" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          loopdev="$(sudo losetup --find --show --partscan "$image")"
+          mount_dir="$(mktemp -d)"
+          root_partition="$(sudo lsblk -lnpo NAME,FSTYPE "$loopdev" | awk '$2 == "ext4" { print $1; exit }')"
           test -n "$root_partition"
-          guestfish --rw -a "$image" -m "$root_partition":/ <<EOF
-          upload $network_config /etc/config/network
-          mkdir-p /etc/dropbear
-          upload $RUNNER_TEMP/wloc-lifecycle.pub /etc/dropbear/authorized_keys
-          chmod 0600 /etc/dropbear/authorized_keys
-          chown 0 0 /etc/dropbear/authorized_keys
-          EOF
+          sudo mount "$root_partition" "$mount_dir"
+          sudo cp "$network_config" "$mount_dir/etc/config/network"
+          sudo mkdir -p "$mount_dir/etc/dropbear"
+          sudo cp "$RUNNER_TEMP/wloc-lifecycle.pub" \
+            "$mount_dir/etc/dropbear/authorized_keys"
+          sudo chmod 0600 "$mount_dir/etc/dropbear/authorized_keys"
+          sudo chown 0:0 "$mount_dir/etc/dropbear/authorized_keys"
+          sync
 
       - name: Run OpenWrt lifecycle test
         shell: bash
