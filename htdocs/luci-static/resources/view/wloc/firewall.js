@@ -4,8 +4,26 @@
 
 var callRead = rpc.declare({ object: 'luci.wloc', method: 'firewall_read', expect: { '': {} } });
 var callValidate = rpc.declare({ object: 'luci.wloc', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} } });
-var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', expect: { '': {} } });
+var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', params: [ 'expected_applied_hash' ], expect: { '': {} } });
 var callApply = rpc.declare({ object: 'luci.wloc', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} } });
+
+function firewallError(result, fallback) {
+    var messages = {
+        firewall_busy: 'Another firewall operation is already in progress. Please retry.',
+        stale_applied_revision: 'The applied firewall configuration changed. Refresh the page before saving.',
+        no_applied_snapshot: 'No successfully applied firewall rules are available to save.',
+        snapshot_stage_failed: 'The runtime snapshot could not be staged.',
+        nft_check_failed: 'The nftables syntax check failed.',
+        nft_apply_failed: 'The nftables transaction failed.',
+        snapshot_promote_failed: 'The runtime snapshot could not be committed.',
+        persistent_save_failed: 'The applied firewall rules could not be saved persistently.'
+    };
+    var code = result && result.error_code;
+    var message = code && messages[code] ? _(messages[code]) :
+        !code && result && result.error ? _(result.error) : '';
+    return [ message, result && result.detail && result.detail !== message ? result.detail : '' ]
+        .filter(Boolean).join(': ') || fallback;
+}
 
 function setState(element, state, value) {
 	element.classList.remove('success', 'warning', 'error', 'notice');
@@ -79,15 +97,17 @@ function initialEditorContent(result) {
 }
 
 function initialEditorState(result) {
-	var persistent = String(result && result.config || '');
-	var applied = String(result && result.applied || '');
-	var appliedPresent = result && result.applied_present === true;
-	var persistentPresent = result && result.persistent_present === true;
-	var editor = initialEditorContent(result);
-	var matchesApplied = appliedPresent && contentHash(editor) === contentHash(applied);
-	var matchesSaved = matchesApplied && persistentPresent &&
-		contentHash(applied) === contentHash(persistent);
-	return { content: editor, saveEnabled: matchesApplied && !matchesSaved };
+    var persistent = String(result && result.config || '');
+    var applied = String(result && result.applied || '');
+    var appliedPresent = result && result.applied_present === true;
+    var persistentPresent = result && result.persistent_present === true;
+    var appliedRevision = String(result && result.applied_hash || '');
+    var savedRevision = String(result && result.saved_hash || '');
+    var editor = initialEditorContent(result);
+    var matchesApplied = appliedPresent && contentHash(editor) === contentHash(applied);
+    var matchesSaved = matchesApplied && persistentPresent &&
+        appliedRevision && savedRevision && appliedRevision === savedRevision;
+    return { content: editor, saveEnabled: matchesApplied && !!appliedRevision && !matchesSaved };
 }
 
 function setBusy(buttons, busy) {
@@ -138,7 +158,8 @@ return view.extend({
 		var loaded = false;
 		var appliedPresent = false;
 		var persistentPresent = false;
-		var appliedHash = '';
+		var appliedContentHash = '';
+		var appliedRevision = '';
 		var savedHash = '';
 		var runtimeReady = false;
 		var recovering = false;
@@ -158,8 +179,9 @@ return view.extend({
 
 		function updateStates() {
 			var editorHash = contentHash(editor.value);
-			var matchesApplied = loaded && appliedPresent && editorHash === appliedHash;
-			var appliedMatchesSaved = loaded && appliedPresent && persistentPresent && appliedHash === savedHash;
+			var matchesApplied = loaded && appliedPresent && editorHash === appliedContentHash;
+			var appliedMatchesSaved = loaded && appliedPresent && persistentPresent &&
+				!!appliedRevision && !!savedHash && appliedRevision === savedHash;
 			var matchesSaved = matchesApplied && appliedMatchesSaved;
 			if (!loaded) {
 				dirty.textContent = _('Not loaded');
@@ -173,7 +195,7 @@ return view.extend({
 					runtimeReady || appliedPresent ? _('Applied') : _('Not applied');
 				persistentState.textContent = appliedMatchesSaved ? _('Saved') : _('Not saved');
 			}
-			saveButton.wlocStateDisabled = !matchesApplied || matchesSaved;
+			saveButton.wlocStateDisabled = !matchesApplied || !appliedRevision || matchesSaved;
 			if (!saveButton.wlocBusy)
 				saveButton.disabled = saveButton.wlocStateDisabled;
 		}
@@ -183,7 +205,7 @@ return view.extend({
 			setState(feedback, '', _('Checking the editor contents with nft --check...'));
 			return callValidate(editor.value).then(function(result) {
 				if (!result || result.valid !== true)
-					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Syntax check failed.'));
+					throw new Error(firewallError(result, _('Syntax check failed.')));
 				setState(feedback, 'ok', _('The nftables syntax check passed.'));
 				return true;
 			}).catch(function(error) {
@@ -205,12 +227,13 @@ return view.extend({
 		function refreshActive() {
 			setBusy(buttons, true);
 			return callRead().then(function(result) {
-				if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
+				if (!result || result.ok !== true) throw new Error(firewallError(result, _('Unable to read nftables rules.')));
 				active.value = result.active || _('# No custom nftables tables are active.') + '\n';
 				persistentPresent = result.persistent_present === true;
-				savedHash = persistentPresent ? contentHash(result.config || '') : '';
+				savedHash = persistentPresent ? String(result.saved_hash || '') : '';
 				appliedPresent = result.applied_present === true;
-				appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
+				appliedContentHash = appliedPresent ? contentHash(result.applied || '') : '';
+				appliedRevision = appliedPresent ? String(result.applied_hash || '') : '';
 				runtimeReady = result.runtime_ready === true;
 				recovering = result.recovering === true;
 				runtimeWarning = String(result.warning || '');
@@ -230,9 +253,12 @@ return view.extend({
 			setState(feedback, '', _('Checking and temporarily applying the editor contents...'));
 			return callApply(editor.value).then(function(result) {
 				if (!result || result.ok !== true)
-					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to apply nftables rules.'));
+					throw new Error(firewallError(result, _('Unable to apply nftables rules.')));
 				appliedPresent = true;
-				appliedHash = contentHash(result.applied !== undefined ? result.applied : editor.value);
+				persistentPresent = result.persistent_present === true;
+				savedHash = persistentPresent ? String(result.saved_hash || '') : '';
+				appliedContentHash = contentHash(result.applied !== undefined ? result.applied : editor.value);
+				appliedRevision = String(result.applied_hash || '');
 				runtimeReady = result.runtime_ready === true;
 				recovering = result.recovering === true;
 				runtimeWarning = String(result.warning || '');
@@ -250,19 +276,20 @@ return view.extend({
 		}
 
 		function save() {
-			var matchesApplied = loaded && appliedPresent && contentHash(editor.value) === appliedHash;
-			if (!matchesApplied) {
+			var matchesApplied = loaded && appliedPresent && contentHash(editor.value) === appliedContentHash;
+			if (!matchesApplied || !appliedRevision) {
 				setState(feedback, 'warn', _('The current editor contents have not been applied and cannot be saved.'));
 				updateStates();
 				return Promise.resolve(null);
 			}
 			setBusy(buttons, true);
 			setState(feedback, '', _('Saving the currently applied rules...'));
-			return callSave().then(function(result) {
+			return callSave(appliedRevision).then(function(result) {
 				if (!result || result.ok !== true)
-					throw new Error([ result && result.error && _(result.error), result && result.detail ].filter(Boolean).join(': ') || _('Unable to save nftables rules.'));
+					throw new Error(firewallError(result, _('Unable to save nftables rules.')));
 				persistentPresent = true;
-				savedHash = appliedHash;
+				appliedRevision = String(result.applied_hash || appliedRevision);
+				savedHash = String(result.saved_hash || '');
 				updateStates();
 				setState(feedback, 'ok', _('The currently applied rules were saved and will load on the next boot.'));
 				return result;
@@ -325,14 +352,15 @@ return view.extend({
 		]);
 
 		callRead().then(function(result) {
-			if (!result || result.ok !== true) throw new Error((result && result.error && _(result.error)) || _('Unable to read nftables rules.'));
+			if (!result || result.ok !== true) throw new Error(firewallError(result, _('Unable to read nftables rules.')));
 			path.textContent = result.path || '/etc/wloc/firewall.nft';
 			editor.value = initialEditorContent(result);
 			active.value = result.active || '';
 			persistentPresent = result.persistent_present === true;
 			appliedPresent = result.applied_present === true;
-			savedHash = persistentPresent ? contentHash(result.config || '') : '';
-			appliedHash = appliedPresent ? contentHash(result.applied || '') : '';
+			savedHash = persistentPresent ? String(result.saved_hash || '') : '';
+			appliedContentHash = appliedPresent ? contentHash(result.applied || '') : '';
+			appliedRevision = appliedPresent ? String(result.applied_hash || '') : '';
 			runtimeReady = result.runtime_ready === true;
 			recovering = result.recovering === true;
 			runtimeWarning = String(result.warning || '');

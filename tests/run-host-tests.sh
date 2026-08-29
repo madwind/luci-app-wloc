@@ -171,6 +171,12 @@ grep -Fq 'firewall_promote_snapshot' "$FIREWALL_HELPER" \
 	|| fail 'firewall Apply does not atomically promote the runtime snapshot'
 grep -Fq 'FIREWALL_RUNTIME_PROMOTION_FAILED' "$RPC" \
 	|| fail 'firewall RPC does not expose fatal snapshot promotion failures'
+grep -Fq 'firewall_lock_acquire' "$FIREWALL_HELPER" \
+	|| fail 'firewall helper does not serialize firewall operations'
+grep -Fq 'FIREWALL_LOCK_TIMEOUT' "$FIREWALL_HELPER" \
+	|| fail 'firewall lock does not have a bounded wait'
+grep -Fq 'firewall_save_snapshot' "$RPC" "$FIREWALL_HELPER" \
+	|| fail 'firewall Save does not use the guarded applied snapshot helper'
 
 grep -Fq 'listener_ready' "$INIT" \
 	|| fail 'service start does not defer dynamic-set population until listener readiness'
@@ -263,8 +269,10 @@ grep -F 'firewall_copy_atomic' "$FIREWALL_HELPER" >/dev/null \
 	|| fail 'firewall helper does not provide atomic snapshot replacement'
 grep -F 'firewall_request_config' "$RPC" >/dev/null \
 	|| fail 'apply and validate RPCs do not receive editor content'
-grep -F 'firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"' "$RPC" >/dev/null \
-	|| fail 'save RPC does not copy the applied snapshot to persistent storage'
+grep -F 'expected_applied_hash' "$RPC" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js" >/dev/null \
+	|| fail 'firewall Save does not require the applied revision'
+grep -F 'firewall_save_snapshot' "$RPC" >/dev/null \
+	|| fail 'save RPC does not persist the guarded applied snapshot'
 if grep -Fq "callSave(editor.value)" "$ROOT/htdocs/luci-static/resources/view/wloc/firewall.js"; then
 	fail 'firewall save still accepts un-applied editor contents'
 fi

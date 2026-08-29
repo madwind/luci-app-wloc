@@ -29,6 +29,9 @@ json_init() {
 	response_runtime_ready=''
 	response_recovering=''
 	response_warning=''
+	response_error_code=''
+	response_saved_hash=''
+	response_applied_hash=''
 }
 json_load() { :; }
 json_load_file() { :; }
@@ -49,6 +52,9 @@ json_add_int() { :; }
 json_add_string() {
 	case "$1" in
 		error) response_error="$2";;
+		error_code) response_error_code="$2";;
+		saved_hash) response_saved_hash="$2";;
+		applied_hash) response_applied_hash="$2";;
 		warning) response_warning="$2";;
 	esac
 	return 0
@@ -107,6 +113,27 @@ cmp -s "$persistent" "$applied_source" \
 [ "$response_recovering" = 0 ] || fail 'successful reconcile returned recovering=true'
 [ -z "$response_warning" ] || fail 'successful reconcile returned a warning'
 
+hash_b="$response_applied_hash"
+[ -n "$hash_b" ] || fail 'successful Apply did not return an applied revision'
+
+echo '  -> stale Save is rejected and the current revision can be saved'
+printf '%s\n%s' 'table inet applied_c {' '}' >"$fixture_root/applied-c.nft"
+firewall_config="$(cat "$fixture_root/applied-c.nft")"
+export WLOC_TEST_RULES_RC=0
+emit_firewall_apply
+hash_c="$response_applied_hash"
+[ -n "$hash_c" ] || fail 'second Apply did not return an applied revision'
+[ "$hash_b" != "$hash_c" ] || fail 'different Apply operations returned the same revision'
+persistent_before="$(cksum "$persistent")"
+emit_firewall_save "$hash_b"
+[ "$response_ok" = 0 ] || fail 'stale Save unexpectedly succeeded'
+[ "$response_error_code" = stale_applied_revision ] || fail 'stale Save returned the wrong error code'
+[ "$persistent_before" = "$(cksum "$persistent")" ] || fail 'stale Save changed persistent storage'
+emit_firewall_save "$hash_c"
+[ "$response_ok" = 1 ] || fail 'Save with the current revision failed'
+cmp -s "$fixture_root/applied-c.nft" "$persistent" \
+	|| fail 'current-revision Save did not persist the applied snapshot'
+
 echo '  -> reconcile failure returns a warning without failing Apply'
 export WLOC_TEST_RULES_RC=1
 firewall_config="$(cat "$applied_source")"
@@ -136,6 +163,7 @@ APPLY_RC=0
 
 echo '  -> snapshot promotion failure returns an explicit consistency error'
 if ! (
+	trap - EXIT
 	firewall_promote_snapshot() { return 1; }
 	firewall_config="$(cat "$applied_source")"
 	emit_firewall_apply
@@ -151,7 +179,8 @@ rm -f "$WLOC_FIREWALL_RUNTIME_NEXT"
 
 echo '  -> save ignores un-applied request content'
 firewall_config='table inet ignored {'
-emit_firewall_save
+current_hash="$(firewall_file_hash "$WLOC_FIREWALL_RUNTIME")"
+emit_firewall_save "$current_hash"
 cmp -s "$applied_source" "$persistent" \
 	|| fail 'save did not copy the applied snapshot to persistent storage'
 

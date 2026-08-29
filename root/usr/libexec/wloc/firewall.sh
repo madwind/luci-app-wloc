@@ -279,6 +279,36 @@ firewall_copy_atomic() {
     if [ "$locked_here" -eq 1 ]; then
         firewall_lock_release
     fi
+	return "$rc"
+}
+
+firewall_save_snapshot() {
+    local expected="${1:-}" current_hash locked_here=0 rc=1
+    firewall_error_code=''
+    firewall_error=''
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if [ ! -r "$FIREWALL_RUNTIME" ]; then
+        firewall_set_error no_applied_snapshot 'No successfully applied firewall rules are available to save.'
+    elif ! current_hash="$(firewall_file_hash "$FIREWALL_RUNTIME")"; then
+        firewall_set_error no_applied_snapshot 'The applied firewall snapshot could not be hashed.'
+    elif [ -z "$expected" ] || [ "$expected" != "$current_hash" ]; then
+        firewall_set_error stale_applied_revision 'The applied firewall configuration changed. Refresh the page before saving.'
+    else
+        firewall_error_code='persistent_save_failed'
+        if firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"; then
+            FIREWALL_APPLIED_HASH="$current_hash"
+            FIREWALL_SAVED_HASH="$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
+            rc=0
+        else
+            firewall_error="${firewall_error:-unable to persist the applied firewall snapshot}"
+        fi
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
     return "$rc"
 }
 

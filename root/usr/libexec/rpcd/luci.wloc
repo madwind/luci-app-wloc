@@ -16,6 +16,16 @@ AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$FIREWALL_HELPER"
 
+firewall_rpc_error() {
+    local code="$1" message="$2" detail="${3:-}"
+    json_init
+    json_add_boolean ok 0
+    json_add_string error "$message"
+    json_add_string error_code "$code"
+    [ -z "$detail" ] || json_add_string detail "$detail"
+    json_dump
+}
+
 firewall_response_state() {
 	local state_armed state_last_event
 	runtime_ready=0
@@ -44,7 +54,7 @@ firewall_response_state() {
 	esac
 }
 
-firewall_response() {
+_firewall_response() {
 	local active_source
 	firewall_response_state
 	if [ -r "$FIREWALL_RUNTIME" ]; then
@@ -77,12 +87,42 @@ firewall_response() {
 	json_dump
 }
 
+firewall_response() {
+    local locked_here=0 rc
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || {
+            firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
+                "${firewall_error:-Another firewall operation is already in progress. Please retry.}"
+            return 0
+        }
+        locked_here=1
+    fi
+    if _firewall_response; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
+}
+
 firewall_request_config() {
 	local request
 	request="$(cat)"
 	json_load "$request" 2>/dev/null || return 1
 	json_get_var firewall_config config
 	[ "${#firewall_config}" -le 1048576 ]
+}
+
+firewall_request_save() {
+    local request
+    request="$(cat)"
+    expected_applied_hash=''
+    json_load "$request" 2>/dev/null || return 1
+    json_get_var expected_applied_hash expected_applied_hash
+    [ -n "$expected_applied_hash" ] && [ "${#expected_applied_hash}" -le 256 ]
 }
 
 emit_firewall_validate() {
@@ -95,29 +135,25 @@ emit_firewall_validate() {
 	else
 		json_init; json_add_boolean ok 0; json_add_boolean valid 0
 		json_add_string error 'nftables syntax check failed'
+		json_add_string error_code nft_check_failed
 		json_add_string detail "$firewall_error"; json_dump
 	fi
 	rm -f "$source"
 }
 
 emit_firewall_save() {
-	if ! [ -r "$FIREWALL_RUNTIME" ]; then
-		json_init; json_add_boolean ok 0
-		json_add_string error 'No successfully applied firewall rules are available to save.'
-		json_dump
-		return
-	fi
-	if ! firewall_copy_atomic "$FIREWALL_RUNTIME" "$FIREWALL"; then
-		json_init; json_add_boolean ok 0
-		json_add_string error 'Applied rules are active, but persistent saving failed.'
-		json_add_string detail "$firewall_error"; json_dump
-		return
-	fi
-	json_init; json_add_boolean ok 1
-	json_add_string path "$FIREWALL"
-	json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
-	json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-	json_dump
+    local expected="${1:-${expected_applied_hash:-}}"
+    if ! firewall_save_snapshot "$expected"; then
+        firewall_rpc_error "${firewall_error_code:-persistent_save_failed}" \
+            "${firewall_error:-The applied firewall rules could not be saved persistently.}"
+        return
+    fi
+    json_init
+    json_add_boolean ok 1
+    json_add_string path "$FIREWALL"
+    json_add_string saved_hash "$FIREWALL_SAVED_HASH"
+    json_add_string applied_hash "$FIREWALL_APPLIED_HASH"
+    json_dump
 }
 
 emit_firewall_apply() {
@@ -132,13 +168,27 @@ emit_firewall_apply() {
 		return
 	fi
 	if ! firewall_apply_file "$source"; then
-		json_init; json_add_boolean ok 0
 		if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
-			json_add_string error 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.'
+			firewall_rpc_error snapshot_promote_failed \
+				'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' \
+				"$firewall_error"
 		else
-			json_add_string error 'Failed to apply nftables rules.'
+			case "${firewall_error_code:-nft_apply_failed}" in
+				firewall_busy)
+					firewall_rpc_error firewall_busy \
+						'Another firewall operation is already in progress. Please retry.' \
+						"$firewall_error";;
+				snapshot_stage_failed)
+					firewall_rpc_error snapshot_stage_failed \
+						'The runtime snapshot could not be staged.' "$firewall_error";;
+				nft_check_failed)
+					firewall_rpc_error nft_check_failed \
+						'The nftables syntax check failed.' "$firewall_error";;
+				*)
+					firewall_rpc_error nft_apply_failed \
+						'The nftables transaction failed.' "$firewall_error";;
+			esac
 		fi
-		json_add_string detail "$firewall_error"; json_dump
 		rm -f "$source"
 		return
 	fi
@@ -202,33 +252,49 @@ package_version() {
 	printf '%s' "$version"
 }
 
+firewall_status_values() {
+    local table_dump counters
+    [ -s "$FIREWALL_RUNTIME" ] && rules_present=1 || rules_present=0
+    firewall_is_active=0
+    if firewall_collect_active "$FIREWALL_RUNTIME" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
+        firewall_is_active=1
+    fi
+    table_dump="$(nft list table inet wloc 2>/dev/null || true)"
+    counters="$(printf '%s\n' "$table_dump" | awk '
+        /wloc owned (AP|ingress) redirect/ {
+            if (match($0, /counter packets [0-9]+/)) {
+                value = substr($0, RSTART + 16, RLENGTH - 16)
+                attempts += value
+                intercepted += value
+            }
+        }
+        END { print attempts + 0, intercepted + 0 }')"
+    attempts="${counters%% *}"
+    intercepted="${counters#* }"
+    case "$attempts" in ''|*[!0-9]*) attempts=0;; esac
+    case "$intercepted" in ''|*[!0-9]*) intercepted=0;; esac
+}
+
 emit_status() {
-	local configured enabled version table_dump rules_present firewall_is_active attempts intercepted counters conflict daemon_running service_reason
+	local configured enabled version rules_present firewall_is_active attempts intercepted conflict daemon_running service_reason locked_here=0
 	load_runtime_state
 	configured=0
 	uci -q show wloc | grep -q '=wifi$' && configured=1
 	enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
 	case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
 	version="$(package_version)"
-	[ -s "$FIREWALL_RUNTIME" ] && rules_present=1 || rules_present=0
-	firewall_is_active=0
-	if firewall_collect_active "$FIREWALL_RUNTIME" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
-		firewall_is_active=1
+	if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ] && firewall_lock_acquire; then
+		locked_here=1
+		firewall_status_values
+		firewall_lock_release
+	elif [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ]; then
+		firewall_status_values
+	else
+		rules_present=0
+		firewall_is_active=0
+		attempts=0
+		intercepted=0
 	fi
-	table_dump="$(nft list table inet wloc 2>/dev/null || true)"
-	counters="$(printf '%s\n' "$table_dump" | awk '
-		/wloc owned (AP|ingress) redirect/ {
-			if (match($0, /counter packets [0-9]+/)) {
-				value = substr($0, RSTART + 16, RLENGTH - 16)
-				attempts += value
-				intercepted += value
-			}
-		}
-		END { print attempts + 0, intercepted + 0 }')"
-	attempts="${counters%% *}"
-	intercepted="${counters#* }"
-	case "$attempts" in ''|*[!0-9]*) attempts=0;; esac
-	case "$intercepted" in ''|*[!0-9]*) intercepted=0;; esac
 	conflict=0
 	[ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
 	daemon_running=0
@@ -371,7 +437,10 @@ list)
 	json_init
 	for method in status configured_access_points restart disable regenerate_ca cleanup logs firewall_read firewall_validate firewall_save firewall_apply; do
 		json_add_object "$method"
-		case "$method" in firewall_validate|firewall_apply) json_add_string config '';; esac
+		case "$method" in
+			firewall_validate|firewall_apply) json_add_string config '';;
+			firewall_save) json_add_string expected_applied_hash '';;
+		esac
 		json_close_object
 	done
 	json_dump
@@ -419,14 +488,15 @@ call)
 		;;
 	firewall_read) firewall_response;;
 	firewall_validate)
-		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
+		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
 		emit_firewall_validate
 		;;
 	firewall_save)
-		emit_firewall_save
+		firewall_request_save || { firewall_rpc_error invalid_request 'An applied firewall revision is required before saving.'; exit 0; }
+		emit_firewall_save "$expected_applied_hash"
 		;;
 	firewall_apply)
-		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request"}'; exit 0; }
+		firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
 		emit_firewall_apply
 		;;
 	*) echo '{"error":"unknown method"}'; exit 1;;

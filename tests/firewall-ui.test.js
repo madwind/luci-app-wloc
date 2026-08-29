@@ -32,6 +32,8 @@ const applied = 'table inet applied {\n}\n';
 let state = api.initialEditorState({
     config: persistent,
     applied: applied,
+    applied_hash: 'applied-revision',
+    saved_hash: 'saved-revision',
     persistent_present: true,
     applied_present: true
 });
@@ -41,6 +43,8 @@ assert.strictEqual(state.saveEnabled, true);
 state = api.initialEditorState({
     config: persistent,
     applied: persistent,
+    applied_hash: 'same-revision',
+    saved_hash: 'same-revision',
     persistent_present: true,
     applied_present: true
 });
