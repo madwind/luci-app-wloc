@@ -123,6 +123,11 @@ firewall_validate_declarative() {
                         valid = 0
                         exit 1
                     }
+                    header = substr($0, i + 1)
+                    if (header !~ /^[[:space:]]+(ip|ip6|inet|arp|bridge|netdev)[[:space:]]+[A-Za-z0-9_.-]+[[:space:]]+\{/) {
+                        valid = 0
+                        exit 1
+                    }
                     top_started = 1
                     continue
                 }
