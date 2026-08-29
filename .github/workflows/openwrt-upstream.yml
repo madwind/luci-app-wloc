@@ -54,9 +54,9 @@ jobs:
 
           Upgrade checklist:
 
-          - update and verify the official MediaTek Filogic and x86/64 SDK filenames;
-          - update both pinned SDK SHA-256 values;
-          - confirm the GCC, musl, Rust target, and APK metadata assumptions;
+          - update and verify the official MediaTek Filogic, Rockchip armv8, and x86/64 SDK filenames;
+          - update all three pinned SDK SHA-256 values;
+          - confirm the GCC, musl, Rust target, and APK metadata assumptions, including R28S aarch64_generic metadata;
           - rename the versioned build script and update the README;
           - run the host tests and a full SDK package build.
 

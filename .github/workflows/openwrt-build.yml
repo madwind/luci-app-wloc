@@ -34,6 +34,8 @@ jobs:
         include:
           - target: filogic
             sdk_sha256: ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
+          - target: r28s
+            sdk_sha256: 59194a023968398af64bfa7d8bc3eac322641f6dc9cdbade28a4d9dd41866eba
           - target: x86_64
             sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
 

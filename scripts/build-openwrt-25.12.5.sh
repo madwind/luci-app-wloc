@@ -22,6 +22,18 @@ case "$BUILD_PROFILE" in
         APK_ARCH=aarch64_cortex-a53
         TARGET_MK_PATTERN='^SUBTARGET:=filogic$'
         ;;
+    r28s)
+        TARGET=rockchip
+        SUBTARGET=armv8
+        SDK_SHA256=59194a023968398af64bfa7d8bc3eac322641f6dc9cdbade28a4d9dd41866eba
+        RUST_TARGET=aarch64-unknown-linux-musl
+        READELF_NAME=aarch64-openwrt-linux-musl-readelf
+        FILE_ARCH_PATTERN='ARM aarch64'
+        ELF_MACHINE_PATTERN='Machine:.*AArch64'
+        ELF_INTERPRETER=/lib/ld-musl-aarch64.so.1
+        APK_ARCH=aarch64_generic
+        TARGET_MK_PATTERN='^SUBTARGET:=armv8$'
+        ;;
     x86_64)
         TARGET=x86
         SUBTARGET=64
@@ -35,7 +47,7 @@ case "$BUILD_PROFILE" in
         TARGET_MK_PATTERN='^ARCH:=x86_64$'
         ;;
     *)
-        echo "usage: $0 [filogic|x86_64]" >&2
+        echo "usage: $0 [filogic|r28s|x86_64]" >&2
         exit 2
         ;;
 esac
