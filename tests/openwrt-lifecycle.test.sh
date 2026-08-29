@@ -95,16 +95,49 @@ wait_for_ssh() {
 }
 
 reboot_guest() {
+    local attempt went_down=0
+
+    phase REBOOT 'requesting guest reboot'
     ssh_cmd reboot >/dev/null 2>&1 || true
-    sleep 5
-    wait_for_ssh || fail 'OpenWrt SSH did not return after reboot'
+
+    phase REBOOT 'waiting for guest down'
     for attempt in $(seq 1 30); do
-        if instance_running daemon && instance_running schedule; then
-            return 0
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            fail 'QEMU exited while OpenWrt was rebooting'
+        fi
+
+        if ! ssh_cmd true >/dev/null 2>&1; then
+            went_down=1
+            phase REBOOT 'guest down'
+            break
         fi
         sleep 1
     done
-    fail 'WLOC procd instances did not start after reboot'
+
+    [ "$went_down" -eq 1 ] ||
+        fail 'OpenWrt SSH never went down during reboot'
+
+    phase REBOOT 'waiting for guest up'
+    for attempt in $(seq 1 90); do
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            fail 'QEMU exited before OpenWrt returned from reboot'
+        fi
+
+        if ssh_cmd true >/dev/null 2>&1; then
+            phase REBOOT 'guest up'
+            phase REBOOT 'waiting for WLOC instances'
+            wait_for_instance daemon ||
+                fail 'WLOC daemon did not return after reboot'
+            wait_for_instance schedule ||
+                fail 'WLOC schedule did not return after reboot'
+            phase REBOOT 'WLOC instances restored'
+            return 0
+        fi
+
+        sleep 2
+    done
+
+    fail 'OpenWrt SSH did not return after reboot'
 }
 
 wait_for_instance() {
@@ -123,7 +156,6 @@ qemu-system-x86_64 \
     -machine q35 \
     -m "$MEMORY" \
     -nographic \
-    -snapshot \
     -drive "file=$WLOC_OPENWRT_IMAGE,format=raw,if=virtio" \
     -netdev "user,id=net0,net=192.168.1.0/24,hostfwd=tcp::$SSH_PORT-192.168.1.1:22" \
     -device virtio-net-pci,netdev=net0 \
