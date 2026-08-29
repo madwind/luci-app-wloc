@@ -194,11 +194,16 @@ host_set_has_elements() {
 }
 
 resolve_hosts() {
-    local now last attempt addresses host resolved_ip sample family table_name set_dump
+    local now last attempt addresses host resolved_ip sample family table_name set_dump snapshot
     local compatible_targets has_elements maintenance_failed
     # Do not perform DNS work when neither the automatic table nor a custom
     # table currently exposes the managed set.
-    host_set_available || return 0
+    snapshot="$(firewall_snapshot)"
+    if [ -z "$snapshot" ]; then
+        host_set_available || return 0
+    elif [ -z "$(declarative_set_targets "$HOST_SET")" ]; then
+        return 0
+    fi
     [ -d "${STAMP%/*}" ] || mkdir -p "${STAMP%/*}"
     now="$(date +%s)"
     last="$(cat "$STAMP" 2>/dev/null || echo 0)"
@@ -230,7 +235,6 @@ resolve_hosts() {
         while read -r family table_name; do
             [ -n "$family" ] || continue
             if ! set_dump="$(nft list set "$family" "$table_name" "$HOST_SET" 2>/dev/null)"; then
-                maintenance_failed=1
                 continue
             fi
             if ! host_set_compatible "$set_dump"; then
@@ -258,7 +262,6 @@ EOF
     while read -r family table_name; do
         [ -n "$family" ] || continue
         if ! set_dump="$(nft list set "$family" "$table_name" "$HOST_SET" 2>/dev/null)"; then
-            maintenance_failed=1
             continue
         fi
         if ! host_set_compatible "$set_dump"; then

@@ -33,7 +33,7 @@ need() {
         || fail "required command not found: $1"
 }
 
-for command in sh find python3 node sed awk sort; do
+for command in sh find python3 node sed awk; do
     need "$command"
 done
 
@@ -401,7 +401,21 @@ nft() {
                 printf '%s\n' 'type ipv4_addr . inet_service' 'flags timeout'
                 return 0
                 ;;
+            host_resolve_good)
+                printf '%s\n' 'type ipv4_addr' 'flags timeout'
+                return 0
+                ;;
+            host_resolve_bad)
+                printf '%s\n' 'type inet_service' 'flags timeout'
+                return 0
+                ;;
         esac
+    fi
+    if [ "${1:-}" = add ] && [ "${2:-}" = element ] && [ "${5:-}" = apple_wloc_v4 ]; then
+        if [ -n "${WLOC_TEST_HOST_ADD_LOG:-}" ]; then
+            printf '%s\n' "$*" >>"$WLOC_TEST_HOST_ADD_LOG"
+        fi
+        return 0
     fi
     if [ "${1:-}" = flush ] && [ "${5:-}" = apple_wloc_v4 ]; then
         printf '%s\n' "$*" >>"$host_flush_log"
@@ -423,6 +437,10 @@ nft() {
         return 0
     fi
     return 1
+}
+
+nslookup() {
+    printf '%s\n' 'Name: gs-loc.apple.com' 'Address: 1.2.3.4'
 }
 
 resolver_lib="$fixture_root/resolver-lib.sh"
@@ -629,6 +647,79 @@ if clear_host_sets; then
 fi
 [ ! -s "$host_flush_log" ] \
     || fail 'concatenated host set was flushed'
+
+echo '  -> host-set reconciliation skips missing runtime targets'
+host_add_log="$fixture_root/host-set-add.log"
+WLOC_TEST_HOST_ADD_LOG="$host_add_log"
+STAMP="$fixture_root/hosts.refreshed"
+DNS_ATTEMPT_STAMP="$fixture_root/hosts.attempted"
+DNS_REFRESH_SECONDS=0
+DNS_RETRY_SECONDS=0
+
+printf '%s\n' \
+    'table inet host_resolve_good {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet host_resolve_missing {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_add_log"
+resolve_hosts \
+    || fail 'compatible host target did not survive a missing runtime target'
+grep -Fq 'add element inet host_resolve_good apple_wloc_v4' "$host_add_log" \
+    || fail 'compatible host target was not refreshed'
+if grep -Fq 'host_resolve_missing' "$host_add_log"; then
+    fail 'missing host target was unexpectedly maintained'
+fi
+
+printf '%s\n' \
+    'table inet host_all_missing_a {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet host_all_missing_b {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_add_log"
+if resolve_hosts; then
+    fail 'all missing host targets were reported as successfully reconciled'
+fi
+[ ! -s "$host_add_log" ] \
+    || fail 'all missing host targets were unexpectedly maintained'
+
+printf '%s\n' \
+    'table inet host_resolve_good {' \
+    '    set apple_wloc_v4 {' \
+    '        type ipv4_addr' \
+    '        flags timeout' \
+    '    }' \
+    '}' \
+    'table inet host_resolve_bad {' \
+    '    set apple_wloc_v4 {' \
+    '        type inet_service' \
+    '        flags timeout' \
+    '    }' \
+    '}' >"$host_snapshot"
+: >"$host_add_log"
+if resolve_hosts; then
+    fail 'mixed compatible/incompatible host targets were reported as successful'
+fi
+grep -Fq 'add element inet host_resolve_good apple_wloc_v4' "$host_add_log" \
+    || fail 'compatible host target was not refreshed in a mixed reconciliation'
+if grep -Fq 'host_resolve_bad' "$host_add_log"; then
+    fail 'incompatible host target was unexpectedly maintained'
+fi
 
 printf '%s\n' \
     'table inet host_missing {' \
