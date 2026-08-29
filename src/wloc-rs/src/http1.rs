@@ -81,7 +81,8 @@ fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
         .ok_or_else(|| ProxyError::Upstream("invalid HTTP/1 status".into()))?;
     let mut headers = HeaderMap::new();
     let mut content_length = None;
-    let mut chunked = false;
+    let mut transfer_encoding_present = false;
+    let mut transfer_codings = Vec::new();
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -99,8 +100,13 @@ fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
             }
             content_length = Some(parsed);
         }
-        if lower == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked") {
-            chunked = true;
+        if lower == "transfer-encoding" {
+            transfer_encoding_present = true;
+            transfer_codings.extend(
+                value
+                    .split(',')
+                    .map(|coding| coding.trim().to_ascii_lowercase()),
+            );
         }
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(lower.as_bytes()),
@@ -109,11 +115,20 @@ fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
             headers.append(name, value);
         }
     }
-    if chunked && content_length.is_some() {
+    if transfer_encoding_present && content_length.is_some() {
         return Err(ProxyError::Upstream(
             "ambiguous HTTP/1 message framing".into(),
         ));
     }
+    let chunked = if !transfer_encoding_present {
+        false
+    } else if transfer_codings.len() == 1 && transfer_codings[0] == "chunked" {
+        true
+    } else {
+        return Err(ProxyError::Upstream(
+            "unsupported HTTP/1 transfer encoding".into(),
+        ));
+    };
     let wire_body = &raw[header_end + 4..];
     let body = if chunked {
         decode_chunked(wire_body)?
@@ -203,6 +218,17 @@ mod tests {
         .is_err());
         assert!(decode_chunked(b"1\r\naXX0\r\n\r\n").is_err());
         assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 524289\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_transfer_encodings() {
+        assert!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nbody").is_err());
+        assert!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n").is_err());
+        assert!(
+            parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 10\r\n\r\n")
+                .is_err()
+        );
+        assert!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, chunked\r\n\r\n").is_err());
     }
 
     #[test]
