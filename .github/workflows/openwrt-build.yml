@@ -160,9 +160,16 @@ jobs:
           trap cleanup EXIT
           loopdev="$(sudo losetup --find --show --partscan "$image")"
           mount_dir="$(mktemp -d)"
-          root_partition="$(sudo lsblk -lnpo NAME,FSTYPE "$loopdev" | awk '$2 == "ext4" { print $1; exit }')"
+          root_partition=''
+          for root_candidate in $(sudo lsblk -lnpo NAME,FSTYPE "$loopdev" | awk '$2 == "ext4" { print $1 }'); do
+            sudo mount "$root_candidate" "$mount_dir"
+            if [[ -d "$mount_dir/etc/config" ]]; then
+              root_partition="$root_candidate"
+              break
+            fi
+            sudo umount "$mount_dir"
+          done
           test -n "$root_partition"
-          sudo mount "$root_partition" "$mount_dir"
           sudo cp "$network_config" "$mount_dir/etc/config/network"
           sudo mkdir -p "$mount_dir/etc/dropbear"
           sudo cp "$RUNNER_TEMP/wloc-lifecycle.pub" \

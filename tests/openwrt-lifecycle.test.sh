@@ -23,7 +23,7 @@ SSH_PORT=${WLOC_OPENWRT_SSH_PORT:-22022}
 MEMORY=${WLOC_OPENWRT_MEMORY:-256M}
 SSH_TARGET="root@127.0.0.1"
 SSH_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -p $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-SCP_OPTIONS="-i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SCP_OPTIONS="-O -i $WLOC_OPENWRT_SSH_KEY -P $SSH_PORT -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 CONSOLE_LOG="$(mktemp)"
 QEMU_PID=''
 
