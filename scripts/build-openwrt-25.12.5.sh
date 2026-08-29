@@ -130,6 +130,7 @@ find "$PACKAGE_DST/root" -type f -exec chmod 0644 {} +
 for executable in \
     etc/init.d/wloc \
     etc/uci-defaults/luci-app-wloc \
+    usr/libexec/wloc/firewall.sh \
     usr/libexec/wloc/rules.sh \
     usr/libexec/wloc/ap-lib.sh \
     usr/libexec/wloc/wifi-schedule.sh \
