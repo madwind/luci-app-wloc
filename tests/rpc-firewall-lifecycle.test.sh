@@ -25,6 +25,7 @@ fake_jshn="$fixture_root/jshn.sh"
 cat >"$fake_jshn" <<'EOF'
 json_init() {
 	response_ok=''
+	response_error=''
 	response_runtime_ready=''
 	response_recovering=''
 	response_warning=''
@@ -46,7 +47,10 @@ json_add_boolean() {
 }
 json_add_int() { :; }
 json_add_string() {
-	if [ "$1" = warning ]; then response_warning="$2"; fi
+	case "$1" in
+		error) response_error="$2";;
+		warning) response_warning="$2";;
+	esac
 	return 0
 }
 json_dump() { :; }
@@ -85,6 +89,7 @@ export WLOC_RULES_HELPER="$rules_helper"
 export WLOC_RUNTIME_DIR="$runtime"
 export WLOC_FIREWALL_PATH="$persistent"
 export WLOC_FIREWALL_RUNTIME="$runtime/firewall.applied.nft"
+export WLOC_FIREWALL_RUNTIME_NEXT="$runtime/firewall.applied.nft.next"
 export WLOC_STATUS_PATH="$runtime/status.json"
 . "$RPC"
 
@@ -128,6 +133,21 @@ emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'transaction failure replaced the applied runtime snapshot'
 APPLY_RC=0
+
+echo '  -> snapshot promotion failure returns an explicit consistency error'
+if ! (
+	firewall_promote_snapshot() { return 1; }
+	firewall_config="$(cat "$applied_source")"
+	emit_firewall_apply
+	[ "$response_ok" = 0 ] || fail 'snapshot promotion failure returned ok=true'
+	[ "$response_error" = 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' ] \
+		|| fail 'snapshot promotion failure returned the wrong RPC error'
+	[ -s "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
+		|| fail 'snapshot promotion failure did not retain the staged snapshot'
+); then
+	fail 'snapshot promotion failure RPC handling failed'
+fi
+rm -f "$WLOC_FIREWALL_RUNTIME_NEXT"
 
 echo '  -> save ignores un-applied request content'
 firewall_config='table inet ignored {'
