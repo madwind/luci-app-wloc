@@ -367,8 +367,12 @@ ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
     || fail 'applied firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
     || fail 'staged firewall snapshot remained after package uninstall'
-ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -d /var/run/wloc/firewall.lock && test ! -e /var/run/wloc/firewall.lock/owner" \
+ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error" \
     || fail 'WLOC runtime state remained after package uninstall'
+ssh_cmd "lock -n /var/lock/wloc-firewall.lock" \
+    || fail 'firewall lock remained held after package uninstall'
+ssh_cmd "lock -u /var/lock/wloc-firewall.lock" \
+    || fail 'firewall lock could not be released after uninstall verification'
 phase UNINSTALL 'cleanup verified'
 
 phase COMPLETE 'all runtime integration checks passed'
