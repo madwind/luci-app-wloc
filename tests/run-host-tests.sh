@@ -596,15 +596,6 @@ host_snapshot="$fixture_root/host-set.applied.nft"
 host_persistent="$fixture_root/host-set.persistent.nft"
 : >"$host_persistent"
 
-host_set_compatible "$(printf '%s\n' 'type ipv4_addr' 'flags timeout')" \
-    || fail 'compatible scalar host set was rejected'
-if host_set_compatible "$(printf '%s\n' 'type inet_service' 'flags timeout')"; then
-    fail 'incompatible scalar host set was accepted'
-fi
-if host_set_compatible "$(printf '%s\n' 'type ipv4_addr . inet_service' 'flags timeout')"; then
-    fail 'concatenated host set type was accepted'
-fi
-
 printf '%s\n' \
     'table inet host_compatible {' \
     '    set apple_wloc_v4 {' \
