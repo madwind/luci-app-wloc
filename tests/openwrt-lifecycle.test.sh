@@ -269,7 +269,7 @@ ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
     || fail 'applied firewall snapshot remained after package uninstall'
 ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
     || fail 'staged firewall snapshot remained after package uninstall'
-ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -e /var/run/wloc/firewall.lock" \
+ssh_cmd "test ! -e /var/run/wloc/status.json && test ! -e /var/run/wloc/runtime.log && test ! -e /var/run/wloc/start-error && test ! -d /var/run/wloc/firewall.lock && test ! -e /var/run/wloc/firewall.lock/owner" \
     || fail 'WLOC runtime state remained after package uninstall'
 
 echo 'OpenWrt lifecycle tests: PASS'

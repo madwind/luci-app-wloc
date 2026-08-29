@@ -140,14 +140,21 @@ WORKFLOW="$ROOT/.github/workflows/openwrt-build.yml"
 if grep -Eq 'libguestfs|guestfish|virt-filesystems' "$WORKFLOW"; then
     fail 'QEMU lifecycle workflow still depends on libguestfs tooling'
 fi
-grep -Fq 'losetup --find --show --partscan' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not use loop-device image preparation'
-grep -Fq 'lsblk -lnpo NAME,FSTYPE' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not discover the ext4 root partition'
-grep -Fq 'for root_candidate in' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not inspect all ext4 partitions'
-grep -Fq 'mount_dir/etc/config' "$WORKFLOW" \
-    || fail 'QEMU lifecycle workflow does not identify the OpenWrt root filesystem'
+if grep -Eq 'losetup|lsblk|sudo mount|umount' "$WORKFLOW"; then
+    fail 'QEMU lifecycle workflow still mutates a raw image filesystem'
+fi
+grep -Fq 'openwrt-imagebuilder-25.12.5-x86-64.Linux-x86_64.tar.zst' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not download the OpenWrt ImageBuilder'
+grep -Fq '313221253d9bac534e4a4ee6492a4941b4ba0f43200eceb8d16a4785470ae9df' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not pin the ImageBuilder checksum'
+grep -Fq 'tests/openwrt-image-overlay' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not use the lifecycle overlay'
+grep -Fq 'authorized_keys' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not inject the temporary SSH key'
+grep -Fq 'make -C "$imagebuilder_dir" image PROFILE=' "$WORKFLOW" \
+    || fail 'QEMU lifecycle workflow does not build an image with ImageBuilder'
+grep -Fq 'scp $SCP_OPTIONS "$WLOC_OPENWRT_APK"' "$QEMU_TEST" \
+    || fail 'QEMU lifecycle test does not install the APK inside the guest'
 SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
 [ -f "$SMOKE_WORKFLOW" ] \
     || fail 'x86_64 SDK smoke workflow is missing'
