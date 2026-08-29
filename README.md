@@ -85,16 +85,17 @@ bash ./scripts/build-openwrt-25.12.5.sh x86_64
 
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
-`dist/filogic/` or `dist/x86_64/`. GitHub Actions runs fast host checks on normal
-pushes, pull requests, and every release tag. Changes to the package Makefile,
-Rust source, OpenWrt root files, or build scripts also run an x86_64 SDK compile
-smoke test on push and pull requests. The full two-architecture builds run only
-for a `v*` tag or a manual workflow dispatch, avoiding duplicate release builds
-for every commit. CI
-caches each architecture's checksum-pinned SDK archive and Cargo downloads,
-while the build script still verifies the SDK SHA-256 on every run. A tag must
-match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and creates a GitHub Release containing
-both architecture-specific APKs and their SHA-256 files.
+`dist/filogic/` or `dist/x86_64/`. The default GitHub Actions CI runs Rust
+formatting, Clippy, Rust tests, and host tests on pushes and pull requests.
+Changes to the package Makefile, Rust source, OpenWrt root files, or build
+scripts also run an x86_64 SDK compile smoke test. The release package workflow
+runs host tests, builds both architectures, validates the APK artifacts,
+generates SHA-256 files, and publishes the GitHub Release. It does not run the
+deep runtime integration suite. CI caches each architecture's checksum-pinned
+SDK archive and Cargo downloads, while the build script still verifies the SDK
+SHA-256 on every run. A tag must match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and
+creates a GitHub Release containing both architecture-specific APKs and their
+SHA-256 files.
 
 ## Install
 
@@ -182,30 +183,29 @@ when no snapshot exists) through a checked nftables delete transaction.
 Unrelated tables are not touched. Since the editor accepts declarations rather
 than arbitrary command scripts, WLOC can identify the owned tables for cleanup.
 
-For a real-system lifecycle check, the release workflow downloads and verifies
-the official OpenWrt 25.12.5 x86_64 generic ext4-combined image. The compressed
-artifact is cached, while a disposable uncompressed copy is booted directly by
-QEMU. The lifecycle test initializes root SSH key access on a fresh image when
-needed, then copies and installs the WLOC APK so package hooks and service
-behavior are exercised as they are on OpenWrt.
+## Manual OpenWrt runtime integration
 
-You can also provide an OpenWrt x86_64 QEMU image and a root SSH key pair to run
-the optional test directly. The private key's adjacent `.pub` file is used to
-bootstrap a fresh official image:
-
-The release workflow runs the same check in a dedicated **OpenWrt x86_64
-lifecycle** job after the x86_64 APK build. It verifies package hooks,
-procd instance recovery, firewall Apply/Save reboot behavior, and stop cleanup.
+The deep OpenWrt lifecycle suite is intentionally manual and is not a default
+CI, package-build, or release gate. Run it only against a dedicated test target
+whose SSH access is already configured and works without interactive
+authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
+`nft`.
 
 ```sh
-WLOC_OPENWRT_IMAGE=/path/to/openwrt.img \
-WLOC_OPENWRT_APK=/path/to/luci-app-wloc-x86_64.apk \
-WLOC_OPENWRT_SSH_KEY=/path/to/root.key \
-sh tests/openwrt-lifecycle.test.sh
+WLOC_OPENWRT_SSH=root@192.168.1.1 \
+WLOC_OPENWRT_APK=dist/filogic/luci-app-wloc-0.2.13-r97.apk \
+WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
+sh tests/runtime-integration.sh
 ```
 
-The supplied image is used as the QEMU lifecycle disk and may be modified by
-the test; use a disposable copy when running it manually.
+Use the APK matching the target architecture; for an x86_64 target, use the
+artifact under `dist/x86_64/`. The suite installs and uninstalls the package,
+creates the temporary `wireless.wloc_test` and `wloc.test` UCI sections, changes
+WLOC firewall state, reboots the target, kills `wlocd`, and stops the service.
+It is therefore destructive and may change the target's WLOC firewall
+configuration. The script performs best-effort cleanup of its temporary UCI
+fixture and uploaded APK, but it does not restore an entire router
+configuration. Do not run it against a production router.
 
 ## License
 
