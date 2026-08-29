@@ -120,6 +120,17 @@ if grep -Fq '"daemon"' "$QEMU_TEST" || grep -Fq '"schedule"' "$QEMU_TEST"; then
 fi
 grep -Fq 'OpenWrt x86_64 lifecycle' "$ROOT/.github/workflows/openwrt-build.yml" \
 	|| fail 'release workflow does not include the OpenWrt lifecycle job'
+grep -Fq 'apk del luci-app-wloc' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not cover package uninstall'
+grep -Fq 'firewall.applied.nft' "$QEMU_TEST" \
+	|| fail 'QEMU lifecycle test does not verify runtime snapshot cleanup'
+SMOKE_WORKFLOW="$ROOT/.github/workflows/openwrt-smoke.yml"
+[ -f "$SMOKE_WORKFLOW" ] \
+	|| fail 'x86_64 SDK smoke workflow is missing'
+grep -Fq 'x86_64 SDK compile smoke' "$SMOKE_WORKFLOW" \
+	|| fail 'x86_64 SDK smoke workflow is missing its job'
+grep -Fq 'scripts/build-openwrt-*.sh' "$SMOKE_WORKFLOW" \
+	|| fail 'x86_64 SDK smoke workflow does not filter build-source changes'
 grep -Fq 'group: checks-${{ github.workflow }}-${{ github.ref }}' "$ROOT/.github/workflows/ci.yml" \
 	|| fail 'standalone and reusable checks do not have isolated concurrency keys'
 

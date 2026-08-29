@@ -229,4 +229,18 @@ if ssh_cmd "nft list set inet wloc_lifecycle apple_wloc_v4 2>/dev/null | grep -E
 	fail 'WLOC dynamic host-set elements remained after stop'
 fi
 
+echo '  -> package uninstall removes managed services and firewall state'
+ssh_cmd "apk del luci-app-wloc" >/dev/null \
+	|| fail 'apk could not uninstall luci-app-wloc'
+if instance_running daemon || instance_running schedule; then
+	fail 'a WLOC procd instance remained after package uninstall'
+fi
+if ssh_cmd "nft list table inet wloc_lifecycle >/dev/null 2>&1"; then
+	fail 'WLOC nftables table remained after package uninstall'
+fi
+ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft" \
+	|| fail 'applied firewall snapshot remained after package uninstall'
+ssh_cmd "test ! -e /var/run/wloc/firewall.applied.nft.next" \
+	|| fail 'staged firewall snapshot remained after package uninstall'
+
 echo 'OpenWrt lifecycle tests: PASS'
