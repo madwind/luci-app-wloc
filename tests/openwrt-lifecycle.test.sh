@@ -145,7 +145,7 @@ ssh_cmd ubus call luci.wloc status >/dev/null \
 
 echo '  -> Apply and reboot without Save restores persistent rules'
 persistent_a="$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")"
-FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; } }'
+FIREWALL_B='table inet wloc_lifecycle { set apple_wloc_v4 { type ipv4_addr; flags timeout; }; }'
 APPLY_COMMAND="ubus call luci.wloc firewall_apply '{\"config\":\"$FIREWALL_B\"}'"
 APPLY_RESULT=/tmp/wloc-apply-result
 ssh_cmd "$APPLY_COMMAND > $APPLY_RESULT" \
