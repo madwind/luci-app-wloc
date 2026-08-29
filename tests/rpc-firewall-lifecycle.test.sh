@@ -125,6 +125,18 @@ hash_c="$response_applied_hash"
 [ -n "$hash_c" ] || fail 'second Apply did not return an applied revision'
 [ "$hash_b" != "$hash_c" ] || fail 'different Apply operations returned the same revision'
 persistent_before="$(cksum "$persistent")"
+echo '  -> a busy firewall lock returns a retryable RPC error'
+FIREWALL_LOCK_TIMEOUT=0
+mkdir "$FIREWALL_LOCK"
+printf '%s\n' "$$ unknown" >"$FIREWALL_LOCK/owner"
+emit_firewall_save "$hash_c"
+[ "$response_ok" = 0 ] || fail 'busy Save unexpectedly succeeded'
+[ "$response_error_code" = firewall_busy ] || fail 'busy Save returned the wrong error code'
+[ "$persistent_before" = "$(cksum "$persistent")" ] || fail 'busy Save changed persistent storage'
+rm -f "$FIREWALL_LOCK/owner"
+rmdir "$FIREWALL_LOCK"
+FIREWALL_LOCK_TIMEOUT=5
+
 emit_firewall_save "$hash_b"
 [ "$response_ok" = 0 ] || fail 'stale Save unexpectedly succeeded'
 [ "$response_error_code" = stale_applied_revision ] || fail 'stale Save returned the wrong error code'
@@ -151,6 +163,7 @@ firewall_config='table inet rejected {'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'syntax failure replaced the applied runtime snapshot'
+[ "$response_error_code" = nft_check_failed ] || fail 'syntax failure returned the wrong error code'
 CHECK_RC=0
 
 echo '  -> transaction failure keeps both snapshots'
@@ -159,6 +172,7 @@ firewall_config='table inet rejected {'
 emit_firewall_apply
 cmp -s "$applied_source" "$WLOC_FIREWALL_RUNTIME" \
 	|| fail 'transaction failure replaced the applied runtime snapshot'
+[ "$response_error_code" = nft_apply_failed ] || fail 'transaction failure returned the wrong error code'
 APPLY_RC=0
 
 echo '  -> snapshot promotion failure returns an explicit consistency error'
@@ -170,6 +184,8 @@ if ! (
 	[ "$response_ok" = 0 ] || fail 'snapshot promotion failure returned ok=true'
 	[ "$response_error" = 'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' ] \
 		|| fail 'snapshot promotion failure returned the wrong RPC error'
+	[ "$response_error_code" = snapshot_promote_failed ] \
+		|| fail 'snapshot promotion failure returned the wrong error code'
 	[ -s "$WLOC_FIREWALL_RUNTIME_NEXT" ] \
 		|| fail 'snapshot promotion failure did not retain the staged snapshot'
 ); then

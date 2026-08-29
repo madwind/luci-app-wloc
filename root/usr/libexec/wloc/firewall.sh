@@ -51,7 +51,7 @@ firewall_lock_release() {
         owner="$(cat "$FIREWALL_LOCK/owner" 2>/dev/null || true)"
     fi
     if [ "$owner" = "$FIREWALL_LOCK_OWNER" ]; then
-        rm -f "$FIREWALL_LOCK/owner"
+        rm -f "$FIREWALL_LOCK/owner" || true
         rmdir "$FIREWALL_LOCK" 2>/dev/null || true
     fi
     FIREWALL_LOCK_HELD=0
@@ -216,8 +216,20 @@ EOF
 }
 
 firewall_active() {
-	firewall_collect_active "$1" || return 1
-	[ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]
+    local locked_here=0 rc
+    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
+        firewall_lock_acquire || return 1
+        locked_here=1
+    fi
+    if firewall_collect_active "$1" && [ "$FIREWALL_ACTIVE_FOUND" -eq 1 ]; then
+        rc=0
+    else
+        rc=1
+    fi
+    if [ "$locked_here" -eq 1 ]; then
+        firewall_lock_release
+    fi
+    return "$rc"
 }
 
 firewall_file_hash() {
@@ -578,6 +590,7 @@ EOF
 		firewall_error='unable to read nftables configuration'
 		return 1
 	fi
+	firewall_error_code='nft_apply_failed'
 	detail="$(nft --file "$transaction" 2>&1)" && rc=0 || rc=$?
 	rm -f "$transaction"
 	if [ "$rc" -ne 0 ]; then

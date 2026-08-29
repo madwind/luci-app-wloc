@@ -132,6 +132,9 @@ emit_firewall_validate() {
 	printf '%s' "$firewall_config" >"$source"
 	if firewall_validate_file "$source"; then
 		json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
+	elif [ "${firewall_error_code:-}" = firewall_busy ]; then
+		firewall_rpc_error firewall_busy \
+			'Another firewall operation is already in progress. Please retry.' "$firewall_error"
 	else
 		json_init; json_add_boolean ok 0; json_add_boolean valid 0
 		json_add_string error 'nftables syntax check failed'
