@@ -273,23 +273,6 @@ EOF
     printf '%s\n' "$now" >"$STAMP" || return 1
 }
 
-refresh_hosts() {
-    rm -f "$STAMP" "$DNS_ATTEMPT_STAMP"
-    resolve_hosts
-}
-
-apply_rules() {
-    local port
-    port="$1"
-    valid_port "$port" || { echo 'wloc: invalid proxy port' >&2; return 1; }
-    refresh_hosts
-}
-
-valid_ifname() {
-    case "$1" in ''|*[!A-Za-z0-9_.-]*) return 1;; esac
-    [ "${#1}" -le 15 ]
-}
-
 ingress_set_compatible() {
     printf '%s\n' "$1" | awk '
         {
@@ -346,10 +329,6 @@ collect_wloc_ingress() {
     fi
     # The rule stores the fixed wifi-iface name. Use it directly so startup
     # does not need to scan runtime interfaces or expand a bridge.
-    valid_ifname "$iface" || {
-        WLOC_RESOLVE_ERROR="invalid configured interface \"$iface\""
-        return 0
-    }
     case " $WLOC_INGRESS_INTERFACES " in
         *" $iface "*) ;;
         *) WLOC_INGRESS_INTERFACES="${WLOC_INGRESS_INTERFACES} $iface" ;;
@@ -412,24 +391,11 @@ EOF
 
 if [ "${WLOC_RULES_SOURCE:-0}" -ne 1 ]; then
     case "${1:-}" in
-        apply)
-            port="${2:-}"
-            apply_rules "$port"
-            ;;
         reconcile)
             port="${2:-}"
             reconcile "$port"
             ;;
         cleanup) cleanup;;
-        status)
-            nft list table inet "$TABLE" 2>/dev/null
-            ;;
-        resolve-hosts)
-            resolve_hosts
-            ;;
-        refresh-hosts)
-            refresh_hosts
-            ;;
-        *) echo 'usage: rules.sh {apply PORT|reconcile PORT|cleanup|status|resolve-hosts|refresh-hosts}' >&2; exit 2;;
+        *) echo 'usage: rules.sh {reconcile PORT|cleanup}' >&2; exit 2;;
     esac
 fi

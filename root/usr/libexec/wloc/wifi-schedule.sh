@@ -5,7 +5,6 @@
 
 STATE_DIR="${WLOC_SCHEDULE_STATE_DIR:-/var/run/wloc}"
 STATE_FILE="$STATE_DIR/wifi-schedule.state"
-ACTIVE_FILE="$STATE_DIR/wifi-schedule.active.$$"
 DESIRED_FILE="$STATE_DIR/wifi-schedule.desired.$$"
 
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
@@ -133,7 +132,6 @@ reconcile() {
     mkdir -p "$STATE_DIR"
     old_state="$(cat "$STATE_FILE" 2>/dev/null || true)"
     WLOC_SCHEDULE_CHANGED=0
-    : >"$ACTIVE_FILE"
     : >"$DESIRED_FILE"
     config_load wloc || return 1
     WLOC_NOW_MINUTES="$(time_minutes "$(date +%H:%M)")"
@@ -187,7 +185,7 @@ restore_state() {
 cleanup() {
     trap - EXIT INT TERM HUP
     restore_state
-    rm -f "$ACTIVE_FILE" "$DESIRED_FILE"
+    rm -f "$DESIRED_FILE"
 }
 
 run_loop() {
@@ -204,7 +202,7 @@ run_loop() {
 
 case "${1:-}" in
     run) run_loop;;
-    reconcile) reconcile; rm -f "$ACTIVE_FILE" "$DESIRED_FILE";;
-    stop|restore) restore_state; rm -f "$ACTIVE_FILE" "$DESIRED_FILE";;
+    reconcile) reconcile; rm -f "$DESIRED_FILE";;
+    stop|restore) restore_state; rm -f "$DESIRED_FILE";;
 *) echo "usage: $0 {run|reconcile|stop}" >&2; exit 2;;
 esac
