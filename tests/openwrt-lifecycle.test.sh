@@ -220,6 +220,7 @@ ssh_cmd "nft list table inet wloc_lifecycle >/dev/null" \
     || fail 'applied firewall rules are not active'
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'Apply changed the persistent firewall file'
+phase FIREWALL 'unsaved Apply active'
 reboot_guest
 [ "$(ssh_cmd "sha256sum /etc/wloc/firewall.nft | cut -d' ' -f1")" = "$persistent_a" ] \
     || fail 'reboot without Save did not restore the persistent firewall file'
