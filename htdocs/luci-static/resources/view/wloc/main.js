@@ -471,7 +471,7 @@ return view.extend({
         lookupButton.rmempty = true;
         lookupButton.inputtitle = _('Fill from IP location');
         lookupButton.inputstyle = 'action';
-        lookupButton.onclick = function(ev, sectionId) {
+        lookupButton.onclick = function(sectionId, ev) {
             var ip = String(ipOption.formvalue(sectionId) || '').trim();
             var resultNode = lookupResultNodes[sectionId];
             if (!ip) {
