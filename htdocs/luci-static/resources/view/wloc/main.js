@@ -11,8 +11,6 @@ var callLogs = rpc.declare({ object: 'luci.wloc', method: 'logs', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
-var AP_DISCOVERY_ATTEMPTS = 6;
-var AP_DISCOVERY_RETRY_MS = 1500;
 
 function truthy(value) {
     return value === true || value === 1 || value === '1' || value === 'true';
@@ -125,26 +123,9 @@ function lookupIpInfo(ip) {
     });
 }
 
-function wait(milliseconds) {
-    return new Promise(function(resolve) {
-        window.setTimeout(resolve, milliseconds);
-    });
-}
-
-function callWirelessAccessPointsOnce() {
+function callWirelessAccessPoints() {
     return callConfiguredAccessPoints().catch(function() { return {}; }).then(function(result) {
         return { access_points: Array.isArray(result && result.access_points) ? result.access_points : [] };
-    });
-}
-
-function callWirelessAccessPoints(attempts) {
-    attempts = Math.max(1, Number(attempts) || 1);
-    return callWirelessAccessPointsOnce().then(function(result) {
-        if ((result.access_points || []).length || attempts <= 1)
-            return result;
-        return wait(AP_DISCOVERY_RETRY_MS).then(function() {
-            return callWirelessAccessPoints(attempts - 1);
-        });
     });
 }
 
@@ -155,7 +136,7 @@ return view.extend({
             uci.load('wireless').catch(function() { return {}; }),
             // The configured inventory remains available while hostapd is restarting;
             // runtime fields are only metadata on those stable entries.
-            callWirelessAccessPoints(AP_DISCOVERY_ATTEMPTS),
+            callWirelessAccessPoints(),
             callStatus().catch(function() { return {}; }),
             callLogs().catch(function() { return {}; })
         ]);
@@ -664,7 +645,6 @@ return view.extend({
             renderApActivity(initialStatus);
             scrollRuntimeLogToBottom();
             poll.add(refresh, 10);
-            refresh();
             return E('div', {}, [
                 formNode,
                 E('div', { 'class': 'cbi-section' }, [

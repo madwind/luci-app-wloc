@@ -346,8 +346,7 @@ load_runtime_state() {
             json_get_vars ap_id latitude longitude last_location_at:0 success:0
             json_get_var activity_error last_error
             case "$ap_id" in ''|*[!A-Za-z0-9_-]*) ap_id='';; esac
-            [ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
-"
+            [ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}\n"
             json_select ..
         done
         json_select ..
@@ -392,25 +391,14 @@ firewall_status_values() {
 }
 
 emit_status() {
-    local configured enabled version rules_present firewall_is_active attempts intercepted conflict daemon_running service_reason locked_here=0
+    local configured enabled version rules_present firewall_is_active attempts intercepted conflict daemon_running service_reason
     load_runtime_state
     configured=0
     uci -q show wloc | grep -q '=wifi$' && configured=1
     enabled="$(uci -q get wloc.main.enabled 2>/dev/null || echo 0)"
     case "$enabled" in 1) enabled=1;; *) enabled=0;; esac
     version="$(package_version)"
-    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ] && firewall_lock_acquire; then
-        locked_here=1
-        firewall_status_values
-        firewall_lock_release
-    elif [ "${FIREWALL_LOCK_HELD:-0}" -eq 1 ]; then
-        firewall_status_values
-    else
-        rules_present=0
-        firewall_is_active=0
-        attempts=0
-        intercepted=0
-    fi
+    firewall_status_values
     conflict=0
     [ "$attempts" -gt 0 ] && [ "$accepted_connections" -eq 0 ] && conflict=1
     daemon_running=0
@@ -497,9 +485,11 @@ EOF
 }
 
 emit_configured_access_points() {
-    local section mode ssid disabled active ifname hostapd_status
+    local section mode ssid disabled active ifname hostapd_objects
     . /lib/functions.sh
     . "$AP_LIB"
+
+    hostapd_objects="$(ubus -S list 'hostapd.*' 2>/dev/null || true)"
 
     json_init
     json_add_array access_points
@@ -514,8 +504,7 @@ emit_configured_access_points() {
         esac
         config_get ssid "$section" ssid ''
         config_get_bool disabled "$section" disabled 0
-        hostapd_status="$(wloc_ap_get_hostapd_status "$ifname" 2>/dev/null || true)"
-        if [ -n "$hostapd_status" ]; then
+        if printf '%s\n' "$hostapd_objects" | grep -Fxq "hostapd.$ifname"; then
             active=1
         else
             active=0
