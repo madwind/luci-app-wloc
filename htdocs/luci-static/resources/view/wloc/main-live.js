@@ -1,4 +1,5 @@
 'use strict';
+'require view';
 'require rpc';
 'require poll';
 'require ui';
@@ -149,7 +150,11 @@ function runtimeLogSection() {
     ]);
 }
 
-return wlocMain.extend({
+return view.extend({
+    load: function() {
+        return wlocMain.load.call(this);
+    },
+
     render: function(data) {
         return Promise.resolve(wlocMain.render.call(this, data)).then(function(root) {
             var oldLog = root.querySelector('textarea[aria-label="' + _('Current-session in-memory log') + '"]');
