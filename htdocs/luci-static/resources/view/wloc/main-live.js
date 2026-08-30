@@ -460,17 +460,6 @@ return view.extend({
         var mainData = data && data[0] ? data[0] : data;
 
         return Promise.resolve(wlocMain.render.call(this, mainData)).then(function(root) {
-            var oldLog = root.querySelector('textarea[aria-label="' + _('Current-session in-memory log') + '"]');
-            var oldSection = oldLog && oldLog.closest ? oldLog.closest('.cbi-section') : null;
-            var legacyRuntimeToggle = root.querySelector('[id$=".runtime_log"]');
-            var legacyRuntimeRow = legacyRuntimeToggle && legacyRuntimeToggle.closest
-                ? legacyRuntimeToggle.closest('.cbi-value') : null;
-
-            if (oldSection)
-                oldSection.remove();
-            if (legacyRuntimeRow)
-                legacyRuntimeRow.remove();
-
             root.appendChild(runtimeLogSection());
             return root;
         });
