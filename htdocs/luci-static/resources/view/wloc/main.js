@@ -4,6 +4,7 @@
 'require uci';
 'require rpc';
 'require ui';
+'require dom';
 'require poll';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
@@ -121,6 +122,12 @@ function lookupIpInfo(ip) {
             location: [ result.city, result.region, result.timezone ].filter(Boolean).join(' · ')
         };
     });
+}
+
+function modalUIElement(option, sectionId) {
+    var node = document.getElementById(option.cbid(sectionId));
+    var element = node ? dom.findClassInstance(node) : null;
+    return element && typeof element.getValue === 'function' ? element : null;
 }
 
 function callWirelessAccessPoints() {
@@ -471,8 +478,9 @@ return view.extend({
         lookupButton.rmempty = true;
         lookupButton.inputtitle = _('Fill from IP location');
         lookupButton.inputstyle = 'action';
-        lookupButton.onclick = function(sectionId, ev) {
-            var ip = String(ipOption.formvalue(sectionId) || '').trim();
+        lookupButton.onclick = function(ev, sectionId) {
+            var ipElement = modalUIElement(ipOption, sectionId);
+            var ip = String(ipElement ? ipElement.getValue() : '').trim();
             var resultNode = lookupResultNodes[sectionId];
             if (!ip) {
                 if (resultNode)
@@ -482,8 +490,12 @@ return view.extend({
             if (resultNode)
                 resultNode.replaceChildren(E('em', {}, _('Looking up with ipinfo.io…')));
             return lookupIpInfo(ip).then(function(result) {
-                latitudeOption.getUIElement(sectionId).setValue(result.latitude);
-                longitudeOption.getUIElement(sectionId).setValue(result.longitude);
+                var latitudeElement = modalUIElement(latitudeOption, sectionId);
+                var longitudeElement = modalUIElement(longitudeOption, sectionId);
+                if (!latitudeElement || !longitudeElement)
+                    throw new Error(_('Location fields are unavailable.'));
+                latitudeElement.setValue(result.latitude);
+                longitudeElement.setValue(result.longitude);
                 if (resultNode) {
                     resultNode.replaceChildren(
                         E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
