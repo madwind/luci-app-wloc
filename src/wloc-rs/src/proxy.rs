@@ -43,9 +43,6 @@ struct PeerCacheEntry {
 fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
     use std::os::fd::AsRawFd;
 
-    // Linux netfilter's SO_ORIGINAL_DST returns the tuple from before an
-    // earlier REDIRECT/DNAT. It lets non-WLOC SNI retain safe passthrough even
-    // though the plugin wins the local redirect for the selected CDN address.
     const SO_ORIGINAL_DST: libc::c_int = 80;
     let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
@@ -395,14 +392,14 @@ impl Proxy {
                     });
                 }
                 completed = streams.join_next(), if !streams.is_empty() => {
-                    completed
-                        .ok_or_else(|| ProxyError::Protocol("stream_task_missing".into()))?
-                        .map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))??;
+                    let completed = completed
+                        .ok_or_else(|| ProxyError::Protocol("stream_task_missing".into()))?;
+                    handle_stream_completion(completed)?;
                 }
             }
         }
         while let Some(completed) = streams.join_next().await {
-            completed.map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))??;
+            handle_stream_completion(completed)?;
         }
         Ok(())
     }
@@ -490,26 +487,26 @@ impl Proxy {
         }
         if delivered_wloc || response_mode == "debug" {
             self.status.update_detail(
-                    "response_delivered",
-                    &self.rule_detail(
-                        client,
-                        ip,
-                        format!(
-                            "rule={client} host={hostname} status={delivered_status} bytes={delivered_bytes} mode={response_mode} kind={}",
-                            request_kind
-                                .map(|kind| kind.to_string())
-                                .unwrap_or_else(|| "unknown".into())
-                        ),
+                "response_delivered",
+                &self.rule_detail(
+                    client,
+                    ip,
+                    format!(
+                        "rule={client} host={hostname} status={delivered_status} bytes={delivered_bytes} mode={response_mode} kind={}",
+                        request_kind
+                            .map(|kind| kind.to_string())
+                            .unwrap_or_else(|| "unknown".into())
                     ),
-                    None,
-                    |c| {
-                        if let Some(target) = patched_target {
-                            c.delivered_for(client, target.latitude, target.longitude);
-                        } else if response_mode == "debug" {
-                            c.delivered();
-                        }
-                    },
-                );
+                ),
+                None,
+                |c| {
+                    if let Some(target) = patched_target {
+                        c.delivered_for(client, target.latitude, target.longitude);
+                    } else if response_mode == "debug" {
+                        c.delivered();
+                    }
+                },
+            );
         }
         Ok(())
     }
@@ -781,10 +778,12 @@ impl Proxy {
             .map_err(|_| ProxyError::Upstream("invalid_hostname".into()))?;
         let mut tls_attempt = 1usize;
         let tls = loop {
-            let tcp =
-                tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_outbound(outbound, hostname, 443))
-                    .await
-                    .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
+            let tcp = tokio::time::timeout(
+                HANDSHAKE_TIMEOUT,
+                connect_outbound(outbound, hostname, 443),
+            )
+            .await
+            .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
             match tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
                 self.connector.connect(server_name.clone(), tcp),
@@ -873,6 +872,15 @@ impl Proxy {
     }
 }
 
+fn handle_stream_completion(
+    completed: Result<Result<(), ProxyError>, tokio::task::JoinError>,
+) -> Result<(), ProxyError> {
+    match completed.map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))? {
+        Ok(()) | Err(ProxyError::ClientClosed(_)) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn retryable_tls_handshake_error(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -888,9 +896,6 @@ async fn connect_outbound(
     destination: &str,
     port: u16,
 ) -> Result<TcpStream, ProxyError> {
-    // These are ordinary locally generated sockets. WLOC deliberately owns
-    // no OUTPUT hook, leaving local transparent-proxy policy free to select
-    // the router's outbound path after WLOC has handled the inbound stream.
     match outbound {
         OutboundProxy::Direct => TcpStream::connect((destination, port))
             .await
@@ -1192,7 +1197,7 @@ fn debug_response() -> UpstreamResponse {
     UpstreamResponse {
         status: StatusCode::OK,
         headers,
-        body: br#"{\"wloc\":\"ok\"}"#.to_vec(),
+        body: br#"{"wloc":"ok"}"#.to_vec(),
         wloc: false,
         response_mode: "debug",
         request_kind: None,
