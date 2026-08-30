@@ -3,6 +3,7 @@
 'require rpc';
 'require poll';
 'require ui';
+'require uci';
 'require view.wloc.main as wlocMain';
 'require wloc.ui as wlocUi';
 
@@ -19,15 +20,48 @@ var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
 var LOG_POLL_INTERVAL = 1;
 
+function logDateFormatter() {
+    var timezone = uci.get('system', '@system[0]', 'zonename');
+    timezone = timezone ? String(timezone).replace(/ /g, '_') : undefined;
+
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            dateStyle: 'medium',
+            timeStyle: 'long',
+            timeZone: timezone
+        });
+    } catch (error) {
+        return null;
+    }
+}
+
+function formatLogEntry(entry, formatter) {
+    var message = entry && entry.msg != null ? String(entry.msg) : '';
+    var date = new Date(entry && entry.time);
+    var timestamp = '';
+
+    if (!isNaN(date.getTime())) {
+        try {
+            timestamp = formatter ? formatter.format(date) : date.toLocaleString();
+        } catch (error) {
+            timestamp = date.toLocaleString();
+        }
+    }
+
+    return timestamp ? '[' + timestamp + '] ' + message : message;
+}
+
 function validateLogResponse(entries) {
     if (!Array.isArray(entries))
         throw new Error(_('Runtime log returned an invalid line list.'));
+
+    var formatter = logDateFormatter();
 
     return entries.filter(function(entry) {
         var message = entry && entry.msg != null ? String(entry.msg) : '';
         return message.toLowerCase().indexOf(LOG_TAG) !== -1;
     }).map(function(entry) {
-        return String(entry.msg || '');
+        return formatLogEntry(entry, formatter);
     });
 }
 
@@ -152,11 +186,16 @@ function runtimeLogSection() {
 
 return view.extend({
     load: function() {
-        return wlocMain.load.call(this);
+        return Promise.all([
+            wlocMain.load.call(this),
+            uci.load('system').catch(function() { return {}; })
+        ]);
     },
 
     render: function(data) {
-        return Promise.resolve(wlocMain.render.call(this, data)).then(function(root) {
+        var mainData = data && data[0] ? data[0] : data;
+
+        return Promise.resolve(wlocMain.render.call(this, mainData)).then(function(root) {
             var oldLog = root.querySelector('textarea[aria-label="' + _('Current-session in-memory log') + '"]');
             var oldSection = oldLog && oldLog.closest ? oldLog.closest('.cbi-section') : null;
 
