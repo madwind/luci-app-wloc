@@ -67,9 +67,7 @@ fn safe_text(value: &str, limit: usize) -> String {
 impl Status {
     pub fn new(
         path: PathBuf,
-        _legacy_log_path: PathBuf,
         configured_aps: usize,
-        _legacy_runtime_log_enabled: bool,
         fingerprint: String,
     ) -> std::io::Result<Self> {
         let now = epoch_seconds();
@@ -95,10 +93,6 @@ impl Status {
             pending,
             notify,
         })
-    }
-
-    pub fn runtime_log_enabled(&self) -> bool {
-        true
     }
 
     pub fn update_detail(
