@@ -143,7 +143,7 @@ impl Config {
             .map(|domain| (*domain).to_owned())
             .collect::<Vec<_>>();
         let mut debug = false;
-        let mut runtime_log = false;
+        let runtime_log = true;
         let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
         let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.sh");
@@ -159,7 +159,7 @@ impl Config {
                         .map_err(|_| "invalid listen port")?
                 }
                 "--debug" => debug = true,
-                "--runtime-log" => runtime_log = true,
+                "--runtime-log" => {},
                 "--rule" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
@@ -226,7 +226,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--debug] [--runtime-log]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--debug]"
     }
 }
 
