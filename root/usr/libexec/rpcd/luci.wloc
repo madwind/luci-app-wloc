@@ -6,7 +6,6 @@ INIT=${WLOC_INIT_PATH:-/etc/init.d/wloc}
 RULES=${WLOC_RULES_HELPER:-/usr/libexec/wloc/rules.sh}
 FIREWALL_HELPER=${WLOC_FIREWALL_HELPER_PATH:-/usr/libexec/wloc/firewall.sh}
 STATE=${WLOC_STATUS_PATH:-/var/run/wloc/status.json}
-RUNTIME_LOG=${WLOC_RUNTIME_LOG_PATH:-/var/run/wloc/runtime.log}
 CAINFO=${WLOC_CAINFO_PATH:-/etc/wloc/ca.info.json}
 CA_KEY=${WLOC_CA_KEY_PATH:-/etc/wloc/ca.key}
 CA_DER=${WLOC_CA_DER_PATH:-/etc/wloc/ca.der}
@@ -327,8 +326,6 @@ load_runtime_state() {
     service_reason=''
     session_started_at=0
     updated_at=0
-    runtime_log_enabled=0
-    runtime_log_revision=0
     activity_rows=''
 
     [ -s "$STATE" ] || return 0
@@ -336,8 +333,7 @@ load_runtime_state() {
     json_get_vars armed:0 configured_aps:0 ca_fingerprint \
         accepted_connections:0 passthrough_connections:0 tls_intercepted:0 \
         wloc_requests:0 patched_responses:0 delivered_responses:0 patch_failures:0 \
-        last_event last_error session_started_at:0 updated_at:0 \
-        runtime_log_enabled:0 runtime_log_revision:0
+        last_event last_error session_started_at:0 updated_at:0
     if json_select ap_activity 2>/dev/null; then
         json_get_keys activity_keys
         for activity_index in $activity_keys; do
@@ -407,9 +403,6 @@ emit_status() {
     if service_daemon_running; then
         daemon_running=1
     elif [ "$service_status_available" -eq 0 ] && pidof wlocd >/dev/null 2>&1; then
-        # Older OpenWrt releases may not expose the service object yet. This
-        # compatibility fallback is deliberately skipped when ubus answered,
-        # so a manually launched wlocd cannot impersonate the managed daemon.
         daemon_running=1
     fi
     service_reason=''
@@ -458,8 +451,6 @@ emit_status() {
     json_add_string service_reason "$service_reason"
     json_add_int session_started_at "$session_started_at"
     json_add_int updated_at "$updated_at"
-    json_add_boolean runtime_log_enabled "$runtime_log_enabled"
-    json_add_int runtime_log_revision "$runtime_log_revision"
     json_add_int interception_attempts "$attempts"
     json_add_int intercepted_packets "$intercepted"
     json_add_boolean path_conflict "$conflict"
@@ -584,7 +575,7 @@ if [ "${WLOC_RPC_SOURCE:-0}" -ne 1 ]; then
 case "$1" in
 list)
     json_init
-    for method in status configured_access_points restart regenerate_ca logs firewall_read firewall_validate firewall_save firewall_apply; do
+    for method in status configured_access_points restart regenerate_ca firewall_read firewall_validate firewall_save firewall_apply; do
         json_add_object "$method"
         case "$method" in
             firewall_validate|firewall_apply) json_add_string config '';;
@@ -607,16 +598,6 @@ call)
         ;;
     regenerate_ca)
         rpc_regenerate_ca
-        ;;
-    logs)
-        load_runtime_state
-        json_init
-        if [ "$runtime_log_enabled" -eq 1 ]; then
-            json_add_string logs "$(cat "$RUNTIME_LOG" 2>/dev/null || true)"
-        else
-            json_add_string logs ''
-        fi
-        json_dump
         ;;
     firewall_read) firewall_response;;
     firewall_validate)
