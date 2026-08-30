@@ -496,6 +496,8 @@ return view.extend({
                     throw new Error(_('Location fields are unavailable.'));
                 latitudeElement.setValue(result.latitude);
                 longitudeElement.setValue(result.longitude);
+                latitudeElement.triggerValidation();
+                longitudeElement.triggerValidation();
                 if (resultNode) {
                     resultNode.replaceChildren(
                         E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
