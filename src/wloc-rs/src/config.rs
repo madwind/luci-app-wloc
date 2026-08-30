@@ -103,7 +103,6 @@ pub struct Config {
     pub listen_port: u16,
     pub domains: Vec<String>,
     pub debug: bool,
-    pub runtime_log: bool,
     /// Enabled rules in exact UCI order. Never sort this vector.
     pub rules: Vec<LocationRule>,
     pub state_dir: PathBuf,
@@ -143,7 +142,6 @@ impl Config {
             .map(|domain| (*domain).to_owned())
             .collect::<Vec<_>>();
         let mut debug = false;
-        let runtime_log = true;
         let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
         let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.sh");
@@ -159,7 +157,6 @@ impl Config {
                         .map_err(|_| "invalid listen port")?
                 }
                 "--debug" => debug = true,
-                "--runtime-log" => {},
                 "--rule" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
@@ -218,7 +215,6 @@ impl Config {
             listen_port,
             domains,
             debug,
-            runtime_log,
             rules,
             state_dir,
             rules_helper,
