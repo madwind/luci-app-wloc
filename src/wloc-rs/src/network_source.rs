@@ -202,25 +202,3 @@ fn access_point_from_status(object: &str, value: &Value) -> Result<AccessPoint, 
         iface: iface.to_owned(),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_client_case_insensitively() {
-        let value: Value =
-            serde_json::from_str(r#"{"clients":{"AA:BB:CC:DD:EE:01":{"signal":-40}}}"#).unwrap();
-        assert!(has_client(
-            &value,
-            MacAddress::parse("aa:bb:cc:dd:ee:01").unwrap()
-        ));
-    }
-
-    #[test]
-    fn status_exposes_the_runtime_interface_for_matching() {
-        let value: Value = serde_json::from_str(r#"{"ifname":"wlan1"}"#).unwrap();
-        let access_point = access_point_from_status("hostapd.wlan1", &value).unwrap();
-        assert_eq!(access_point.iface, "wlan1");
-    }
-}

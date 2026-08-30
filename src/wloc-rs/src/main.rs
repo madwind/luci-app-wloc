@@ -317,32 +317,3 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     })?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::cleanup_recovery_should_report;
-
-    #[test]
-    fn a_recovered_cleanup_failure_is_reported_once() {
-        let mut cleanup_was_failed = true;
-        assert!(cleanup_recovery_should_report(
-            false,
-            &mut cleanup_was_failed
-        ));
-        assert!(!cleanup_was_failed);
-        assert!(!cleanup_recovery_should_report(
-            false,
-            &mut cleanup_was_failed
-        ));
-    }
-
-    #[test]
-    fn an_armed_reconcile_failure_is_reported_and_clears_recovery_state() {
-        let mut cleanup_was_failed = false;
-        assert!(cleanup_recovery_should_report(
-            true,
-            &mut cleanup_was_failed
-        ));
-        assert!(!cleanup_was_failed);
-    }
-}

@@ -109,18 +109,13 @@ bash ./scripts/build-openwrt-25.12.5.sh x86/64
 
 The script downloads and verifies the official OpenWrt SDK, builds the native
 musl binary and APK package, validates the result, and writes artifacts to
-`dist/mediatek/filogic/`, `dist/rockchip/armv8/`, or `dist/x86/64/`. The default
-GitHub Actions CI runs Rust formatting, Clippy, Rust tests, and host tests on
-pushes and pull requests.
-Changes to the package Makefile, Rust source, OpenWrt root files, or build
-scripts also run an x86/64 SDK compile smoke test. The release package workflow
-runs host tests, builds all three targets, validates the APK artifacts,
-generates SHA-256 files, and publishes the GitHub Release. It does not run the
-deep runtime integration suite. CI caches each architecture's checksum-pinned
-SDK archive and Cargo downloads, while the build script still verifies the SDK
-SHA-256 on every run. A tag must match `v${WLOC_VERSION}-r${WLOC_RELEASE}` and
-creates a GitHub Release containing target-specific assets and their SHA-256
-files:
+`dist/mediatek/filogic/`, `dist/rockchip/armv8/`, or `dist/x86/64/`. The release
+workflow builds all three targets, validates the APK artifacts, generates
+SHA-256 files, and publishes the GitHub Release. It caches each architecture's
+checksum-pinned SDK archive and Cargo downloads, while the build script still
+verifies the SDK SHA-256 on every run. A tag must match
+`v${WLOC_VERSION}-r${WLOC_RELEASE}` and creates a GitHub Release containing
+target-specific assets and their SHA-256 files:
 
 ```text
 luci-app-wloc-<version>-r<release>-mediatek-filogic.apk
@@ -215,39 +210,6 @@ recovery does not require a manual **Restart service**.
 When the package is uninstalled, its lifecycle hook deletes `table bridge wloc`
 and `table inet wloc` and removes the runtime snapshots. Unrelated tables are
 not touched.
-
-## Manual OpenWrt runtime integration
-
-The deep OpenWrt lifecycle suite is intentionally manual and is not a default
-CI, package-build, or release gate. Run it only against a dedicated test target
-whose SSH access is already configured and works without interactive
-authentication. The target must provide `apk`, `ubus`, `jsonfilter`, `uci`, and
-`nft`.
-
-```sh
-WLOC_OPENWRT_APK="$(
-    find dist/mediatek/filogic -maxdepth 1 -type f \
-        -name 'luci-app-wloc-*.apk' -print -quit
-)"
-
-WLOC_OPENWRT_SSH=root@192.168.1.1 \
-WLOC_OPENWRT_APK="$WLOC_OPENWRT_APK" \
-WLOC_RUNTIME_ALLOW_DESTRUCTIVE=1 \
-sh tests/runtime-integration.sh
-```
-
-Use the APK matching the target architecture; use artifacts under
-`dist/mediatek/filogic/`, `dist/rockchip/armv8/`, or `dist/x86/64/` for the
-corresponding target. For NanoPi R28S running FriendlyWrt 25.12, use the
-artifact under `dist/rockchip/armv8/`; it was built with the official OpenWrt
-25.12.5 `rockchip/armv8` SDK.
-The suite installs and uninstalls the package,
-creates the temporary `wireless.wloc_test` and `wloc.test` UCI sections, changes
-WLOC firewall state, reboots the target, kills `wlocd`, and stops the service.
-It is therefore destructive and may change the target's WLOC firewall
-configuration. The script performs best-effort cleanup of its temporary UCI
-fixture and uploaded APK, but it does not restore an entire router
-configuration. Do not run it against a production router.
 
 ## License
 
