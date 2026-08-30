@@ -8,7 +8,7 @@
   "admin/services/wloc/settings": {
     "title": "Settings",
     "order": 1,
-    "action": { "type": "view", "path": "wloc/main" }
+    "action": { "type": "view", "path": "wloc/main-live" }
   },
   "admin/services/wloc/firewall": {
     "title": "Firewall",
