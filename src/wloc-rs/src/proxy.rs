@@ -652,40 +652,36 @@ impl Proxy {
                     response.body = patched.body;
                     response_mode = "upstream_patched";
                     patched_target = Some(target);
-                    let location_lines = if self.status.runtime_log_enabled() {
-                        patched
-                            .changes
-                            .iter()
-                            .enumerate()
-                            .map(|(index, change)| {
-                                let before_accuracy = change
-                                    .accuracy_before
-                                    .map(|value| value.to_string())
-                                    .unwrap_or_else(|| "absent".into());
-                                let after_accuracy = change
-                                    .accuracy_after
-                                    .map(|value| value.to_string())
-                                    .unwrap_or_else(|| "absent".into());
-                                self.rule_detail(
-                                    client,
-                                    ip,
-                                    format!(
-                                        "rule={client} host={tls_sni} source={} index={} before={:.8},{:.8},accuracy_m={} after={:.8},{:.8},accuracy_m={}",
-                                        change.source,
-                                        index + 1,
-                                        change.latitude_before_e8 as f64 / 100_000_000.0,
-                                        change.longitude_before_e8 as f64 / 100_000_000.0,
-                                        before_accuracy,
-                                        change.latitude_after_e8 as f64 / 100_000_000.0,
-                                        change.longitude_after_e8 as f64 / 100_000_000.0,
-                                        after_accuracy
-                                    ),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
+                    let location_lines = patched
+                        .changes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, change)| {
+                            let before_accuracy = change
+                                .accuracy_before
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "absent".into());
+                            let after_accuracy = change
+                                .accuracy_after
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "absent".into());
+                            self.rule_detail(
+                                client,
+                                ip,
+                                format!(
+                                    "rule={client} host={tls_sni} source={} index={} before={:.8},{:.8},accuracy_m={} after={:.8},{:.8},accuracy_m={}",
+                                    change.source,
+                                    index + 1,
+                                    change.latitude_before_e8 as f64 / 100_000_000.0,
+                                    change.longitude_before_e8 as f64 / 100_000_000.0,
+                                    before_accuracy,
+                                    change.latitude_after_e8 as f64 / 100_000_000.0,
+                                    change.longitude_after_e8 as f64 / 100_000_000.0,
+                                    after_accuracy
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>();
                     self.status.update_detail_lines(
                         "wloc_upstream_patched",
                         &self.rule_detail(
