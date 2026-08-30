@@ -16,9 +16,11 @@ var callLogRead = rpc.declare({
 });
 
 var LOG_TAG = 'wlocd';
+var LOG_FETCH_LINES = 1000;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
 var LOG_POLL_INTERVAL = 1;
+var LOG_SEEN_KEYS = 5000;
 
 function logDateFormatter() {
     var timezone = uci.get('system', '@system[0]', 'zonename');
@@ -51,6 +53,18 @@ function formatLogEntry(entry, formatter) {
     return timestamp ? '[' + timestamp + '] ' + message : message;
 }
 
+function logEntryKey(entry) {
+    if (entry && entry.id != null)
+        return 'id:' + String(entry.id);
+
+    return [
+        entry && entry.time != null ? String(entry.time) : '',
+        entry && entry.priority != null ? String(entry.priority) : '',
+        entry && entry.source != null ? String(entry.source) : '',
+        entry && entry.msg != null ? String(entry.msg) : ''
+    ].join('\u001f');
+}
+
 function validateLogResponse(entries) {
     if (!Array.isArray(entries))
         throw new Error(_('Runtime log returned an invalid line list.'));
@@ -61,7 +75,10 @@ function validateLogResponse(entries) {
         var message = entry && entry.msg != null ? String(entry.msg) : '';
         return message.toLowerCase().indexOf(LOG_TAG) !== -1;
     }).map(function(entry) {
-        return formatLogEntry(entry, formatter);
+        return {
+            key: logEntryKey(entry),
+            line: formatLogEntry(entry, formatter)
+        };
     });
 }
 
@@ -91,6 +108,8 @@ function runtimeLogSection() {
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
+    var seenLogKeys = Object.create(null);
+    var seenLogOrder = [];
 
     function filteredLogLines() {
         var filter = logFilter.value.trim().toLowerCase();
@@ -113,8 +132,23 @@ function runtimeLogSection() {
             logOutput.scrollTop = oldScrollTop;
     }
 
+    function rememberLogKey(key) {
+        if (seenLogKeys[key])
+            return false;
+
+        seenLogKeys[key] = true;
+        seenLogOrder.push(key);
+        while (seenLogOrder.length > LOG_SEEN_KEYS)
+            delete seenLogKeys[seenLogOrder.shift()];
+        return true;
+    }
+
     function applyLogResponse(entries) {
-        logLines = wlocUi.boundedLines(validateLogResponse(entries), LOG_LINES, LOG_MAX_BYTES);
+        validateLogResponse(entries).forEach(function(entry) {
+            if (rememberLogKey(entry.key))
+                logLines.push(entry.line);
+        });
+        logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
         renderLogs();
         wlocUi.setState(logState, paused ? 'notice' : 'ok', paused ? _('Paused') : _('Live'));
         return entries;
@@ -124,7 +158,7 @@ function runtimeLogSection() {
         if (paused || !pageVisible || logRequest)
             return logRequest || Promise.resolve();
 
-        logRequest = callLogRead(LOG_LINES, false, true).then(function(entries) {
+        logRequest = callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
             return applyLogResponse(entries);
         }).catch(function(error) {
             if (pageVisible) {
@@ -198,9 +232,14 @@ return view.extend({
         return Promise.resolve(wlocMain.render.call(this, mainData)).then(function(root) {
             var oldLog = root.querySelector('textarea[aria-label="' + _('Current-session in-memory log') + '"]');
             var oldSection = oldLog && oldLog.closest ? oldLog.closest('.cbi-section') : null;
+            var legacyRuntimeToggle = root.querySelector('[id$=".runtime_log"]');
+            var legacyRuntimeRow = legacyRuntimeToggle && legacyRuntimeToggle.closest
+                ? legacyRuntimeToggle.closest('.cbi-value') : null;
 
             if (oldSection)
                 oldSection.remove();
+            if (legacyRuntimeRow)
+                legacyRuntimeRow.remove();
 
             root.appendChild(runtimeLogSection());
             return root;
