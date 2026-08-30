@@ -313,6 +313,20 @@ function runtimeLogSection() {
         });
     }
 
+    function handleStreamEnd(controller, error) {
+        if (streamController === controller)
+            streamController = null;
+        streamStarting = false;
+        streamActive = false;
+
+        if (controller.signal.aborted)
+            return;
+
+        console.warn(error);
+        nextStreamRetryAt = Date.now() + LOG_STREAM_RETRY_MS;
+        startFallbackPolling();
+    }
+
     function startLogStream(anchorId) {
         if (paused || !pageVisible || streamUnsupported || streamStarting || streamActive)
             return Promise.resolve(false);
@@ -351,24 +365,18 @@ function runtimeLogSection() {
 
             requestIncremental(anchorId);
 
-            return pumpLogStream(
+            pumpLogStream(
                 response.body.getReader(),
                 new TextDecoder(),
                 controller,
                 { buffer: '' }
-            );
+            ).catch(function(error) {
+                handleStreamEnd(controller, error);
+            });
+
+            return true;
         }).catch(function(error) {
-            if (streamController === controller)
-                streamController = null;
-            streamStarting = false;
-            streamActive = false;
-
-            if (controller.signal.aborted)
-                return false;
-
-            console.warn(error);
-            nextStreamRetryAt = Date.now() + LOG_STREAM_RETRY_MS;
-            startFallbackPolling();
+            handleStreamEnd(controller, error);
             return false;
         });
     }
