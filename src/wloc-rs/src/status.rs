@@ -120,6 +120,8 @@ impl Status {
         )?;
         write_atomic(&path, &initial)?;
         if runtime_log_enabled {
+            let initial_line = logs.front().cloned().unwrap_or_default();
+            eprintln!("wlocd: {initial_line}");
             write_atomic(
                 &log_path,
                 logs.iter()
@@ -225,6 +227,7 @@ fn format_log_line(started: Instant, event: &str, detail: &str, error: Option<&s
 }
 
 fn push_log(inner: &mut Inner, line: String) {
+    eprintln!("wlocd: {line}");
     inner.log_bytes = inner.log_bytes.saturating_add(line.len() + 1);
     inner.logs.push_back(line);
     while inner.logs.len() > MAX_LOG_LINES || inner.log_bytes > MAX_LOG_BYTES {
