@@ -25,6 +25,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const GLOBAL_STREAM_LIMIT: usize = 2;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
+const UPSTREAM_TLS_ATTEMPTS: usize = 2;
 
 #[derive(Clone)]
 struct PeerIdentity {
@@ -42,9 +43,6 @@ struct PeerCacheEntry {
 fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
     use std::os::fd::AsRawFd;
 
-    // Linux netfilter's SO_ORIGINAL_DST returns the tuple from before an
-    // earlier REDIRECT/DNAT. It lets non-WLOC SNI retain safe passthrough even
-    // though the plugin wins the local redirect for the selected CDN address.
     const SO_ORIGINAL_DST: libc::c_int = 80;
     let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
@@ -265,6 +263,19 @@ impl Proxy {
         };
         let ap_id = rule.id.clone();
         let result = self.handle_target(stream, rule, peer_address.ip()).await;
+        if let Err(ProxyError::ClientClosed(reason)) = &result {
+            self.status.update_detail(
+                "client_cancelled",
+                &self.rule_detail(
+                    &ap_id,
+                    peer_address.ip(),
+                    format!("rule={ap_id} action=cancelled reason={reason}"),
+                ),
+                None,
+                |_| {},
+            );
+            return Ok(());
+        }
         if let Err(error) = &result {
             let reason = error.to_string();
             self.status.update_detail(
@@ -381,14 +392,14 @@ impl Proxy {
                     });
                 }
                 completed = streams.join_next(), if !streams.is_empty() => {
-                    completed
-                        .ok_or_else(|| ProxyError::Protocol("stream_task_missing".into()))?
-                        .map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))??;
+                    let completed = completed
+                        .ok_or_else(|| ProxyError::Protocol("stream_task_missing".into()))?;
+                    handle_stream_completion(completed)?;
                 }
             }
         }
         while let Some(completed) = streams.join_next().await {
-            completed.map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))??;
+            handle_stream_completion(completed)?;
         }
         Ok(())
     }
@@ -404,16 +415,35 @@ impl Proxy {
         ip: IpAddr,
         outbound: &OutboundProxy,
     ) -> Result<(), ProxyError> {
-        let _stream_permit = tokio::time::timeout(REQUEST_TIMEOUT, self.stream_limit.acquire())
-            .await
+        let permit_result = tokio::select! {
+            reset = std::future::poll_fn(|context| respond.poll_reset(context)) => {
+                let reason = match reset {
+                    Ok(reason) => format!("phase=queue rst_stream={reason:?}"),
+                    Err(error) => format!("phase=queue h2_connection={error}"),
+                };
+                return Err(ProxyError::ClientClosed(reason));
+            }
+            permit = tokio::time::timeout(REQUEST_TIMEOUT, self.stream_limit.acquire()) => permit,
+        };
+        let _stream_permit = permit_result
             .map_err(|_| ProxyError::Protocol("stream_queue_timeout".into()))?
             .map_err(|_| ProxyError::Protocol("stream_limit_closed".into()))?;
-        let upstream = tokio::time::timeout(
-            REQUEST_TIMEOUT,
-            self.forward(request, hostname, &follower, client, ip, outbound),
-        )
-        .await
-        .map_err(|_| ProxyError::Upstream("request_timeout".into()))??;
+
+        let forward_result = tokio::select! {
+            reset = std::future::poll_fn(|context| respond.poll_reset(context)) => {
+                let reason = match reset {
+                    Ok(reason) => format!("phase=upstream rst_stream={reason:?}"),
+                    Err(error) => format!("phase=upstream h2_connection={error}"),
+                };
+                return Err(ProxyError::ClientClosed(reason));
+            }
+            upstream = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                self.forward(request, hostname, &follower, client, ip, outbound),
+            ) => upstream,
+        };
+        let upstream = forward_result
+            .map_err(|_| ProxyError::Upstream("request_timeout".into()))??;
         let end = upstream.body.is_empty();
         let delivered_bytes = upstream.body.len();
         let delivered_status = upstream.status.as_u16();
@@ -446,7 +476,7 @@ impl Proxy {
         let response = response.body(()).map_err(ProxyError::h2)?;
         let mut sender = respond
             .send_response(response, end)
-            .map_err(ProxyError::h2)?;
+            .map_err(ProxyError::client_h2)?;
         if !end {
             tokio::time::timeout(
                 REQUEST_TIMEOUT,
@@ -457,26 +487,26 @@ impl Proxy {
         }
         if delivered_wloc || response_mode == "debug" {
             self.status.update_detail(
-                    "response_delivered",
-                    &self.rule_detail(
-                        client,
-                        ip,
-                        format!(
-                            "rule={client} host={hostname} status={delivered_status} bytes={delivered_bytes} mode={response_mode} kind={}",
-                            request_kind
-                                .map(|kind| kind.to_string())
-                                .unwrap_or_else(|| "unknown".into())
-                        ),
+                "response_delivered",
+                &self.rule_detail(
+                    client,
+                    ip,
+                    format!(
+                        "rule={client} host={hostname} status={delivered_status} bytes={delivered_bytes} mode={response_mode} kind={}",
+                        request_kind
+                            .map(|kind| kind.to_string())
+                            .unwrap_or_else(|| "unknown".into())
                     ),
-                    None,
-                    |c| {
-                        if let Some(target) = patched_target {
-                            c.delivered_for(client, target.latitude, target.longitude);
-                        } else if response_mode == "debug" {
-                            c.delivered();
-                        }
-                    },
-                );
+                ),
+                None,
+                |c| {
+                    if let Some(target) = patched_target {
+                        c.delivered_for(client, target.latitude, target.longitude);
+                    } else if response_mode == "debug" {
+                        c.delivered();
+                    }
+                },
+            );
         }
         Ok(())
     }
@@ -533,7 +563,7 @@ impl Proxy {
         let mut body_stream = request.into_body();
         let mut body = Vec::new();
         while let Some(chunk) = body_stream.data().await {
-            let chunk = chunk.map_err(ProxyError::h2)?;
+            let chunk = chunk.map_err(ProxyError::client_h2)?;
             if body.len().saturating_add(chunk.len()) > MAX_BODY {
                 return Err(ProxyError::Protocol("request_body_too_large".into()));
             }
@@ -744,16 +774,65 @@ impl Proxy {
             None,
             |_| {},
         );
-        let tcp =
-            tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_outbound(outbound, hostname, 443))
-                .await
-                .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
         let server_name = rustls::pki_types::ServerName::try_from(hostname.to_owned())
             .map_err(|_| ProxyError::Upstream("invalid_hostname".into()))?;
-        let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.connector.connect(server_name, tcp))
+        let mut tls_attempt = 1usize;
+        let tls = loop {
+            let tcp = tokio::time::timeout(
+                HANDSHAKE_TIMEOUT,
+                connect_outbound(outbound, hostname, 443),
+            )
             .await
-            .map_err(|_| ProxyError::Upstream("tls_timeout".into()))?
-            .map_err(|error| ProxyError::Upstream(format!("tls_verify: {error}")))?;
+            .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
+            match tokio::time::timeout(
+                HANDSHAKE_TIMEOUT,
+                self.connector.connect(server_name.clone(), tcp),
+            )
+            .await
+            {
+                Ok(Ok(tls)) => break tls,
+                Ok(Err(error))
+                    if tls_attempt < UPSTREAM_TLS_ATTEMPTS
+                        && retryable_tls_handshake_error(&error) =>
+                {
+                    self.status.update_detail(
+                        "upstream_retry",
+                        &self.rule_detail(
+                            client,
+                            ip,
+                            format!(
+                                "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason={}",
+                                tls_attempt + 1,
+                                error.kind()
+                            ),
+                        ),
+                        None,
+                        |_| {},
+                    );
+                    tls_attempt += 1;
+                }
+                Ok(Err(error)) => {
+                    return Err(ProxyError::Upstream(format!("tls_verify: {error}")));
+                }
+                Err(_) if tls_attempt < UPSTREAM_TLS_ATTEMPTS => {
+                    self.status.update_detail(
+                        "upstream_retry",
+                        &self.rule_detail(
+                            client,
+                            ip,
+                            format!(
+                                "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason=timeout",
+                                tls_attempt + 1
+                            ),
+                        ),
+                        None,
+                        |_| {},
+                    );
+                    tls_attempt += 1;
+                }
+                Err(_) => return Err(ProxyError::Upstream("tls_timeout".into())),
+            }
+        };
         let alpn = tls.get_ref().1.alpn_protocol().map(|value| value.to_vec());
         match alpn.as_deref() {
             Some(b"h2") => {
@@ -793,14 +872,30 @@ impl Proxy {
     }
 }
 
+fn handle_stream_completion(
+    completed: Result<Result<(), ProxyError>, tokio::task::JoinError>,
+) -> Result<(), ProxyError> {
+    match completed.map_err(|error| ProxyError::Protocol(format!("stream_task: {error}")))? {
+        Ok(()) | Err(ProxyError::ClientClosed(_)) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn retryable_tls_handshake_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
+}
+
 async fn connect_outbound(
     outbound: &OutboundProxy,
     destination: &str,
     port: u16,
 ) -> Result<TcpStream, ProxyError> {
-    // These are ordinary locally generated sockets. WLOC deliberately owns
-    // no OUTPUT hook, leaving local transparent-proxy policy free to select
-    // the router's outbound path after WLOC has handled the inbound stream.
     match outbound {
         OutboundProxy::Direct => TcpStream::connect((destination, port))
             .await
@@ -1193,12 +1288,18 @@ async fn send_h2_data(
         sender.reserve_capacity((body.len() - offset).min(16 * 1024));
         let capacity = std::future::poll_fn(|context| sender.poll_capacity(context))
             .await
-            .ok_or_else(|| ProxyError::Protocol("h2_stream_closed".into()))?
+            .ok_or_else(|| {
+                if upstream {
+                    ProxyError::Upstream("h2: stream closed".into())
+                } else {
+                    ProxyError::ClientClosed("phase=response_body h2_stream_closed".into())
+                }
+            })?
             .map_err(|error| {
                 if upstream {
                     ProxyError::upstream_h2(error)
                 } else {
-                    ProxyError::h2(error)
+                    ProxyError::client_h2(error)
                 }
             })?;
         if capacity == 0 {
@@ -1215,7 +1316,7 @@ async fn send_h2_data(
                 if upstream {
                     ProxyError::upstream_h2(error)
                 } else {
-                    ProxyError::h2(error)
+                    ProxyError::client_h2(error)
                 }
             })?;
         offset += count;
@@ -1226,6 +1327,7 @@ async fn send_h2_data(
 #[derive(Debug)]
 pub enum ProxyError {
     ClientTls(String),
+    ClientClosed(String),
     Protocol(String),
     Upstream(String),
 }
@@ -1237,12 +1339,25 @@ impl ProxyError {
     pub fn h2(error: impl std::fmt::Display) -> Self {
         Self::Protocol(error.to_string())
     }
+    pub fn client_h2(error: h2::Error) -> Self {
+        let message = error.to_string();
+        if error.is_reset()
+            || error.is_remote()
+            || message.contains("inactive stream")
+            || message.contains("unexpected frame type")
+        {
+            Self::ClientClosed(format!("h2: {message}"))
+        } else {
+            Self::Protocol(message)
+        }
+    }
     pub fn upstream_h2(error: impl std::fmt::Display) -> Self {
         Self::Upstream(format!("h2: {error}"))
     }
     pub fn category(&self) -> &'static str {
         match self {
             Self::ClientTls(_) => "client_tls",
+            Self::ClientClosed(_) => "client_closed",
             Self::Protocol(_) => "protocol",
             Self::Upstream(_) => "upstream",
         }
@@ -1252,6 +1367,7 @@ impl std::fmt::Display for ProxyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ClientTls(v) => write!(f, "client TLS: {v}"),
+            Self::ClientClosed(v) => write!(f, "client closed: {v}"),
             Self::Protocol(v) => write!(f, "protocol: {v}"),
             Self::Upstream(v) => write!(f, "upstream: {v}"),
         }
