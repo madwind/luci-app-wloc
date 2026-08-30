@@ -98,13 +98,13 @@ the same application version with packaging-only changes.
 
 ```sh
 # MediaTek Filogic
-bash ./scripts/build-openwrt-25.12.5.sh mediatek/filogic
+bash ./scripts/build-apk.sh mediatek/filogic
 
 # Rockchip ARMv8
-bash ./scripts/build-openwrt-25.12.5.sh rockchip/armv8
+bash ./scripts/build-apk.sh rockchip/armv8
 
 # x86/64
-bash ./scripts/build-openwrt-25.12.5.sh x86/64
+bash ./scripts/build-apk.sh x86/64
 ```
 
 The script downloads and verifies the official OpenWrt SDK, builds the native

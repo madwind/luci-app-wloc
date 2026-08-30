@@ -58,7 +58,7 @@ jobs:
 
       - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
-        run: bash ./scripts/build-openwrt-25.12.5.sh "${{ matrix.target }}/${{ matrix.subtarget }}"
+        run: bash ./scripts/build-apk.sh "${{ matrix.target }}/${{ matrix.subtarget }}"
 
       - name: Prepare release assets
         shell: bash
