@@ -87,19 +87,12 @@ startup_warning() {
 
 start_service() {
     mkdir -p /var/run/wloc
-    rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log \
-        /var/run/wloc/package.version "$START_ERROR"
-    # The firewall helper owns both runtime snapshots and serializes startup
-    # Apply with every other firewall state transition.
-    # Apply the user-managed nftables configuration before the daemon starts.
-    # This direct helper keeps service startup independent of rpcd availability.
+    rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
     if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$FIREWALL" 2>&1)"; then
         startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}"
     fi
     config_load wloc
 
-    # Keep WiFi/AP schedules independent from the WLOC interception daemon.
-    # This also lets scheduled switching work when location interception is off.
     procd_open_instance schedule
     procd_set_param command "$SCHEDULE" run
     procd_set_param respawn 3600 5 30
@@ -136,8 +129,6 @@ start_service() {
     [ -z "$rule_error" ] || { startup_failure "$rule_error; interception remains disabled"; return $?; }
     [ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules; interception remains disabled'; return $?; }
 
-    # Keep all dynamic sets empty until wlocd has bound its listener. The daemon
-    # performs the first reconcile after listener_ready.
     mkdir -p /etc/wloc
     chmod 0700 /etc/wloc
 
@@ -149,7 +140,6 @@ start_service() {
     done
     procd_set_param env WLOC_PROFILE_PATH=/www/wloc-ca.mobileconfig \
         WLOC_STATUS_PATH=/var/run/wloc/status.json \
-        WLOC_RUNTIME_LOG_PATH=/var/run/wloc/runtime.log \
         WLOC_START_ERROR_PATH="$START_ERROR"
     procd_set_param respawn 3600 5 60
     procd_set_param stdout 1
@@ -180,7 +170,7 @@ service_stopped() {
         logger -t wlocd "firewall cleanup failed after service stop: $cleanup_detail"
         rc=1
     fi
-    rm -f /var/run/wloc/status.json /var/run/wloc/runtime.log "$START_ERROR" || rc=1
+    rm -f /var/run/wloc/status.json "$START_ERROR" || rc=1
     return "$rc"
 }
 
