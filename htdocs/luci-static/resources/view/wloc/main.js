@@ -8,7 +8,6 @@
 'require poll';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
-var callLogs = rpc.declare({ object: 'luci.wloc', method: 'logs', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
@@ -144,18 +143,13 @@ return view.extend({
             // The configured inventory remains available while hostapd is restarting;
             // runtime fields are only metadata on those stable entries.
             callWirelessAccessPoints(),
-            callStatus().catch(function() { return {}; }),
-            callLogs().catch(function() { return {}; })
+            callStatus().catch(function() { return {}; })
         ]);
     },
 
     render: function(data) {
         var accessPoints = data[2].access_points || [];
         var initialStatus = data[3] || {};
-        var initialLogs = (data[4] || {}).logs || '';
-        var lastLogRevision = initialLogs
-            ? String(initialStatus.session_started_at || 0) + ':' + String(initialStatus.runtime_log_revision || 0)
-            : '';
         var lookupResultNodes = {};
         var lastUpdatedNodes = {};
         var lastResultNodes = {};
@@ -253,10 +247,6 @@ return view.extend({
         option.default = '0';
         option.rmempty = false;
         option.description = _('When enabled, requests to the fixed Apple WLOC endpoints return {"wloc":"ok"} without contacting the upstream server.');
-        option = settings.option(form.Flag, 'runtime_log', _('Enable runtime log'));
-        option.default = '0';
-        option.rmempty = false;
-        option.description = _('Keeps detailed request and coordinate events in RAM until the service restarts. Leave disabled to avoid continuous log allocation and updates.');
         var caOption = settings.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
         caOption.rmempty = true;
         caOption.cfgvalue = function() { return 'certificate'; };
@@ -273,105 +263,104 @@ return view.extend({
             ]);
         };
 
-    var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
-        _('Select an exact fixed interface and assign one virtual location to clients connected through that AP.'));
-    wifiSections.anonymous = true;
-    wifiSections.addremove = true;
-    wifiSections.sortable = true;
-    wifiSections.nodescriptions = true;
-    wifiSections.addbtntitle = _('Add AP');
+        var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
+            _('Select an exact fixed interface and assign one virtual location to clients connected through that AP.'));
+        wifiSections.anonymous = true;
+        wifiSections.addremove = true;
+        wifiSections.sortable = true;
+        wifiSections.nodescriptions = true;
+        wifiSections.addbtntitle = _('Add AP');
 
-    var ifaceOption = wifiSections.option(form.ListValue, 'iface', _('Interface'));
-    // Keep the interface selector in both the table and the Add/Edit modal.
-    ifaceOption.modalonly = null;
-    ifaceOption.rmempty = false;
-    ifaceOption.description = _('Select the exact fixed interface name from a wifi-iface. Interfaces without a fixed ifname are not shown.');
-    if (!accessPoints.length && configuredWireless.length)
-        ifaceOption.description = _('Live AP status is not ready; configured interfaces remain selectable.');
-    if (!configuredWireless.length)
-        ifaceOption.description = _('No configured AP was found in wireless. Add a wifi-iface with a fixed ifname before creating a WLOC rule.');
-    var knownIfaces = [];
-    var ifaceCounts = {};
-    configuredWireless.forEach(function(ap) {
-        ifaceCounts[ap.iface] = (ifaceCounts[ap.iface] || 0) + 1;
-    });
-    function addIfaceChoice(ap) {
-        var iface = String(ap && ap.iface || '');
-        if (!iface || knownIfaces.indexOf(iface) >= 0)
-            return;
-        knownIfaces.push(iface);
-        var label = iface;
-        if (ap.missing)
-            label += ' (' + _('not found') + ')';
-        else if (ifaceCounts[iface] > 1)
-            label += ' — ' + _('duplicate; cannot be selected');
-        else if (!ap.active)
-            label += ' (' + _('offline') + ')';
-        ifaceOption.value(iface, label);
-    }
-    configuredWireless.forEach(addIfaceChoice);
-    uci.sections('wloc', 'wifi').forEach(function(wifi) {
-        var iface = String(wifi.iface || '');
-        if (iface && knownIfaces.indexOf(iface) < 0)
-            addIfaceChoice({ iface: iface, active: false, missing: true });
-    });
-    ifaceOption.cfgvalue = function(sectionId) {
-        return String(uci.get('wloc', sectionId, 'iface') || '');
-    };
-    ifaceOption.write = function(sectionId, value) {
-        value = String(value || '');
-        uci.set('wloc', sectionId, 'iface', value);
-        uci.unset('wloc', sectionId, 'ssid');
-        uci.unset('wloc', sectionId, 'migration_pending');
-    };
-    ifaceOption.validate = function(sectionId, value) {
-        value = String(value || '');
-        var matches = configuredWireless.filter(function(candidate) { return candidate.iface === value; });
-        if (!matches.length || matches.some(function(candidate) { return candidate.missing; }))
-            return _('Configured interface "%s" was not found.').format(value);
-        if (matches.length > 1)
-            return _('Interface "%s" is used by multiple APs and cannot be selected by WLOC.').format(value);
-        return true;
-    };
+        var ifaceOption = wifiSections.option(form.ListValue, 'iface', _('Interface'));
+        ifaceOption.modalonly = null;
+        ifaceOption.rmempty = false;
+        ifaceOption.description = _('Select the exact fixed interface name from a wifi-iface. Interfaces without a fixed ifname are not shown.');
+        if (!accessPoints.length && configuredWireless.length)
+            ifaceOption.description = _('Live AP status is not ready; configured interfaces remain selectable.');
+        if (!configuredWireless.length)
+            ifaceOption.description = _('No configured AP was found in wireless. Add a wifi-iface with a fixed ifname before creating a WLOC rule.');
+        var knownIfaces = [];
+        var ifaceCounts = {};
+        configuredWireless.forEach(function(ap) {
+            ifaceCounts[ap.iface] = (ifaceCounts[ap.iface] || 0) + 1;
+        });
+        function addIfaceChoice(ap) {
+            var iface = String(ap && ap.iface || '');
+            if (!iface || knownIfaces.indexOf(iface) >= 0)
+                return;
+            knownIfaces.push(iface);
+            var label = iface;
+            if (ap.missing)
+                label += ' (' + _('not found') + ')';
+            else if (ifaceCounts[iface] > 1)
+                label += ' — ' + _('duplicate; cannot be selected');
+            else if (!ap.active)
+                label += ' (' + _('offline') + ')';
+            ifaceOption.value(iface, label);
+        }
+        configuredWireless.forEach(addIfaceChoice);
+        uci.sections('wloc', 'wifi').forEach(function(wifi) {
+            var iface = String(wifi.iface || '');
+            if (iface && knownIfaces.indexOf(iface) < 0)
+                addIfaceChoice({ iface: iface, active: false, missing: true });
+        });
+        ifaceOption.cfgvalue = function(sectionId) {
+            return String(uci.get('wloc', sectionId, 'iface') || '');
+        };
+        ifaceOption.write = function(sectionId, value) {
+            value = String(value || '');
+            uci.set('wloc', sectionId, 'iface', value);
+            uci.unset('wloc', sectionId, 'ssid');
+            uci.unset('wloc', sectionId, 'migration_pending');
+        };
+        ifaceOption.validate = function(sectionId, value) {
+            value = String(value || '');
+            var matches = configuredWireless.filter(function(candidate) { return candidate.iface === value; });
+            if (!matches.length || matches.some(function(candidate) { return candidate.missing; }))
+                return _('Configured interface "%s" was not found.').format(value);
+            if (matches.length > 1)
+                return _('Interface "%s" is used by multiple APs and cannot be selected by WLOC.').format(value);
+            return true;
+        };
 
-    function accessPointForRule(sectionId) {
-        var iface = String(uci.get('wloc', sectionId, 'iface') || '');
-        return configuredWireless.find(function(candidate) { return candidate.iface === iface; });
-    }
+        function accessPointForRule(sectionId) {
+            var iface = String(uci.get('wloc', sectionId, 'iface') || '');
+            return configuredWireless.find(function(candidate) { return candidate.iface === iface; });
+        }
 
-    var wifiStateOption = wifiSections.option(form.DummyValue, '_wifi_state', _('AP status'));
-    wifiStateOption.modalonly = false;
-    wifiStateOption.cfgvalue = wifiStateOption.textvalue = function(sectionId) {
-        var iface = String(uci.get('wloc', sectionId, 'iface') || '');
-        var ap = accessPointForRule(sectionId);
-        if (!ap)
-            return iface ? _('Configured interface "%s" was not found.').format(iface) : _('Unavailable');
-        if (ifaceCounts[iface] > 1)
-            return _('Ambiguous');
-        if (ap.active && !ap.disabled)
-            return _('On');
-        if (ap && ap.disabled)
-            return _('Off');
-        return _('Offline');
-    };
+        var wifiStateOption = wifiSections.option(form.DummyValue, '_wifi_state', _('AP status'));
+        wifiStateOption.modalonly = false;
+        wifiStateOption.cfgvalue = wifiStateOption.textvalue = function(sectionId) {
+            var iface = String(uci.get('wloc', sectionId, 'iface') || '');
+            var ap = accessPointForRule(sectionId);
+            if (!ap)
+                return iface ? _('Configured interface "%s" was not found.').format(iface) : _('Unavailable');
+            if (ifaceCounts[iface] > 1)
+                return _('Ambiguous');
+            if (ap.active && !ap.disabled)
+                return _('On');
+            if (ap && ap.disabled)
+                return _('Off');
+            return _('Offline');
+        };
 
-    var ssidOption = wifiSections.option(form.DummyValue, '_ssid', _('SSID'));
-    ssidOption.modalonly = false;
-    ssidOption.cfgvalue = ssidOption.textvalue = function(sectionId) {
-        var ap = accessPointForRule(sectionId);
-        return ap && ap.ssid ? ap.ssid : _('Unavailable');
-    };
+        var ssidOption = wifiSections.option(form.DummyValue, '_ssid', _('SSID'));
+        ssidOption.modalonly = false;
+        ssidOption.cfgvalue = ssidOption.textvalue = function(sectionId) {
+            var ap = accessPointForRule(sectionId);
+            return ap && ap.ssid ? ap.ssid : _('Unavailable');
+        };
 
-    var enabledOption = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
-    enabledOption.modalonly = true;
-    enabledOption.default = '1';
-    enabledOption.rmempty = false;
+        var enabledOption = wifiSections.option(form.Flag, 'enabled', _('Enabled'));
+        enabledOption.modalonly = true;
+        enabledOption.default = '1';
+        enabledOption.rmempty = false;
 
         var scheduleEnabledOption = wifiSections.option(form.Flag, 'schedule_enabled', _('Scheduled disable'));
         scheduleEnabledOption.modalonly = true;
         scheduleEnabledOption.default = '0';
         scheduleEnabledOption.rmempty = false;
-    scheduleEnabledOption.description = _('Actually disable the selected interface during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing interface never falls back to another AP or the whole wireless configuration.');
+        scheduleEnabledOption.description = _('Actually disable the selected interface during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing interface never falls back to another AP or the whole wireless configuration.');
 
         function scheduleTimeValidator(sectionId, value) {
             return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))
@@ -525,31 +514,6 @@ return view.extend({
             'style': 'display: flex; flex: 1 1 auto; flex-direction: column; gap: 0.25em; margin: 0;'
         });
         var fingerprintNode = E('div', { 'class': 'cbi-section-descr' });
-        var logNode = E('textarea', {
-            'class': 'cbi-input-text',
-            'style': 'display: block; width: 100%; min-height: 18em; box-sizing: border-box;',
-            'wrap': 'off',
-            'rows': '18',
-            'readonly': true,
-            'aria-label': _('Current-session in-memory log')
-        }, initialLogs || _('No events in this session yet.'));
-        var followRuntimeLog = true;
-
-        function runtimeLogAtBottom() {
-            return logNode.scrollHeight - logNode.scrollTop - logNode.clientHeight <= 8;
-        }
-
-        logNode.addEventListener('scroll', function() {
-            followRuntimeLog = runtimeLogAtBottom();
-        });
-
-        function scrollRuntimeLogToBottom() {
-            if (!logNode || !followRuntimeLog)
-                return;
-            logNode.scrollTop = logNode.scrollHeight;
-            if (typeof requestAnimationFrame === 'function')
-                requestAnimationFrame(function() { logNode.scrollTop = logNode.scrollHeight; });
-        }
 
         function translateReason(reason) {
             if (!reason)
@@ -600,34 +564,11 @@ return view.extend({
             });
         }
 
-        function renderRuntimeLog(status, logs) {
-            var enabled = truthy(status.runtime_log_enabled);
-            logNode.value = enabled ? (logs || _('No events in this session yet.'))
-                : _('Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log.');
-            scrollRuntimeLogToBottom();
-        }
-
-        function refreshRuntimeLog(status, force) {
-            if (!truthy(status.runtime_log_enabled)) {
-                lastLogRevision = '';
-                renderRuntimeLog(status, '');
-                return Promise.resolve();
-            }
-            var revision = String(status.session_started_at || 0) + ':' + String(status.runtime_log_revision || 0);
-            if ((!force && document.visibilityState === 'hidden') || (!force && revision === lastLogRevision))
-                return Promise.resolve();
-            return callLogs().then(function(result) {
-                lastLogRevision = revision;
-                renderRuntimeLog(status, (result || {}).logs || '');
-            });
-        }
-
         function refresh() {
             return callStatus().then(function(status) {
                 status = status || {};
                 renderStatus(status);
                 renderApActivity(status);
-                return refreshRuntimeLog(status, false);
             }).catch(function() {
                 // Keep the last known state visible when a single poll request fails.
             });
@@ -648,7 +589,6 @@ return view.extend({
         }
 
         renderStatus(initialStatus);
-        renderRuntimeLog(initialStatus, initialLogs);
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState !== 'hidden')
                 refresh();
@@ -657,16 +597,8 @@ return view.extend({
 
         return map.render().then(function(formNode) {
             renderApActivity(initialStatus);
-            scrollRuntimeLogToBottom();
             poll.add(refresh, 10);
-            return E('div', {}, [
-                formNode,
-                E('div', { 'class': 'cbi-section' }, [
-                    E('h3', { 'class': 'cbi-section-title' }, _('Current-session in-memory log')),
-                    E('div', { 'class': 'cbi-section-descr' }, _('Shows received requests, upstream responses and coordinates before and after patching. It is stored only in /var/run and is cleared on every service start.')),
-                    logNode
-                ])
-            ]);
+            return E('div', {}, [ formNode ]);
         }.bind(this));
     }
 });
