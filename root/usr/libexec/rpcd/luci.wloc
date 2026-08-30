@@ -346,7 +346,8 @@ load_runtime_state() {
             json_get_vars ap_id latitude longitude last_location_at:0 success:0
             json_get_var activity_error last_error
             case "$ap_id" in ''|*[!A-Za-z0-9_-]*) ap_id='';; esac
-            [ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}\n"
+            [ -n "$ap_id" ] && activity_rows="${activity_rows}${ap_id} ${latitude:-0} ${longitude:-0} ${last_location_at:-0} ${success:-0} ${activity_error:-}
+"
             json_select ..
         done
         json_select ..
