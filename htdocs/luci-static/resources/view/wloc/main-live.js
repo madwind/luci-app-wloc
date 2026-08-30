@@ -1,28 +1,15 @@
 'use strict';
 'require view';
 'require rpc';
-'require poll';
 'require ui';
 'require uci';
 'require view.wloc.main as wlocMain';
 'require wloc.ui as wlocUi';
 
-var callLogRead = rpc.declare({
-    object: 'log',
-    method: 'read',
-    params: [ 'lines', 'stream', 'oneshot' ],
-    expect: { log: [] },
-    reject: true
-});
-
 var LOG_TAG = 'wlocd';
-var LOG_HISTORY_LINES = 1000;
-var LOG_CATCHUP_LINES = 128;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
-var LOG_FALLBACK_POLL_INTERVAL = 2;
-var LOG_STREAM_RETRY_MS = 30000;
-var LOG_SEEN_KEYS = 5000;
+var LOG_RECONNECT_MS = 2000;
 
 function logDateFormatter() {
     var timezone = uci.get('system', '@system[0]', 'zonename');
@@ -55,33 +42,6 @@ function formatLogEntry(entry, formatter) {
     return timestamp ? '[' + timestamp + '] ' + message : message;
 }
 
-function logEntryId(entry) {
-    if (!entry || entry.id == null || !isFinite(Number(entry.id)))
-        return null;
-
-    return Number(entry.id) >>> 0;
-}
-
-function logEntryKey(entry) {
-    return [
-        entry && entry.id != null ? String(entry.id) : '',
-        entry && entry.time != null ? String(entry.time) : '',
-        entry && entry.source != null ? String(entry.source) : '',
-        entry && entry.msg != null ? String(entry.msg) : ''
-    ].join('\u001f');
-}
-
-function isNewerLogId(candidate, current) {
-    if (candidate == null)
-        return false;
-    if (current == null)
-        return true;
-    if (candidate === current)
-        return false;
-
-    return ((candidate - current) >>> 0) < 0x80000000;
-}
-
 function runtimeLogSection() {
     var formatter = logDateFormatter();
     var logState = E('span', { 'aria-live': 'polite' }, _('Connecting'));
@@ -104,20 +64,12 @@ function runtimeLogSection() {
         'role': 'log',
         'aria-label': _('WLOC runtime log')
     });
-    var logRequest = null;
     var paused = false;
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
-    var seenLogKeys = Object.create(null);
-    var seenLogOrder = [];
-    var lastLogId = null;
     var streamController = null;
-    var streamStarting = false;
-    var streamActive = false;
-    var streamUnsupported = false;
-    var nextStreamRetryAt = 0;
-    var fallbackPolling = false;
+    var reconnectTimer = null;
 
     function filteredLogLines() {
         var filter = logFilter.value.trim().toLowerCase();
@@ -140,134 +92,15 @@ function runtimeLogSection() {
             logOutput.scrollTop = oldScrollTop;
     }
 
-    function rememberLogKey(key) {
-        if (seenLogKeys[key])
-            return false;
+    function appendLogEntry(entry) {
+        var message = entry && entry.msg != null ? String(entry.msg) : '';
 
-        seenLogKeys[key] = true;
-        seenLogOrder.push(key);
-        while (seenLogOrder.length > LOG_SEEN_KEYS)
-            delete seenLogKeys[seenLogOrder.shift()];
-        return true;
-    }
-
-    function appendLogEntries(entries, resetCursor) {
-        var changed = false;
-
-        if (!Array.isArray(entries))
-            throw new Error(_('Runtime log returned an invalid line list.'));
-
-        if (resetCursor)
-            lastLogId = null;
-
-        entries.forEach(function(entry) {
-            var id = logEntryId(entry);
-            var message = entry && entry.msg != null ? String(entry.msg) : '';
-
-            if (isNewerLogId(id, lastLogId))
-                lastLogId = id;
-
-            if (message.toLowerCase().indexOf(LOG_TAG) === -1)
-                return;
-
-            if (!rememberLogKey(logEntryKey(entry)))
-                return;
-
-            logLines.push(formatLogEntry(entry, formatter));
-            changed = true;
-        });
-
-        if (changed) {
-            logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
-            renderLogs();
-        }
-
-        return entries;
-    }
-
-    function findLogId(entries, id) {
-        if (id == null)
-            return -1;
-
-        for (var index = 0; index < entries.length; index++) {
-            if (logEntryId(entries[index]) === id)
-                return index;
-        }
-
-        return -1;
-    }
-
-    function readSince(anchorId, lines) {
-        return callLogRead(lines, false, true).then(function(entries) {
-            if (!Array.isArray(entries))
-                throw new Error(_('Runtime log returned an invalid line list.'));
-
-            if (anchorId == null)
-                return appendLogEntries(entries, false);
-
-            var anchorIndex = findLogId(entries, anchorId);
-            if (anchorIndex >= 0)
-                return appendLogEntries(entries.slice(anchorIndex + 1), false);
-
-            if (lines < LOG_HISTORY_LINES)
-                return readSince(anchorId, LOG_HISTORY_LINES);
-
-            return appendLogEntries(entries, true);
-        });
-    }
-
-    function requestIncremental(anchorId) {
-        if (paused || !pageVisible || logRequest)
-            return logRequest || Promise.resolve();
-
-        logRequest = readSince(anchorId, LOG_CATCHUP_LINES).catch(function(error) {
-            if (pageVisible)
-                console.warn(error);
-            return null;
-        }).then(function(result) {
-            logRequest = null;
-            return result;
-        });
-
-        return logRequest;
-    }
-
-    function stopFallbackPolling() {
-        if (!fallbackPolling)
+        if (message.toLowerCase().indexOf(LOG_TAG) === -1)
             return;
 
-        poll.remove(fallbackPoll);
-        fallbackPolling = false;
-    }
-
-    function fallbackPoll() {
-        if (paused || !pageVisible)
-            return Promise.resolve();
-
-        var anchorId = lastLogId;
-        return requestIncremental(anchorId).then(function() {
-            if (!streamUnsupported && !streamStarting && !streamActive && Date.now() >= nextStreamRetryAt)
-                startLogStream(lastLogId);
-        });
-    }
-
-    function startFallbackPolling() {
-        if (fallbackPolling || paused || !pageVisible)
-            return;
-
-        fallbackPolling = true;
-        wlocUi.setState(logState, 'notice', _('Live'));
-        poll.add(fallbackPoll, LOG_FALLBACK_POLL_INTERVAL);
-        fallbackPoll();
-    }
-
-    function stopLogStream() {
-        if (streamController)
-            streamController.abort();
-
-        streamController = null;
-        streamStarting = false;
-        streamActive = false;
+        logLines.push(formatLogEntry(entry, formatter));
+        logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
+        renderLogs();
     }
 
     function consumeSseFrame(frame) {
@@ -287,7 +120,7 @@ function runtimeLogSection() {
             return;
 
         try {
-            appendLogEntries([ JSON.parse(data.join('\n')) ], false);
+            appendLogEntry(JSON.parse(data.join('\n')));
         } catch (error) {
             console.warn(error);
         }
@@ -299,47 +132,59 @@ function runtimeLogSection() {
                 throw new Error('log subscription ended');
 
             state.buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
+
             var boundary;
             while ((boundary = state.buffer.indexOf('\n\n')) >= 0) {
-                var frame = state.buffer.slice(0, boundary);
+                consumeSseFrame(state.buffer.slice(0, boundary));
                 state.buffer = state.buffer.slice(boundary + 2);
-                consumeSseFrame(frame);
             }
 
-            if (controller.signal.aborted)
-                return null;
-
-            return pumpLogStream(reader, decoder, controller, state);
+            if (!controller.signal.aborted)
+                return pumpLogStream(reader, decoder, controller, state);
         });
     }
 
-    function handleStreamEnd(controller, error) {
-        if (streamController === controller)
-            streamController = null;
-        streamStarting = false;
-        streamActive = false;
-
-        if (controller.signal.aborted)
-            return;
-
-        console.warn(error);
-        nextStreamRetryAt = Date.now() + LOG_STREAM_RETRY_MS;
-        startFallbackPolling();
+    function clearReconnect() {
+        if (reconnectTimer !== null) {
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
     }
 
-    function startLogStream(anchorId) {
-        if (paused || !pageVisible || streamUnsupported || streamStarting || streamActive)
-            return Promise.resolve(false);
+    function stopLogStream() {
+        clearReconnect();
+
+        if (streamController)
+            streamController.abort();
+
+        streamController = null;
+    }
+
+    function scheduleReconnect() {
+        if (paused || !pageVisible || reconnectTimer !== null)
+            return;
+
+        wlocUi.setState(logState, 'notice', _('Reconnecting'));
+        reconnectTimer = window.setTimeout(function() {
+            reconnectTimer = null;
+            startLogStream();
+        }, LOG_RECONNECT_MS);
+    }
+
+    function startLogStream() {
+        if (paused || !pageVisible || streamController)
+            return Promise.resolve();
 
         if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
-            streamUnsupported = true;
-            startFallbackPolling();
-            return Promise.resolve(false);
+            wlocUi.setState(logState, 'warn', _('Unavailable'));
+            return Promise.resolve();
         }
+
+        clearReconnect();
+        wlocUi.setState(logState, 'notice', _('Connecting'));
 
         var controller = new AbortController();
         streamController = controller;
-        streamStarting = true;
 
         return fetch('/ubus/subscribe/log', {
             method: 'GET',
@@ -351,45 +196,26 @@ function runtimeLogSection() {
             cache: 'no-store',
             signal: controller.signal
         }).then(function(response) {
-            if (!response.ok || !response.body) {
-                if ([ 404, 405, 501 ].indexOf(response.status) >= 0)
-                    streamUnsupported = true;
+            if (!response.ok || !response.body)
                 throw new Error('log subscription HTTP ' + response.status);
-            }
 
-            streamStarting = false;
-            streamActive = true;
-            nextStreamRetryAt = 0;
-            stopFallbackPolling();
             wlocUi.setState(logState, 'ok', _('Live'));
 
-            requestIncremental(anchorId);
-
-            pumpLogStream(
+            return pumpLogStream(
                 response.body.getReader(),
                 new TextDecoder(),
                 controller,
                 { buffer: '' }
-            ).catch(function(error) {
-                handleStreamEnd(controller, error);
-            });
-
-            return true;
+            );
         }).catch(function(error) {
-            handleStreamEnd(controller, error);
-            return false;
-        });
-    }
+            if (!controller.signal.aborted)
+                console.warn(error);
+        }).then(function() {
+            if (streamController === controller)
+                streamController = null;
 
-    function bootstrapLogs() {
-        return callLogRead(LOG_HISTORY_LINES, false, true).then(function(entries) {
-            appendLogEntries(entries, true);
-            return startLogStream(lastLogId);
-        }).catch(function(error) {
-            console.warn(error);
-            startFallbackPolling();
-            if (!fallbackPolling)
-                wlocUi.setState(logState, 'warn', _('Unavailable'));
+            if (!controller.signal.aborted)
+                scheduleReconnect();
         });
     }
 
@@ -408,25 +234,19 @@ function runtimeLogSection() {
 
         if (paused) {
             stopLogStream();
-            stopFallbackPolling();
             wlocUi.setState(logState, 'notice', _('Paused'));
             return Promise.resolve();
         }
 
-        wlocUi.setState(logState, 'ok', _('Connecting'));
-        return startLogStream(lastLogId).then(function(started) {
-            if (!started && !streamActive)
-                startFallbackPolling();
-        });
+        return startLogStream();
     }));
 
     window.addEventListener('pagehide', function() {
         pageVisible = false;
         stopLogStream();
-        stopFallbackPolling();
     }, { once: true });
 
-    bootstrapLogs();
+    startLogStream();
 
     return E('div', { 'class': 'cbi-section' }, [
         E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
