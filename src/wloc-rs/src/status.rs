@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -7,8 +6,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-const MAX_LOG_LINES: usize = 240;
-const MAX_LOG_BYTES: usize = 96 * 1024;
 const MAX_LOG_LINE_CHARS: usize = 600;
 
 #[derive(Clone, Default, Serialize)]
@@ -28,8 +25,6 @@ struct Snapshot {
     last_error: Option<String>,
     session_started_at: u64,
     updated_at: u64,
-    runtime_log_enabled: bool,
-    runtime_log_revision: u64,
     ap_activity: Vec<ApActivity>,
 }
 
@@ -45,19 +40,12 @@ struct ApActivity {
 
 struct Inner {
     snapshot: Snapshot,
-    logs: VecDeque<String>,
-    log_bytes: usize,
-}
-
-struct PendingWrite {
-    snapshot: Snapshot,
-    runtime_log: Option<String>,
 }
 
 pub struct Status {
     started: Instant,
     inner: Mutex<Inner>,
-    pending: Arc<Mutex<Option<PendingWrite>>>,
+    pending: Arc<Mutex<Option<Snapshot>>>,
     notify: mpsc::SyncSender<()>,
 }
 
@@ -71,13 +59,7 @@ fn epoch_seconds() -> u64 {
 fn safe_text(value: &str, limit: usize) -> String {
     value
         .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
+        .map(|character| if character.is_control() { ' ' } else { character })
         .take(limit)
         .collect()
 }
@@ -85,72 +67,32 @@ fn safe_text(value: &str, limit: usize) -> String {
 impl Status {
     pub fn new(
         path: PathBuf,
-        log_path: PathBuf,
         configured_aps: usize,
-        runtime_log_enabled: bool,
         fingerprint: String,
     ) -> std::io::Result<Self> {
         let now = epoch_seconds();
-        let mut logs = VecDeque::new();
-        if runtime_log_enabled {
-            logs.push_back(format!(
-                "[+000.000s] event=session_started configured_aps={configured_aps}"
-            ));
-        }
-        let initial_log_bytes = logs.iter().map(|entry| entry.len() + 1).sum();
         let snapshot = Snapshot {
             running: true,
             configured_aps,
-            runtime_log_enabled,
             ca_fingerprint: fingerprint,
             last_event: "session_started".into(),
             session_started_at: now,
             updated_at: now,
-            runtime_log_revision: u64::from(runtime_log_enabled),
             ..Snapshot::default()
         };
         let initial = serde_json::to_vec_pretty(&snapshot).map_err(std::io::Error::other)?;
         let pending = Arc::new(Mutex::new(None));
         let (notify, receiver) = mpsc::sync_channel(1);
-        spawn_writer(
-            path.clone(),
-            log_path.clone(),
-            Arc::clone(&pending),
-            receiver,
-        )?;
+        spawn_writer(path.clone(), Arc::clone(&pending), receiver)?;
         write_atomic(&path, &initial)?;
-        if runtime_log_enabled {
-            let initial_line = logs.front().cloned().unwrap_or_default();
-            eprintln!("wlocd: {initial_line}");
-            write_atomic(
-                &log_path,
-                logs.iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .as_bytes(),
-            )?;
-        } else {
-            let _ = std::fs::remove_file(log_path);
-        }
+        eprintln!("wlocd: [+000.000s] event=session_started configured_aps={configured_aps}");
+
         Ok(Self {
             started: Instant::now(),
-            inner: Mutex::new(Inner {
-                snapshot,
-                logs,
-                log_bytes: initial_log_bytes,
-            }),
+            inner: Mutex::new(Inner { snapshot }),
             pending,
             notify,
         })
-    }
-
-    pub fn runtime_log_enabled(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .snapshot
-            .runtime_log_enabled
     }
 
     pub fn update_detail(
@@ -182,32 +124,23 @@ impl Status {
         inner.snapshot.last_error = error.map(|value| safe_text(value, 360));
         inner.snapshot.updated_at = epoch_seconds();
 
-        let runtime_log = if inner.snapshot.runtime_log_enabled {
-            push_log(
-                &mut inner,
-                format_log_line(self.started, event, detail, error),
+        eprintln!(
+            "wlocd: {}",
+            format_log_line(self.started, event, detail, error)
+        );
+        for line in extra_lines {
+            eprintln!(
+                "wlocd: {}",
+                format_log_line(self.started, "wloc_location_patched", line, None)
             );
-            for line in extra_lines {
-                push_log(
-                    &mut inner,
-                    format_log_line(self.started, "wloc_location_patched", line, None),
-                );
-            }
-            inner.snapshot.runtime_log_revision =
-                inner.snapshot.runtime_log_revision.saturating_add(1);
-            Some(inner.logs.iter().cloned().collect::<Vec<_>>().join("\n"))
-        } else {
-            None
-        };
+        }
+
         let snapshot = inner.snapshot.clone();
         drop(inner);
         *self
             .pending
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PendingWrite {
-            snapshot,
-            runtime_log,
-        });
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
         let _ = self.notify.try_send(());
     }
 }
@@ -226,21 +159,9 @@ fn format_log_line(started: Instant, event: &str, detail: &str, error: Option<&s
     line
 }
 
-fn push_log(inner: &mut Inner, line: String) {
-    eprintln!("wlocd: {line}");
-    inner.log_bytes = inner.log_bytes.saturating_add(line.len() + 1);
-    inner.logs.push_back(line);
-    while inner.logs.len() > MAX_LOG_LINES || inner.log_bytes > MAX_LOG_BYTES {
-        if let Some(removed) = inner.logs.pop_front() {
-            inner.log_bytes = inner.log_bytes.saturating_sub(removed.len() + 1);
-        }
-    }
-}
-
 fn spawn_writer(
     path: PathBuf,
-    log_path: PathBuf,
-    pending: Arc<Mutex<Option<PendingWrite>>>,
+    pending: Arc<Mutex<Option<Snapshot>>>,
     receiver: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new()
@@ -254,15 +175,9 @@ fn spawn_writer(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take();
-                if let Some(pending) = snapshot {
-                    let result = pending
-                        .runtime_log
-                        .as_deref()
-                        .map_or(Ok(()), |log| write_atomic(&log_path, log.as_bytes()))
-                        .and_then(|_| {
-                            serde_json::to_vec_pretty(&pending.snapshot)
-                                .map_err(std::io::Error::other)
-                        })
+                if let Some(snapshot) = snapshot {
+                    let result = serde_json::to_vec_pretty(&snapshot)
+                        .map_err(std::io::Error::other)
                         .and_then(|data| write_atomic(&path, &data));
                     if let Err(error) = result {
                         let now = Instant::now();
