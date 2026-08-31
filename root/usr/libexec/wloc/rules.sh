@@ -1,13 +1,13 @@
 #!/bin/sh
-# Dynamic interface lease and IPv4 TPROXY policy-routing lifecycle.
+# Fixed ingress-interface set and IPv4 TPROXY policy-routing lifecycle.
 
 set -eu
+
+. /lib/functions.sh
 
 INGRESS_FAMILY=bridge
 INGRESS_TABLE=wloc
 INGRESS_SET=target_ingress_interfaces
-AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
-INGRESS_INTERFACE_TIMEOUT=120s
 TPROXY_MARK=0x40000000
 TPROXY_MASK=0x40000000
 TPROXY_TABLE=201
@@ -64,8 +64,11 @@ valid_port() {
     [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
-load_ap_lib() {
-    [ "${WLOC_AP_LIB_LOADED:-0}" -eq 1 ] || . "$AP_LIB"
+valid_iface() {
+    case "$1" in
+        ''|*[!A-Za-z0-9_.-]*) return 1;;
+    esac
+    [ "${#1}" -le 15 ]
 }
 
 collect_wloc_ingress() {
@@ -74,14 +77,10 @@ collect_wloc_ingress() {
     config_get_bool enabled "$section" enabled 1
     [ "$enabled" -eq 1 ] || return 0
     config_get iface "$section" iface ''
-    [ -n "$iface" ] || {
-        WLOC_RESOLVE_ERROR="interface is missing from enabled rule $section"
+    valid_iface "$iface" || {
+        WLOC_RESOLVE_ERROR="invalid interface in enabled rule $section"
         return 0
     }
-    if ! wloc_ap_find_section_by_ifname "$iface" >/dev/null; then
-        WLOC_RESOLVE_ERROR="cannot resolve configured interface \"$iface\""
-        return 0
-    fi
     case " $WLOC_INGRESS_INTERFACES " in
         *" $iface "*) ;;
         *) WLOC_INGRESS_INTERFACES="${WLOC_INGRESS_INTERFACES} $iface" ;;
@@ -89,23 +88,32 @@ collect_wloc_ingress() {
 }
 
 sync_ingress_interfaces() {
-    local interface interfaces set_dump
+    local interface interfaces
+    nft list set "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET" >/dev/null 2>&1 || {
+        echo 'wloc: target ingress interface set is missing' >&2
+        return 1
+    }
+
     WLOC_RESOLVE_ERROR=''
     WLOC_INGRESS_INTERFACES=''
-    set_dump="$(nft list set "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET" 2>/dev/null)" || return 0
-    load_ap_lib || return 1
     config_load wloc || return 1
     config_foreach collect_wloc_ingress wifi
     [ -z "$WLOC_RESOLVE_ERROR" ] || {
         echo "wloc: $WLOC_RESOLVE_ERROR; interface set was not changed" >&2
         return 1
     }
+
     interfaces="$WLOC_INGRESS_INTERFACES"
+    [ -n "$interfaces" ] || {
+        echo 'wloc: no enabled ingress interfaces are configured' >&2
+        return 1
+    }
+
     {
         printf 'flush set %s %s %s\n' "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET"
         for interface in $interfaces; do
-            printf 'add element %s %s %s { "%s" timeout %s }\n' \
-                "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET" "$interface" "$INGRESS_INTERFACE_TIMEOUT"
+            printf 'add element %s %s %s { "%s" }\n' \
+                "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET" "$interface"
         done
     } | nft -f - || {
         echo 'wloc: unable to refresh ingress set; custom rules were left unchanged' >&2
