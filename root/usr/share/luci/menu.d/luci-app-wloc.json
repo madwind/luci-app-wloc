@@ -14,5 +14,10 @@
     "title": "Firewall",
     "order": 2,
     "action": { "type": "view", "path": "wloc/firewall" }
+  },
+  "admin/services/wloc/updates": {
+    "title": "Updates",
+    "order": 3,
+    "action": { "type": "view", "path": "wloc/updates" }
   }
 }
