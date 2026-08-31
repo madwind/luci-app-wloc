@@ -104,10 +104,6 @@ fn main() {
 
 fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::from_args().map_err(|e| format!("configuration: {e}"))?;
-    let relay_port = config
-        .listen_port
-        .checked_add(1)
-        .ok_or_else(|| "configuration: listen port must be <= 65534".to_owned())?;
     let (ca, generated) = CaBundle::load_or_generate(&config.state_dir)?;
     let ca = Arc::new(ca);
     let fingerprint = ca.fingerprint();
@@ -137,9 +133,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let wloc_listener = listener(config.listen_port)?;
-        let relay_tcp_listener = listener(relay_port)?;
-        let relay_udp_listener = transparent::udp_listener(relay_port)?;
+        let transparent_tcp_listener = listener(config.listen_port)?;
+        let transparent_udp_listener = transparent::udp_listener(config.listen_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
@@ -164,7 +159,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "listener_ready",
             &format!(
-                "wloc_tcp=0.0.0.0:{} relay_tcp_udp=0.0.0.0:{relay_port} transparent=true",
+                "transparent_tcp_udp=0.0.0.0:{} unified=true",
                 config.listen_port
             ),
             None,
@@ -181,9 +176,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 status.update_detail(
                     "interception_armed",
                     &format!(
-                        "rules={} hosts={} protocol=tcp,udp mode=global-transparent relay_port={relay_port}",
+                        "rules={} hosts={} protocol=tcp,udp mode=global-transparent listen_port={}",
                         config.rules.len(),
-                        config.domains.join(",")
+                        config.domains.join(","),
+                        config.listen_port
                     ),
                     None,
                     |c| c.armed(true),
@@ -288,33 +284,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let relay = Arc::new(transparent::TransparentProxy::new(config.rules.clone()));
         let udp_relay = Arc::clone(&relay);
         tokio::spawn(async move {
-            if let Err(error) = udp_relay.run_udp(relay_udp_listener).await {
+            if let Err(error) = udp_relay.run_udp(transparent_udp_listener).await {
                 eprintln!("wlocd: udp_listener=failed error={error}");
-            }
-        });
-
-        let tcp_relay = Arc::clone(&relay);
-        tokio::spawn(async move {
-            let connection_limit = Arc::new(tokio::sync::Semaphore::new(128));
-            loop {
-                let permit = match Arc::clone(&connection_limit).acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(_) => break,
-                };
-                let (stream, _) = match relay_tcp_listener.accept().await {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        eprintln!("wlocd: relay_accept=failed error={error}");
-                        continue;
-                    }
-                };
-                let relay = Arc::clone(&tcp_relay);
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(error) = relay.handle_tcp(stream).await {
-                        eprintln!("wlocd: tcp_relay=failed error={error}");
-                    }
-                });
             }
         });
 
@@ -327,27 +298,41 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.debug,
             Arc::clone(&status),
         ));
-        let connection_limit = Arc::new(tokio::sync::Semaphore::new(16));
+        let connection_limit = Arc::new(tokio::sync::Semaphore::new(128));
         loop {
             let permit = Arc::clone(&connection_limit)
                 .acquire_owned()
                 .await
                 .map_err(std::io::Error::other)?;
-            let (stream, _) = wloc_listener.accept().await?;
+            let (stream, _) = transparent_tcp_listener.accept().await?;
+            let destination_port = match stream.local_addr() {
+                Ok(destination) => destination.port(),
+                Err(error) => {
+                    eprintln!("wlocd: tcp_destination=failed error={error}");
+                    continue;
+                }
+            };
             let proxy = Arc::clone(&proxy);
+            let relay = Arc::clone(&relay);
             let status = Arc::clone(&status);
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) = proxy.handle(stream).await {
-                    let category = error.category();
-                    let detail = error.to_string();
-                    status.update_detail(
-                        "connection_failed",
-                        &format!("category={category}"),
-                        Some(&detail),
-                        |_| {},
+                if destination_port == 443 {
+                    if let Err(error) = proxy.handle(stream).await {
+                        let category = error.category();
+                        let detail = error.to_string();
+                        status.update_detail(
+                            "connection_failed",
+                            &format!("category={category}"),
+                            Some(&detail),
+                            |_| {},
+                        );
+                        eprintln!("wlocd: request=failed category={category} error={detail}");
+                    }
+                } else if let Err(error) = relay.handle_tcp(stream).await {
+                    eprintln!(
+                        "wlocd: tcp_relay=failed destination_port={destination_port} error={error}"
                     );
-                    eprintln!("wlocd: request=failed category={category} error={detail}");
                 }
             });
         }

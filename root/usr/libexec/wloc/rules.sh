@@ -61,7 +61,7 @@ cleanup() {
 
 valid_port() {
     case "$1" in ''|*[!0-9]*) return 1;; esac
-    [ "$1" -ge 1 ] && [ "$1" -le 65534 ]
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
 load_ap_lib() {
@@ -117,7 +117,7 @@ reconcile() {
     local port
     port="$1"
     valid_port "$port" || {
-        echo 'wloc: listen port must be between 1 and 65534 for the transparent relay' >&2
+        echo 'wloc: listen port must be between 1 and 65535 for the transparent proxy' >&2
         return 1
     }
     ensure_policy_routing || return 1

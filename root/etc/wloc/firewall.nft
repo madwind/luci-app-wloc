@@ -38,14 +38,14 @@ table inet wloc {
         ip daddr 255.255.255.255 return
         ip daddr 224.0.0.0/4 return
 
-        tcp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns tcp"
-        udp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns udp"
+        tcp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc dns tcp"
+        udp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc dns udp"
 
         ip daddr @bypass_v4 return
 
         tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc owned ingress redirect tls"
-        meta l4proto tcp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc tcp"
-        meta l4proto udp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc udp"
+        meta l4proto tcp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc tcp"
+        meta l4proto udp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc udp"
     }
 
     chain clear_ingress_mark {
