@@ -4,13 +4,15 @@
     "read": {
       "ubus": {
         "log": [ ":subscribe" ],
-        "luci.wloc": [ "status", "configured_access_points", "firewall_read", "firewall_validate" ]
+        "luci.wloc": [ "status", "configured_access_points", "firewall_read", "firewall_validate" ],
+        "luci.wloc.update": [ "status" ]
       },
       "uci": [ "wloc", "wireless" ]
     },
     "write": {
       "ubus": {
-        "luci.wloc": [ "restart", "regenerate_ca", "firewall_save", "firewall_apply" ]
+        "luci.wloc": [ "restart", "regenerate_ca", "firewall_save", "firewall_apply" ],
+        "luci.wloc.update": [ "check", "install" ]
       },
       "uci": [ "wloc" ]
     }
