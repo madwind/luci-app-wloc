@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -40,6 +41,7 @@ struct ApActivity {
 
 struct Inner {
     snapshot: Snapshot,
+    upstream_targets: HashMap<String, String>,
 }
 
 pub struct Status {
@@ -62,6 +64,15 @@ fn safe_text(value: &str, limit: usize) -> String {
         .map(|character| if character.is_control() { ' ' } else { character })
         .take(limit)
         .collect()
+}
+
+fn detail_token(detail: &str, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    detail
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix(&prefix))
+        .filter(|value| !value.is_empty())
+        .map(|value| safe_text(value, 255))
 }
 
 impl Status {
@@ -89,7 +100,10 @@ impl Status {
 
         Ok(Self {
             started: Instant::now(),
-            inner: Mutex::new(Inner { snapshot }),
+            inner: Mutex::new(Inner {
+                snapshot,
+                upstream_targets: HashMap::new(),
+            }),
             pending,
             notify,
         })
@@ -117,16 +131,49 @@ impl Status {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let rule_id = detail_token(detail, "rule");
+        if let (Some(rule_id), Some(host)) = (rule_id.as_ref(), detail_token(detail, "host")) {
+            inner.upstream_targets.insert(rule_id.clone(), host);
+        }
+
+        let enriched_error = error.map(|value| {
+            let base = safe_text(value, 360);
+            if event == "ap_failed" {
+                if let Some(target) = rule_id
+                    .as_ref()
+                    .and_then(|rule| inner.upstream_targets.get(rule))
+                {
+                    return safe_text(&format!("{base} · target: {target}"), 360);
+                }
+            }
+            base
+        });
+
         mutate(&mut Counters {
             snapshot: &mut inner.snapshot,
         });
+
+        if event == "ap_failed" {
+            if let (Some(rule_id), Some(error)) = (rule_id.as_deref(), enriched_error.as_deref()) {
+                if let Some(activity) = inner
+                    .snapshot
+                    .ap_activity
+                    .iter_mut()
+                    .find(|activity| activity.ap_id == rule_id)
+                {
+                    activity.last_error = error.to_owned();
+                }
+            }
+        }
+
         inner.snapshot.last_event = safe_text(event, 80);
-        inner.snapshot.last_error = error.map(|value| safe_text(value, 360));
+        inner.snapshot.last_error = enriched_error.clone();
         inner.snapshot.updated_at = epoch_seconds();
 
         eprintln!(
             "wlocd: {}",
-            format_log_line(self.started, event, detail, error)
+            format_log_line(self.started, event, detail, enriched_error.as_deref())
         );
         for line in extra_lines {
             eprintln!(
