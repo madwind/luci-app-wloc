@@ -47,6 +47,20 @@ define Package/luci-app-wloc/conffiles
 /etc/wloc/firewall.nft
 endef
 
+define Package/luci-app-wloc/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	# scripts/build-apk.sh normalizes root files before packaging; make sure
+	# newly added rpcd/update helpers are executable before rpcd reloads them.
+	chmod 0755 /usr/libexec/rpcd/luci.wloc.update /usr/libexec/wloc/update.sh 2>/dev/null || true
+	rm -f /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache/
+	/etc/init.d/rpcd reload 2>/dev/null
+	exit 0
+}
+exit 0
+endef
+
 define Package/luci-app-wloc/prerm
 #!/bin/sh
 # The package framework runs default_prerm first; keep only WLOC-specific cleanup here.
