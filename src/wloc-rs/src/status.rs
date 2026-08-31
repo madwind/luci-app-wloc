@@ -39,9 +39,16 @@ struct ApActivity {
     last_error: String,
 }
 
+#[derive(Clone, Default)]
+struct UpstreamTarget {
+    domain: Option<String>,
+    upstream_ip: Option<String>,
+    proxy_ip: Option<String>,
+}
+
 struct Inner {
     snapshot: Snapshot,
-    upstream_targets: HashMap<String, String>,
+    upstream_targets: HashMap<String, UpstreamTarget>,
 }
 
 pub struct Status {
@@ -133,21 +140,56 @@ impl Status {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let rule_id = detail_token(detail, "rule");
-        if let (Some(rule_id), Some(host)) = (rule_id.as_ref(), detail_token(detail, "host")) {
-            inner.upstream_targets.insert(rule_id.clone(), host);
+        if let Some(rule_id) = rule_id.as_ref() {
+            let domain = detail_token(detail, "host");
+            let upstream_ip = detail_token(detail, "upstream_ip");
+            let proxy_ip = detail_token(detail, "proxy_ip");
+            if domain.is_some() || upstream_ip.is_some() || proxy_ip.is_some() {
+                let target = inner.upstream_targets.entry(rule_id.clone()).or_default();
+                if let Some(domain) = domain {
+                    target.domain = Some(domain);
+                }
+                if let Some(upstream_ip) = upstream_ip {
+                    target.upstream_ip = Some(upstream_ip);
+                }
+                if let Some(proxy_ip) = proxy_ip {
+                    target.proxy_ip = Some(proxy_ip);
+                }
+            }
         }
 
         let enriched_error = error.map(|value| {
-            let base = safe_text(value, 360);
-            if event == "ap_failed" {
-                if let Some(target) = rule_id
-                    .as_ref()
-                    .and_then(|rule| inner.upstream_targets.get(rule))
-                {
-                    return safe_text(&format!("{base} · target: {target}"), 360);
+            let base = safe_text(value, 240);
+            if event != "ap_failed" {
+                return base;
+            }
+            let Some(target) = rule_id
+                .as_ref()
+                .and_then(|rule| inner.upstream_targets.get(rule))
+            else {
+                return base;
+            };
+
+            let mut message = base;
+            if !message.contains("domain=") {
+                if let Some(domain) = target.domain.as_deref() {
+                    message.push_str(" · domain=");
+                    message.push_str(domain);
                 }
             }
-            base
+            if !message.contains("upstream_ip=") {
+                if let Some(upstream_ip) = target.upstream_ip.as_deref() {
+                    message.push_str(" · upstream_ip=");
+                    message.push_str(upstream_ip);
+                }
+            }
+            if target.upstream_ip.is_none() && !message.contains("proxy_ip=") {
+                if let Some(proxy_ip) = target.proxy_ip.as_deref() {
+                    message.push_str(" · proxy_ip=");
+                    message.push_str(proxy_ip);
+                }
+            }
+            safe_text(&message, 360)
         });
 
         mutate(&mut Counters {

@@ -100,6 +100,8 @@ pub struct UpstreamResponse {
 struct H2Entry {
     generation: u64,
     sender: h2::client::SendRequest<Bytes>,
+    upstream_ip: Option<IpAddr>,
+    proxy_ip: Option<IpAddr>,
 }
 
 #[derive(Clone)]
@@ -443,7 +445,7 @@ impl Proxy {
             ) => upstream,
         };
         let upstream = forward_result
-            .map_err(|_| ProxyError::Upstream("request_timeout".into()))??;
+            .map_err(|_| ProxyError::Upstream("request_timeout".into()).with_domain(hostname))??;
         let end = upstream.body.is_empty();
         let delivered_bytes = upstream.body.len();
         let delivered_status = upstream.status.as_u16();
@@ -627,7 +629,8 @@ impl Proxy {
             .exchange_upstream(
                 &method, &uri, &headers, tls_sni, &body, client, ip, outbound,
             )
-            .await?;
+            .await
+            .map_err(|error| error.with_domain(tls_sni))?;
         self.status.update_detail(
             "upstream_response",
             &self.rule_detail(
@@ -742,17 +745,22 @@ impl Proxy {
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
         let pool_key = outbound.pool_key(hostname);
         if let Some(entry) = self.h2_pool.lock().await.get(&pool_key).cloned() {
+            let upstream_ip = entry.upstream_ip;
+            let proxy_ip = entry.proxy_ip;
             match entry.sender.ready().await {
                 Ok(sender) => {
+                    let mut detail = format!("host={hostname} protocol=h2");
+                    append_upstream_peer(&mut detail, upstream_ip, proxy_ip);
                     self.status.update_detail(
                         "upstream_reused",
-                        &self.rule_detail(client, ip, format!("host={hostname} protocol=h2")),
+                        &self.rule_detail(client, ip, detail),
                         None,
                         |_| {},
                     );
                     return exchange_h2(sender, method, uri, headers, hostname, body)
                         .await
-                        .map(|response| (response, "h2"));
+                        .map(|response| (response, "h2"))
+                        .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip));
                 }
                 Err(_) => {
                     remove_h2_generation(&self.h2_pool, &pool_key, entry.generation).await;
@@ -773,60 +781,72 @@ impl Proxy {
         let server_name = rustls::pki_types::ServerName::try_from(hostname.to_owned())
             .map_err(|_| ProxyError::Upstream("invalid_hostname".into()))?;
         let mut tls_attempt = 1usize;
-        let tls = loop {
+        let (tls, upstream_ip, proxy_ip) = loop {
             let tcp = tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
                 connect_outbound(outbound, hostname, 443),
             )
             .await
             .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
+            let (upstream_ip, proxy_ip) = upstream_peer_addresses(outbound, &tcp);
+            let mut connected_detail = format!(
+                "host={hostname} port=443 outbound={} attempt={tls_attempt}",
+                outbound.label()
+            );
+            append_upstream_peer(&mut connected_detail, upstream_ip, proxy_ip);
+            self.status.update_detail(
+                "upstream_connected",
+                &self.rule_detail(client, ip, connected_detail),
+                None,
+                |_| {},
+            );
             match tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
                 self.connector.connect(server_name.clone(), tcp),
             )
             .await
             {
-                Ok(Ok(tls)) => break tls,
+                Ok(Ok(tls)) => break (tls, upstream_ip, proxy_ip),
                 Ok(Err(error))
                     if tls_attempt < UPSTREAM_TLS_ATTEMPTS
                         && retryable_tls_handshake_error(&error) =>
                 {
+                    let mut retry_detail = format!(
+                        "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason={}",
+                        tls_attempt + 1,
+                        error.kind()
+                    );
+                    append_upstream_peer(&mut retry_detail, upstream_ip, proxy_ip);
                     self.status.update_detail(
                         "upstream_retry",
-                        &self.rule_detail(
-                            client,
-                            ip,
-                            format!(
-                                "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason={}",
-                                tls_attempt + 1,
-                                error.kind()
-                            ),
-                        ),
+                        &self.rule_detail(client, ip, retry_detail),
                         None,
                         |_| {},
                     );
                     tls_attempt += 1;
                 }
                 Ok(Err(error)) => {
-                    return Err(ProxyError::Upstream(format!("tls_verify: {error}")));
+                    return Err(ProxyError::Upstream(format!("tls_verify: {error}"))
+                        .with_target(hostname, upstream_ip, proxy_ip));
                 }
                 Err(_) if tls_attempt < UPSTREAM_TLS_ATTEMPTS => {
+                    let mut retry_detail = format!(
+                        "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason=timeout",
+                        tls_attempt + 1
+                    );
+                    append_upstream_peer(&mut retry_detail, upstream_ip, proxy_ip);
                     self.status.update_detail(
                         "upstream_retry",
-                        &self.rule_detail(
-                            client,
-                            ip,
-                            format!(
-                                "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason=timeout",
-                                tls_attempt + 1
-                            ),
-                        ),
+                        &self.rule_detail(client, ip, retry_detail),
                         None,
                         |_| {},
                     );
                     tls_attempt += 1;
                 }
-                Err(_) => return Err(ProxyError::Upstream("tls_timeout".into())),
+                Err(_) => {
+                    return Err(ProxyError::Upstream("tls_timeout".into())
+                        .with_target(hostname, upstream_ip, proxy_ip));
+                }
             }
         };
         let alpn = tls.get_ref().1.alpn_protocol().map(|value| value.to_vec());
@@ -838,13 +858,18 @@ impl Proxy {
                     .max_header_list_size(32 * 1024)
                     .handshake::<_, Bytes>(tls)
                     .await
-                    .map_err(ProxyError::upstream_h2)?;
+                    .map_err(|error| {
+                        ProxyError::upstream_h2(error)
+                            .with_target(hostname, upstream_ip, proxy_ip)
+                    })?;
                 let generation = self.h2_generation.fetch_add(1, Ordering::Relaxed);
                 self.h2_pool.lock().await.insert(
                     pool_key.clone(),
                     H2Entry {
                         generation,
                         sender: sender.clone(),
+                        upstream_ip,
+                        proxy_ip,
                     },
                 );
                 let pool = Arc::clone(&self.h2_pool);
@@ -853,7 +878,10 @@ impl Proxy {
                     let _ = connection.await;
                     remove_h2_generation(&pool, &driver_key, generation).await;
                 });
-                let sender = sender.ready().await.map_err(ProxyError::upstream_h2)?;
+                let sender = sender.ready().await.map_err(|error| {
+                    ProxyError::upstream_h2(error)
+                        .with_target(hostname, upstream_ip, proxy_ip)
+                })?;
                 exchange_h2(sender, method, uri, headers, hostname, body)
                     .await
                     .map(|response| (response, "h2"))
@@ -865,6 +893,7 @@ impl Proxy {
             }
             _ => Err(ProxyError::Upstream("unsupported_upstream_alpn".into())),
         }
+        .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip))
     }
 }
 
@@ -885,6 +914,30 @@ fn retryable_tls_handshake_error(error: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::BrokenPipe
     )
+}
+
+fn upstream_peer_addresses(
+    outbound: &OutboundProxy,
+    stream: &TcpStream,
+) -> (Option<IpAddr>, Option<IpAddr>) {
+    let peer_ip = stream.peer_addr().ok().map(|address| address.ip());
+    match outbound {
+        OutboundProxy::Direct => (peer_ip, None),
+        OutboundProxy::Http { .. } | OutboundProxy::Socks5 { .. } => (None, peer_ip),
+    }
+}
+
+fn append_upstream_peer(
+    detail: &mut String,
+    upstream_ip: Option<IpAddr>,
+    proxy_ip: Option<IpAddr>,
+) {
+    if let Some(upstream_ip) = upstream_ip {
+        detail.push_str(&format!(" upstream_ip={upstream_ip}"));
+    }
+    if let Some(proxy_ip) = proxy_ip {
+        detail.push_str(&format!(" proxy_ip={proxy_ip}"));
+    }
 }
 
 async fn connect_outbound(
@@ -1193,7 +1246,7 @@ fn debug_response() -> UpstreamResponse {
     UpstreamResponse {
         status: StatusCode::OK,
         headers,
-        body: br#"{"wloc":"ok"}"#.to_vec(),
+        body: b"{\"wloc\":\"ok\"}".to_vec(),
         wloc: false,
         response_mode: "debug",
         request_kind: None,
@@ -1349,6 +1402,36 @@ impl ProxyError {
     }
     pub fn upstream_h2(error: impl std::fmt::Display) -> Self {
         Self::Upstream(format!("h2: {error}"))
+    }
+    fn with_domain(self, domain: &str) -> Self {
+        self.with_target(domain, None, None)
+    }
+    fn with_target(
+        self,
+        domain: &str,
+        upstream_ip: Option<IpAddr>,
+        proxy_ip: Option<IpAddr>,
+    ) -> Self {
+        match self {
+            Self::Upstream(mut message) => {
+                if !message.contains("domain=") {
+                    message.push_str(" · domain=");
+                    message.push_str(domain);
+                }
+                if !message.contains("upstream_ip=") {
+                    if let Some(upstream_ip) = upstream_ip {
+                        message.push_str(&format!(" · upstream_ip={upstream_ip}"));
+                    }
+                }
+                if upstream_ip.is_none() && !message.contains("proxy_ip=") {
+                    if let Some(proxy_ip) = proxy_ip {
+                        message.push_str(&format!(" · proxy_ip={proxy_ip}"));
+                    }
+                }
+                Self::Upstream(message)
+            }
+            other => other,
+        }
     }
     pub fn category(&self) -> &'static str {
         match self {
