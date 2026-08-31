@@ -398,7 +398,6 @@ return view.extend({
         var proxyTypeOption = wifiSections.option(form.ListValue, 'proxy_type', _('Outbound'));
         proxyTypeOption.modalonly = true;
         proxyTypeOption.value('direct', _('Direct'));
-        proxyTypeOption.value('http', _('HTTP proxy'));
         proxyTypeOption.value('socks5', _('SOCKS5 proxy'));
         proxyTypeOption.default = 'direct';
         proxyTypeOption.rmempty = false;
@@ -406,9 +405,8 @@ return view.extend({
         var proxyHostOption = wifiSections.option(form.Value, 'proxy_host', _('Proxy host'));
         proxyHostOption.modalonly = true;
         proxyHostOption.rmempty = false;
-        proxyHostOption.placeholder = '192.0.2.10';
-        proxyHostOption.description = _('Hostname or IP address of the outbound proxy. DNS for the Apple destination is resolved by the proxy.');
-        proxyHostOption.depends('proxy_type', 'http');
+        proxyHostOption.placeholder = '127.0.0.1';
+        proxyHostOption.description = _('Hostname or IP address of the SOCKS5 proxy.');
         proxyHostOption.depends('proxy_type', 'socks5');
         proxyHostOption.validate = function(sectionId, value) {
             return value && value.length <= 253 && !/[\s\x00-\x1f\x7f]/.test(value)
@@ -420,9 +418,8 @@ return view.extend({
         proxyPortOption.rmempty = false;
         proxyPortOption.datatype = 'port';
         proxyPortOption.placeholder = '1080';
-        proxyPortOption.depends('proxy_type', 'http');
         proxyPortOption.depends('proxy_type', 'socks5');
-        proxyPortOption.description = _('HTTP CONNECT and SOCKS5 proxies without authentication are supported.');
+        proxyPortOption.description = _('Use an unauthenticated SOCKS5 proxy with TCP CONNECT and UDP ASSOCIATE support.');
 
         var lastUpdatedOption = wifiSections.option(form.DummyValue, '_last_updated', _('Last updated'));
         lastUpdatedOption.modalonly = false;

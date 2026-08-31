@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -264,7 +264,9 @@ fn recv_original_datagram_now(
     message.msg_iov = &mut iovec;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = std::mem::size_of_val(&control);
+    message.msg_controllen = std::mem::size_of_val(&control)
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "control buffer too large"))?;
 
     let size = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, 0) };
     if size < 0 {

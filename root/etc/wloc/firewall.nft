@@ -33,6 +33,7 @@ table inet wloc {
         policy accept;
 
         meta mark & 0x80000000 == 0 return
+        meta nfproto != ipv4 return
         udp dport { 67, 68 } return
         ip daddr 255.255.255.255 return
         ip daddr 224.0.0.0/4 return
@@ -42,7 +43,7 @@ table inet wloc {
 
         ip daddr @bypass_v4 return
 
-        tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc tls"
+        tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc owned ingress redirect tls"
         meta l4proto tcp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc tcp"
         meta l4proto udp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc udp"
     }

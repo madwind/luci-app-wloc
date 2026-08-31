@@ -192,9 +192,8 @@ impl Config {
                         return Err("invalid proxy port".into());
                     }
                     let outbound = match proxy_type.as_str() {
-                        "http" => OutboundProxy::Http { host, port },
                         "socks5" => OutboundProxy::Socks5 { host, port },
-                        _ => return Err("proxy type must be http or socks5".into()),
+                        _ => return Err("proxy type must be socks5".into()),
                     };
                     let rule = rule_mut(&mut rules, &id, "proxy")?;
                     if rule.outbound != OutboundProxy::Direct {
@@ -222,7 +221,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID TYPE HOST PORT] [--rule ...] [--listen-port PORT] [--debug]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID socks5 HOST PORT] [--rule ...] [--listen-port PORT] [--debug]"
     }
 }
 

@@ -40,16 +40,16 @@ validate_wifi() {
     fi
     case "$proxy_type" in
         direct) ;;
-        http|socks5)
+        socks5)
             [ -n "$proxy_host" ] && [ -n "$proxy_port" ] || {
-                rule_error="incomplete $proxy_type proxy for AP: $name"; return 0;
+                rule_error="incomplete SOCKS5 proxy for AP: $name"; return 0;
             }
             case "$proxy_port" in *[!0-9]*|'') rule_error="invalid proxy port for AP: $name"; return 0;; esac
             [ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
-            rule_error="invalid proxy port for AP: $name"; return 0;
+                rule_error="invalid proxy port for AP: $name"; return 0;
             }
             ;;
-        *) rule_error="invalid outbound type for AP: $name"; return 0;;
+        *) rule_error="invalid outbound type for AP: $name (use direct or socks5)"; return 0;;
     esac
     rule_count=$((rule_count + 1))
 }

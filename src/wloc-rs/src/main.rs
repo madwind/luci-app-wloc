@@ -137,7 +137,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let listener = listener(config.listen_port)?;
+        let wloc_listener = listener(config.listen_port)?;
         let relay_tcp_listener = listener(relay_port)?;
         let relay_udp_listener = transparent::udp_listener(relay_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
@@ -333,7 +333,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .acquire_owned()
                 .await
                 .map_err(std::io::Error::other)?;
-            let (stream, _) = listener.accept().await?;
+            let (stream, _) = wloc_listener.accept().await?;
             let proxy = Arc::clone(&proxy);
             let status = Arc::clone(&status);
             tokio::spawn(async move {
