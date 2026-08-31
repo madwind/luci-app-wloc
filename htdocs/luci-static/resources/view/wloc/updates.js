@@ -1,30 +1,58 @@
 'use strict';
 'require view';
+'require poll';
 'require rpc';
 'require ui';
+'require wloc.ui as wlocUi';
 
-var callStatus = rpc.declare({ object: 'luci.wloc.update', method: 'status', expect: { '': {} }, reject: true });
-var callCheck = rpc.declare({ object: 'luci.wloc.update', method: 'check', expect: { '': {} }, reject: true });
-var callInstall = rpc.declare({ object: 'luci.wloc.update', method: 'install', expect: { '': {} }, reject: true });
+var callStatus = rpc.declare({
+    object: 'luci.wloc.update',
+    method: 'status',
+    expect: { '': {} },
+    reject: true
+});
 
-function setText(node, value) {
-    node.textContent = value == null || value === '' ? '—' : String(value);
+var callCheck = rpc.declare({
+    object: 'luci.wloc.update',
+    method: 'check',
+    expect: { '': {} },
+    reject: true
+});
+
+var callInstall = rpc.declare({
+    object: 'luci.wloc.update',
+    method: 'install',
+    expect: { '': {} },
+    reject: true
+});
+
+var callStop = rpc.declare({
+    object: 'luci.wloc.update',
+    method: 'stop',
+    expect: { '': {} },
+    reject: true
+});
+
+function phaseText(operation) {
+    var phase = operation && (operation.phase || operation.status) || '';
+    if (phase === 'checking') return _('Checking...');
+    if (phase === 'downloading') return _('Downloading...');
+    if (phase === 'verifying') return _('Verifying...');
+    if (phase === 'installing') return _('Installing...');
+    if (phase === 'stopping') return _('Stopping...');
+    if (phase === 'starting') return _('Starting update...');
+    return _('Updating...');
 }
 
-function statusText(result) {
-    if (!result)
-        return _('Unknown');
-    if (result.status === 'downloading')
-        return _('Downloading...');
-    if (result.status === 'installing')
-        return _('Installing...');
-    if (result.status === 'failed')
-        return result.error || _('Update failed');
-    if (result.update_available === true)
-        return _('Update available');
-    if (result.update_available === false && result.latest_version)
-        return _('Up to date');
-    return result.checked ? _('Checked') : _('Not checked');
+function formatTimestamp(value) {
+    var seconds = Number(value || 0);
+    if (!seconds)
+        return '—';
+    try {
+        return new Date(seconds * 1000).toLocaleString();
+    } catch (e) {
+        return '—';
+    }
 }
 
 function valueRow(label, field) {
@@ -40,69 +68,164 @@ return view.extend({
     handleReset: null,
 
     load: function() {
-        return L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read update status.') });
+        return L.resolveDefault(callStatus(), {
+            ok: false,
+            error: _('Unable to read software update status.')
+        });
     },
 
     render: function(initial) {
-        var installed = E('code');
-        var latest = E('code');
-        var state = E('span', { 'aria-live': 'polite' });
-        var check = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' }, _('Check for updates'));
-        var update = E('button', { 'class': 'cbi-button cbi-button-apply', 'type': 'button' }, _('Update'));
+        document.title = _('WLOC | Updates');
+
+        var version = E('span');
+        var status = E('span', { 'aria-live': 'polite' }, _('Loading'));
+        var history = E('div', { 'class': 'cbi-section-descr' });
+        var check = E('button', {
+            'class': 'btn cbi-button cbi-button-action',
+            'type': 'button'
+        }, _('Check'));
+        var update = E('button', {
+            'class': 'btn cbi-button cbi-button-apply',
+            'type': 'button'
+        }, _('Update'));
+        var stop = E('button', {
+            'class': 'btn cbi-button cbi-button-negative',
+            'type': 'button',
+            'disabled': ''
+        }, _('Stop'));
+        var installedVersion = '';
+        var latestVersion = '';
+        var checkedAt = 0;
+        var lastUpdateAt = 0;
+        var updateAvailable = null;
+
+        history.hidden = true;
+
+        function renderVersion() {
+            version.replaceChildren(E('code', {}, installedVersion || _('Unknown')));
+            if (latestVersion && latestVersion !== installedVersion) {
+                version.appendChild(document.createTextNode(' → '));
+                version.appendChild(E('code', {}, latestVersion));
+            }
+        }
+
+        function renderHistory() {
+            var values = [];
+            if (checkedAt)
+                values.push(_('Last check: %s').format(formatTimestamp(checkedAt)));
+            if (lastUpdateAt)
+                values.push(_('Last update: %s').format(formatTimestamp(lastUpdateAt)));
+            wlocUi.setText(history, values.join(' · '));
+            history.hidden = values.length === 0;
+        }
+
+        function canStop(operation) {
+            if (!operation || [ 'starting', 'running', 'stopping' ].indexOf(operation.status) < 0)
+                return false;
+            return operation.phase !== 'installing' && operation.status !== 'stopping';
+        }
 
         function apply(result) {
             result = result || {};
-            setText(installed, result.installed_version);
-            setText(latest, result.latest_version);
-            setText(state, statusText(result));
-            update.disabled = result.update_available !== true;
-            check.disabled = result.status === 'downloading' || result.status === 'installing';
+            var operation = result.operation || {};
+
+            if (result.installed_version)
+                installedVersion = String(result.installed_version);
+            if (result.latest_version)
+                latestVersion = String(result.latest_version);
+            if (result.checked != null)
+                checkedAt = Number(result.checked) || 0;
+            if (result.last_update != null)
+                lastUpdateAt = Number(result.last_update) || 0;
+            if (result.update_available !== undefined && result.update_available !== null)
+                updateAvailable = result.update_available === true;
+
+            renderVersion();
+            renderHistory();
+
+            if (operation.status === 'starting' || operation.status === 'running' || operation.status === 'stopping') {
+                wlocUi.setState(status, 'notice', operation.status === 'stopping' ? _('Stopping...') : phaseText(operation));
+                check.disabled = true;
+                update.disabled = true;
+                stop.disabled = !canStop(operation);
+                return result;
+            }
+
+            if (operation.status === 'failed') {
+                wlocUi.setState(status, 'error', operation.error || _('Update failed'));
+            } else if (operation.status === 'stopped') {
+                wlocUi.setState(status, 'notice', _('Stopped'));
+            } else if (operation.status === 'done' && operation.updated === true && result.post_check_error) {
+                wlocUi.setState(status, 'warn', _('Updated · verification check failed'));
+            } else if (result.check_ok === false && result.last_check_error) {
+                wlocUi.setState(status, 'error', result.last_check_error);
+            } else if (updateAvailable === true) {
+                wlocUi.setState(status, 'warn', _('Update available'));
+            } else if (updateAvailable === false) {
+                wlocUi.setState(status, 'ok', _('Up to date'));
+            } else {
+                wlocUi.setState(status, 'notice', checkedAt ? _('Checked') : _('Not checked'));
+            }
+
+            check.disabled = false;
+            update.disabled = updateAvailable === false;
+            stop.disabled = true;
             return result;
         }
 
-        function failed(error) {
-            ui.addNotification(null, E('p', {}, error && error.message ? error.message : String(error)), 'error');
+        function refresh() {
+            return callStatus().then(function(result) {
+                return wlocUi.requireOk(result, _('Unable to read software update status.'));
+            }).then(apply).catch(function(error) {
+                wlocUi.notifyFatal(error, _('Unable to read software update status.'));
+            });
+        }
+
+        function runAction(message, request, fallback) {
+            check.disabled = true;
+            update.disabled = true;
+            stop.disabled = true;
+            wlocUi.setState(status, 'notice', message);
+            return request().then(function(result) {
+                return wlocUi.requireOk(result, fallback);
+            }).then(function() {
+                return refresh();
+            }).catch(function(error) {
+                wlocUi.notifyFatal(error, fallback);
+                return refresh();
+            });
         }
 
         check.addEventListener('click', ui.createHandlerFn(check, function() {
-            check.disabled = true;
-            update.disabled = true;
-            setText(state, _('Checking...'));
-            return callCheck().then(function(result) {
-                if (!result || result.ok !== true)
-                    throw new Error(result && result.error || _('Update check failed.'));
-                apply(result);
-            }).catch(failed).finally(function() {
-                check.disabled = false;
-            });
+            return runAction(_('Checking...'), callCheck, _('WLOC update check failed.'));
         }));
 
         update.addEventListener('click', ui.createHandlerFn(update, function() {
-            check.disabled = true;
-            update.disabled = true;
-            setText(state, _('Updating...'));
-            return callInstall().then(function(result) {
-                if (!result || result.ok !== true)
-                    throw new Error(result && result.error || _('Update failed.'));
-                apply(result);
-                if (result.status === 'done')
-                    ui.addNotification(null, E('p', {}, _('WLOC was updated successfully. Reload this page to use the new LuCI files.')), 'info');
-            }).catch(failed).finally(function() {
-                check.disabled = false;
-            });
+            return runAction(_('Starting update...'), callInstall, _('Unable to start WLOC update.'));
         }));
 
-        apply(initial);
+        stop.addEventListener('click', ui.createHandlerFn(stop, function() {
+            return runAction(_('Stopping...'), callStop, _('Unable to stop WLOC update.'));
+        }));
+
+        if (initial && initial.ok === true)
+            apply(initial);
+        else
+            wlocUi.setState(status, 'error', wlocUi.errorMessage(initial, _('Unable to read software update status.')));
+
+        poll.add(refresh, 2);
 
         return E('div', {}, [
             E('h2', {}, _('WLOC Updates')),
-            E('div', { 'class': 'cbi-section-descr' }, _('Check the latest GitHub release for this OpenWrt target and install the matching SHA256-verified APK.')),
+            E('div', { 'class': 'cbi-section-descr' }, _('Check and install the latest SHA256-verified WLOC package for this OpenWrt target.')),
             E('div', { 'class': 'cbi-section' }, [
-                E('h3', {}, _('Software')),
-                valueRow(_('Installed version'), installed),
-                valueRow(_('Latest version'), latest),
-                valueRow(_('Status'), state),
-                valueRow(_('Actions'), E('span', {}, [ check, ' ', update ]))
+                E('div', { 'class': 'cbi-section-node' }, [
+                    E('h4', {}, _('WLOC')),
+                    valueRow(_('Version'), version),
+                    valueRow(_('Status'), status),
+                    valueRow(_('Actions'), E('span', {}, [ check, ' ', update, ' ', stop ])),
+                    history
+                ])
             ])
         ]);
     }

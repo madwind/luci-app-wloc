@@ -152,7 +152,9 @@ for executable in \
     usr/libexec/wloc/rules.sh \
     usr/libexec/wloc/ap-lib.sh \
     usr/libexec/wloc/wifi-schedule.sh \
-    usr/libexec/rpcd/luci.wloc; do
+    usr/libexec/wloc/update.sh \
+    usr/libexec/rpcd/luci.wloc \
+    usr/libexec/rpcd/luci.wloc.update; do
     chmod 0755 "$PACKAGE_DST/root/$executable"
 done
 
@@ -267,7 +269,9 @@ if [ -n "$APK_TOOL" ] && [ -x "$APK_TOOL" ]; then
         usr/libexec/wloc/rules.sh \
         usr/libexec/wloc/ap-lib.sh \
         usr/libexec/wloc/wifi-schedule.sh \
-        usr/libexec/rpcd/luci.wloc; do
+        usr/libexec/wloc/update.sh \
+        usr/libexec/rpcd/luci.wloc \
+        usr/libexec/rpcd/luci.wloc.update; do
         [ "$(stat -c '%a' "$APK_EXTRACT_DIR/$executable")" = 755 ] \
             || { rm -rf "$APK_EXTRACT_DIR"; echo "$executable mode is not 0755" >&2; exit 1; }
     done

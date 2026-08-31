@@ -5,7 +5,7 @@ UPDATER=/usr/libexec/wloc/update.sh
 case "$1" in
 list)
     cat <<'JSON'
-{"status":{},"check":{},"install":{}}
+{"status":{},"check":{},"install":{},"stop":{}}
 JSON
     ;;
 call)
@@ -13,6 +13,7 @@ call)
         status) exec "$UPDATER" status;;
         check) exec "$UPDATER" check;;
         install) exec "$UPDATER" install;;
+        stop) exec "$UPDATER" stop;;
         *) printf '%s\n' '{"ok":false,"error":"unknown method"}'; exit 1;;
     esac
     ;;

@@ -12,7 +12,7 @@
     "write": {
       "ubus": {
         "luci.wloc": [ "restart", "regenerate_ca", "firewall_save", "firewall_apply" ],
-        "luci.wloc.update": [ "check", "install" ]
+        "luci.wloc.update": [ "check", "install", "stop" ]
       },
       "uci": [ "wloc" ]
     }
