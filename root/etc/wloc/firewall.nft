@@ -6,25 +6,47 @@ table bridge wloc {
     chain mark_prerouting {
         type filter hook prerouting priority dstnat - 1;
         policy accept;
-        iifname @target_ingress_interfaces tcp flags & (syn | ack) == syn tcp dport 443 counter meta mark set meta mark | 0x80000000 comment "wloc ingress mark"
+        iifname @target_ingress_interfaces meta l4proto tcp counter meta mark set meta mark | 0x80000000 comment "wloc ingress tcp"
+        iifname @target_ingress_interfaces meta l4proto udp counter meta mark set meta mark | 0x80000000 comment "wloc ingress udp"
     }
 }
+
 table inet wloc {
-    set apple_wloc_v4 {
+    set bypass_v4 {
         type ipv4_addr
-        flags timeout
+        flags interval
+        elements = {
+            0.0.0.0/8,
+            10.0.0.0/8,
+            100.64.0.0/10,
+            127.0.0.0/8,
+            169.254.0.0/16,
+            172.16.0.0/12,
+            192.168.0.0/16,
+            224.0.0.0/4,
+            240.0.0.0/4
+        }
     }
-    chain proxy_bypass {
+
+    chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
         policy accept;
-        ct mark & 0x00010000 != 0 meta mark set meta mark | 0x00010000 comment "wloc restore xrayt bypass"
-        meta mark & 0x80000000 != 0 ip daddr @apple_wloc_v4 tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x00010000 comment "wloc claim connection"
+
+        meta mark & 0x80000000 == 0 return
+        udp dport { 67, 68 } return
+        ip daddr 255.255.255.255 return
+        ip daddr 224.0.0.0/4 return
+
+        tcp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns tcp"
+        udp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns udp"
+
+        ip daddr @bypass_v4 return
+
+        tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc tls"
+        meta l4proto tcp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc tcp"
+        meta l4proto udp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc udp"
     }
-    chain redirect_prerouting {
-        type nat hook prerouting priority dstnat - 1;
-        policy accept;
-        meta mark & 0x80000000 != 0 ip daddr @apple_wloc_v4 tcp dport 443 counter redirect to :61520 comment "wloc owned ingress redirect"
-    }
+
     chain clear_ingress_mark {
         type filter hook prerouting priority dstnat + 1;
         policy accept;

@@ -63,7 +63,6 @@ migrate_location() {
         return 0
     fi
 
-    # Convert the previous section-based binding to the fixed interface identity.
     wireless_section="$(uci -q get "wloc.$section.wireless_section" 2>/dev/null || true)"
     if ! valid_section "$wireless_section"; then
         wireless_section=''
@@ -88,9 +87,78 @@ migrate_location() {
     cleanup_legacy_fields "$section"
 }
 
-# Seed only missing values so upgrades never overwrite an already configured
-# instance. Schema 7 stores the fixed interface as the WLOC rule identity,
-# removes configurable domains, and does not expose a configurable daemon GID.
+migrate_firewall_v8() {
+    local path=/etc/wloc/firewall.nft current_hash
+    [ -f "$path" ] || return 0
+    command -v sha256sum >/dev/null 2>&1 || return 0
+    current_hash="$(sha256sum "$path" 2>/dev/null | awk '{print $1}')"
+    [ "$current_hash" = '706d184dca200db9187010281f5c8d7da4c100bbe62221f0652b60bdfe03ad02' ] || {
+        if grep -q 'apple_wloc_v4' "$path" 2>/dev/null; then
+            logger -t wloc-migrate 'custom legacy firewall rules were preserved; reset the WLOC firewall rules to enable global transparent proxy mode' 2>/dev/null || true
+        fi
+        return 0
+    }
+
+    cat >"$path" <<'EOF'
+table bridge wloc {
+    set target_ingress_interfaces {
+        type ifname
+        flags timeout
+    }
+    chain mark_prerouting {
+        type filter hook prerouting priority dstnat - 1;
+        policy accept;
+        iifname @target_ingress_interfaces meta l4proto tcp counter meta mark set meta mark | 0x80000000 comment "wloc ingress tcp"
+        iifname @target_ingress_interfaces meta l4proto udp counter meta mark set meta mark | 0x80000000 comment "wloc ingress udp"
+    }
+}
+
+table inet wloc {
+    set bypass_v4 {
+        type ipv4_addr
+        flags interval
+        elements = {
+            0.0.0.0/8,
+            10.0.0.0/8,
+            100.64.0.0/10,
+            127.0.0.0/8,
+            169.254.0.0/16,
+            172.16.0.0/12,
+            192.168.0.0/16,
+            224.0.0.0/4,
+            240.0.0.0/4
+        }
+    }
+
+    chain transparent_prerouting {
+        type filter hook prerouting priority mangle - 2;
+        policy accept;
+
+        meta mark & 0x80000000 == 0 return
+        udp dport { 67, 68 } return
+        ip daddr 255.255.255.255 return
+        ip daddr 224.0.0.0/4 return
+
+        tcp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns tcp"
+        udp dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc dns udp"
+
+        ip daddr @bypass_v4 return
+
+        tcp dport 443 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc tls"
+        meta l4proto tcp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc tcp"
+        meta l4proto udp ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61521 accept comment "wloc udp"
+    }
+
+    chain clear_ingress_mark {
+        type filter hook prerouting priority dstnat + 1;
+        policy accept;
+        meta mark & 0x80000000 != 0 meta mark set meta mark & 0x7fffffff comment "wloc clear ingress mark"
+    }
+}
+EOF
+    logger -t wloc-migrate 'migrated the stock firewall rules to global TCP/UDP TPROXY mode' 2>/dev/null || true
+}
+
 uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
 uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 listen_port="$(uci -q get wloc.main.listen_port 2>/dev/null || true)"
@@ -98,12 +166,10 @@ case "$listen_port" in
     ''|8443|58443|28443) uci -q set wloc.main.listen_port='61520';;
 esac
 uci -q delete wloc.main.gid
-# Schema 6 allowed custom domains. Schema 7 always removes that legacy list so
-# an old test endpoint cannot remain active after an upgrade.
 uci -q delete wloc.main.domain
 uci -q get wloc.main.debug >/dev/null || uci -q set wloc.main.debug='0'
 uci -q get wloc.main.runtime_log >/dev/null || uci -q set wloc.main.runtime_log='0'
-    uci -q set wloc.main.schema_version='7'
+uci -q set wloc.main.schema_version='8'
 
 wloc_sections=''
 collect_wloc_section() {
@@ -116,5 +182,6 @@ for section in $wloc_sections; do
     migrate_location "$section"
 done
 
+migrate_firewall_v8
 uci -q commit wloc
 exit 0

@@ -19,10 +19,11 @@ LUCI_DEPENDS:=@(aarch64||x86_64)
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
 	nftables (>=0), \
+	ip-full (>=0), \
 	jshn (>=0), \
 	uclient-fetch (>=0)
 
-LUCI_DESCRIPTION:=Selective Apple WLOC TLS proxy with one location rule per fixed wireless interface. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
+LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
