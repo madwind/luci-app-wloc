@@ -19,6 +19,7 @@ LUCI_DEPENDS:=@(aarch64||x86_64)
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
 	nftables (>=0), \
+	kmod-nft-tproxy (>=0), \
 	ip-full (>=0), \
 	jshn (>=0), \
 	uclient-fetch (>=0)
