@@ -3,6 +3,11 @@
 
 set -eu
 
+# OpenWrt's helper reads these variables directly. Initialize them before
+# sourcing /lib/functions.sh so strict shell mode remains safe at runtime.
+IPKG_INSTROOT=${IPKG_INSTROOT:-}
+CONFIG_LIST_STATE=${CONFIG_LIST_STATE:-}
+NO_CALLBACK=${NO_CALLBACK:-}
 . /lib/functions.sh
 
 INGRESS_FAMILY=bridge
