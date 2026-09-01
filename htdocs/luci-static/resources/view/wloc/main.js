@@ -263,6 +263,26 @@ return view.extend({
             ]);
         };
 
+        var geoipSettings = map.section(form.NamedSection, 'main', 'wloc', _('GeoIP'));
+        geoipSettings.anonymous = true;
+        option = geoipSettings.option(form.Value, 'geoip_file', _('GeoIP file'));
+        option.default = '/usr/share/wloc/geoip.dat';
+        option.rmempty = false;
+        option.description = _('GeoIP database used to expand %geoip:<tag>% macros in the Firewall editor.');
+        option.validate = function(sectionId, value) {
+            value = String(value || '');
+            return value.charAt(0) === '/' && !/[\x00\r\n]/.test(value)
+                ? true : _('Enter an absolute file path.');
+        };
+        option = geoipSettings.option(form.Value, 'geoip_url', _('GeoIP source'));
+        option.default = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat';
+        option.rmempty = false;
+        option.description = _('HTTPS source used by the Updates page when checking or downloading GeoIP.');
+        option.validate = function(sectionId, value) {
+            return /^https:\/\/\S+$/.test(String(value || ''))
+                ? true : _('Enter an HTTPS URL.');
+        };
+
         var wifiSections = map.section(form.GridSection, 'wifi', _('AP location'),
             _('Select an exact fixed interface and assign one virtual location to clients connected through that AP.'));
         wifiSections.anonymous = true;

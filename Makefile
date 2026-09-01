@@ -22,9 +22,10 @@ LUCI_EXTRA_DEPENDS:= \
 	kmod-nft-tproxy (>=0), \
 	ip-full (>=0), \
 	jshn (>=0), \
+	lua (>=0), \
 	uclient-fetch (>=0)
 
-LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
+LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, GeoIP macros, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
@@ -53,9 +54,16 @@ endef
 define Package/luci-app-wloc/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	# scripts/build-apk.sh normalizes root files before packaging; make sure
-	# newly added rpcd/update helpers are executable before rpcd reloads them.
-	chmod 0755 /usr/libexec/rpcd/luci.wloc.update /usr/libexec/wloc/update.sh 2>/dev/null || true
+	chmod 0755 \
+		/usr/libexec/rpcd/luci.wloc.update \
+		/usr/libexec/rpcd/luci.wloc.defaults \
+		/usr/libexec/rpcd/luci.wloc.firewall \
+		/usr/libexec/rpcd/luci.wloc.geo \
+		/usr/libexec/wloc/update.sh \
+		/usr/libexec/wloc/geo-update.sh \
+		/usr/libexec/wloc/firewall.sh \
+		/usr/libexec/wloc/firewall-core.sh \
+		/usr/libexec/wloc/firewall-geo.lua 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null

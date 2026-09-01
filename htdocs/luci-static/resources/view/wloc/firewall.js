@@ -6,32 +6,22 @@
 'require wloc.editor as wlocEditor';
 'require wloc.nftformat as wlocNftFormat';
 
-var callRead = rpc.declare({ object: 'luci.wloc', method: 'firewall_read', expect: { '': {} } });
-var callValidate = rpc.declare({ object: 'luci.wloc', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} } });
-var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', params: [ 'expected_applied_hash' ], expect: { '': {} } });
-var callApply = rpc.declare({ object: 'luci.wloc', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} } });
+var callRead = rpc.declare({ object: 'luci.wloc.firewall', method: 'read', expect: { '': {} } });
+var callValidate = rpc.declare({ object: 'luci.wloc.firewall', method: 'validate', params: [ 'config' ], expect: { '': {} } });
+var callSave = rpc.declare({ object: 'luci.wloc.firewall', method: 'save', params: [ 'config' ], expect: { '': {} } });
+var callApply = rpc.declare({ object: 'luci.wloc.firewall', method: 'apply', params: [ 'config' ], expect: { '': {} } });
 var callDefault = rpc.declare({ object: 'luci.wloc.defaults', method: 'firewall', expect: { '': {} } });
 
 var RUNTIME_REFRESH_INTERVAL = 10;
 
 function firewallError(result, fallback) {
-    var messages = {
-        firewall_busy: 'Another firewall operation is already in progress. Please retry.',
-        stale_applied_revision: 'The applied firewall configuration changed. Refresh the page before saving.',
-        no_applied_snapshot: 'No successfully applied firewall rules are available to save.',
-        snapshot_stage_failed: 'The runtime snapshot could not be staged.',
-        nft_check_failed: 'The nftables syntax check failed.',
-        unsupported_firewall_command: 'Only table bridge wloc and table inet wloc definitions are supported.',
-        nft_apply_failed: 'The nftables transaction failed.',
-        snapshot_promote_failed: 'The runtime snapshot could not be committed.',
-        persistent_save_failed: 'The applied firewall rules could not be saved persistently.'
-    };
-    var code = result && result.error_code;
-    var message = code && messages[code] ? _(messages[code]) :
-        !code && result && result.error ? _(result.error) : '';
+    var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
+    return detail || fallback;
+}
 
-    return [ message, result && result.detail && result.detail !== message ? result.detail : '' ]
-        .filter(Boolean).join(': ') || fallback;
+function warningDetail(result) {
+    var warnings = result && Array.isArray(result.warnings) ? result.warnings : [];
+    return warnings.filter(Boolean).join('; ');
 }
 
 return view.extend({
@@ -46,7 +36,6 @@ return view.extend({
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Auto refresh every 10 seconds'));
         var runtimeRequest = null;
         var pageVisible = true;
-        var appliedRevision = String(result && result.applied_hash || '');
         var editor;
         var activeEditor = wlocEditor.create({
             id: 'wloc-firewall-runtime',
@@ -61,7 +50,6 @@ return view.extend({
         }
 
         function updateRuntime(next) {
-            appliedRevision = String(next && next.applied_hash || appliedRevision || '');
             activeEditor.markSaved(next && next.active
                 ? next.active
                 : _('# No WLOC nftables tables are active.\n'));
@@ -146,7 +134,10 @@ return view.extend({
             return callValidate(current.getValue()).then(function(next) {
                 if (!next || next.valid !== true)
                     throw new Error(firewallError(next, _('Firewall syntax check failed.')));
-                setMessage('ok', _('Firewall syntax check passed.'));
+                var warning = warningDetail(next);
+                setMessage(warning ? 'warn' : 'ok', warning
+                    ? _('Firewall syntax check passed with warning: %s').format(warning)
+                    : _('Firewall syntax check passed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Firewall syntax check failed.')));
@@ -162,9 +153,12 @@ return view.extend({
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
                 updateRuntime(next);
-                setMessage(next.recovering === true ? 'warn' : 'ok', next.recovering === true
-                    ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
-                    : _('Applied to runtime; the saved file was not changed.'));
+                var warning = warningDetail(next);
+                setMessage(warning ? 'warn' : (next.recovering === true ? 'warn' : 'ok'), warning
+                    ? _('Applied to runtime with warning: %s').format(warning)
+                    : next.recovering === true
+                        ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
+                        : _('Applied to runtime; the saved file was not changed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to apply Firewall rules.')));
@@ -176,24 +170,26 @@ return view.extend({
             if (!withinLimit(current))
                 return Promise.resolve(false);
 
-            var value = current.getValue();
             var applied = false;
+            var warning = '';
+            var value = current.getValue();
             setMessage('notice', _('Applying Firewall rules and saving the file...'));
 
             return callApply(value).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
                 applied = true;
+                warning = warningDetail(next);
                 updateRuntime(next);
-                if (!appliedRevision)
-                    throw new Error(_('No applied Firewall revision is available to save.'));
-                return callSave(appliedRevision);
+                return callSave(value);
             }).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('The Firewall file could not be saved.')));
-                appliedRevision = String(next.applied_hash || appliedRevision);
-                current.markSaved(value);
-                setMessage('ok', _('Applied to runtime and saved to the Firewall file.'));
+                warning = warning || warningDetail(next);
+                current.markSaved(next.config === undefined ? value : next.config);
+                setMessage(warning ? 'warn' : 'ok', warning
+                    ? _('Applied and saved with warning: %s').format(warning)
+                    : _('Applied to runtime and saved to the Firewall file.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, applied
@@ -231,20 +227,30 @@ return view.extend({
             refreshRuntime(true);
         });
 
+        var runtimeToolbar = E('div', {
+            'class': 'cbi-section-descr',
+            'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
+        }, [ runtimeState, refreshButton ]);
+
         poll.add(refreshRuntime, RUNTIME_REFRESH_INTERVAL);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
             poll.remove(refreshRuntime);
         }, { once: true });
 
+        var geoipHelp = E('div', { 'class': 'cbi-section-descr' }, [
+            _('GeoIP macro: put '), E('code', {}, '%geoip:<tag>%'),
+            _(' inside the elements of a named IPv4 or IPv6 address set. The set type selects the address family. Missing tags are ignored with a warning; update GeoIP to activate them.')
+        ]);
+
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' },
                 _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [ editor.root, message ]),
+            E('div', { 'class': 'cbi-section' }, [ geoipHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
-                E('div', { 'class': 'cbi-section-descr' }, [ runtimeState, ' ', refreshButton ]),
+                runtimeToolbar,
                 activeEditor.root
             ])
         ]);
