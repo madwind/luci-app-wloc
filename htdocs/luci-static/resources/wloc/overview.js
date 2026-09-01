@@ -274,7 +274,7 @@ return baseclass.extend({
         scheduleEnabledOption.modalonly = true;
         scheduleEnabledOption.default = '0';
         scheduleEnabledOption.rmempty = false;
-        scheduleEnabledOption.description = _('Actually disable the selected interface during this window with a temporary disabled=1 override and WiFi reload. Nothing is committed, and a missing interface never falls back to another AP or the whole wireless configuration.');
+        scheduleEnabledOption.description = _('Persistently disable the selected interface during this window. Outside the window WLOC enables it, applies the saved radio country code, commits wireless UCI, and reloads WiFi.');
 
         function scheduleTimeValidator(sectionId, value) {
             return /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(String(value || ''))
@@ -289,7 +289,7 @@ return baseclass.extend({
         scheduleStartOption.placeholder = '22:00';
         scheduleStartOption.validate = scheduleTimeValidator;
 
-        var scheduleEndOption = wifiSections.option(form.Value, 'schedule_end', _('Restore at'));
+        var scheduleEndOption = wifiSections.option(form.Value, 'schedule_end', _('Enable at'));
         scheduleEndOption.modalonly = true;
         scheduleEndOption.depends('schedule_enabled', '1');
         scheduleEndOption.default = '06:00';
@@ -308,6 +308,24 @@ return baseclass.extend({
         longitudeOption.modalonly = true;
         longitudeOption.rmempty = false;
         longitudeOption.validate = coordinateValidator(-180, 180);
+
+        var countryOption = wifiSections.option(form.Value, 'country', _('Country code'));
+        countryOption.modalonly = true;
+        countryOption.rmempty = true;
+        countryOption.placeholder = 'US';
+        countryOption.description = _('Two-letter regulatory country code applied to this AP radio when the schedule enables it. IP location lookup fills this automatically; APs sharing one radio also share one country setting.');
+        countryOption.validate = function(sectionId, value) {
+            value = String(value || '').trim();
+            return !value || /^[A-Za-z]{2}$/.test(value)
+                ? true : _('Enter a two-letter country code such as US or GB.');
+        };
+        countryOption.write = function(sectionId, value) {
+            value = String(value || '').trim().toUpperCase();
+            if (value)
+                uci.set('wloc', sectionId, 'country', value);
+            else
+                uci.unset('wloc', sectionId, 'country');
+        };
 
         var proxyTypeOption = wifiSections.option(form.ListValue, 'proxy_type', _('Outbound'));
         proxyTypeOption.modalonly = true;
@@ -360,7 +378,7 @@ return baseclass.extend({
         ipOption.modalonly = true;
         ipOption.rmempty = true;
         ipOption.placeholder = '8.8.8.8';
-        ipOption.description = _('Use ipinfo.io in this browser to fill the AP location coordinates.');
+        ipOption.description = _('Use ipinfo.io in this browser to fill the AP coordinates and regulatory country code.');
 
         var lookupButton = wifiSections.option(form.Button, '_lookup_action', _('IP location'));
         lookupButton.modalonly = true;
@@ -381,12 +399,15 @@ return baseclass.extend({
             return lookupIpInfo(ip).then(function(result) {
                 var latitudeElement = modalUIElement(latitudeOption, sectionId);
                 var longitudeElement = modalUIElement(longitudeOption, sectionId);
-                if (!latitudeElement || !longitudeElement)
+                var countryElement = modalUIElement(countryOption, sectionId);
+                if (!latitudeElement || !longitudeElement || !countryElement)
                     throw new Error(_('Location fields are unavailable.'));
                 latitudeElement.setValue(result.latitude);
                 longitudeElement.setValue(result.longitude);
+                countryElement.setValue(String(result.country || '').toUpperCase());
                 latitudeElement.triggerValidation();
                 longitudeElement.triggerValidation();
+                countryElement.triggerValidation();
                 if (resultNode) {
                     resultNode.replaceChildren(
                         E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
