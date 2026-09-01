@@ -3,10 +3,8 @@
 'require form';
 'require uci';
 'require rpc';
-'require ui';
 'require dom';
 
-var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 var callConfiguredAccessPoints = rpc.declare({ object: 'luci.wloc', method: 'configured_access_points', expect: {} });
 
 function truthy(value) {
@@ -97,7 +95,7 @@ return baseclass.extend({
         });
     },
 
-    create: function(data, initialStatus, refreshStatus) {
+    create: function(data, initialStatus) {
         var accessPoints = data && data.access_points || [];
         var currentStatus = initialStatus || {};
         var lookupResultNodes = {};
@@ -105,7 +103,6 @@ return baseclass.extend({
         var lastResultNodes = {};
         var configuredWireless = [];
         var configuredWirelessKeys = {};
-        var fingerprintNode = E('div', { 'class': 'cbi-section-descr' });
 
         function addConfiguredWireless(source) {
             var ssid = String(source && source.ssid || '');
@@ -167,10 +164,6 @@ return baseclass.extend({
 
         function updateStatus(status) {
             currentStatus = status || {};
-            fingerprintNode.replaceChildren(
-                E('strong', {}, _('Root CA SHA-256: ')),
-                E('span', {}, currentStatus.fingerprint || _('Generated on first start'))
-            );
             uci.sections('wloc', 'wifi').forEach(function(wifi) {
                 var sectionId = wifi['.name'];
                 var activity = apActivity(sectionId, currentStatus);
@@ -180,18 +173,6 @@ return baseclass.extend({
                 updateNodes(lastResultNodes, sectionId, function(node) {
                     renderApResult(node, activity);
                 });
-            });
-        }
-
-        function notifyAction(promise, message) {
-            return promise.then(function(result) {
-                if (result && result.ok === false)
-                    throw new Error(String(result.detail || result.error || result.error_code || _('The action was not completed.')));
-                ui.addNotification(null, E('p', {}, message), 'info');
-                return typeof refreshStatus === 'function' ? refreshStatus() : result;
-            }).catch(function(error) {
-                ui.addNotification(null, E('p', {}, _('Action failed: %s').format(error.message || error)), 'error');
-                return false;
             });
         }
 
@@ -245,7 +226,6 @@ return baseclass.extend({
             value = String(value || '');
             uci.set('wloc', sectionId, 'iface', value);
             uci.unset('wloc', sectionId, 'ssid');
-            uci.unset('wloc', sectionId, 'migration_pending');
         };
         ifaceOption.validate = function(sectionId, value) {
             value = String(value || '');
@@ -427,29 +407,6 @@ return baseclass.extend({
             var node = E('div', { 'class': 'cbi-section-descr' }, _('No lookup performed.'));
             lookupResultNodes[sectionId] = node;
             return node;
-        };
-
-        var caSection = map.section(form.NamedSection, 'main', 'wloc', _('Root CA'));
-        caSection.anonymous = true;
-        var caOption = caSection.option(form.DummyValue, '_ca_certificate', _('iPhone root certificate'));
-        caOption.rmempty = true;
-        caOption.cfgvalue = function() { return 'certificate'; };
-        caOption.renderWidget = function() {
-            var regenerate = E('button', {
-                'class': 'cbi-button cbi-button-negative',
-                type: 'button'
-            }, _('Regenerate CA'));
-            regenerate.addEventListener('click', ui.createHandlerFn(regenerate, function() {
-                return notifyAction(callRegenerate(), _('The Root CA was regenerated. Reinstall and trust it on the iPhone.'));
-            }));
-            return E('div', {}, [
-                E('div', { 'class': 'cbi-section-descr' }, _('After installing the profile, explicitly enable full trust in iOS Certificate Trust Settings.')),
-                E('div', { 'class': 'cbi-page-actions' }, [
-                    E('a', { 'class': 'cbi-button cbi-button-action', href: '/wloc-ca.mobileconfig' }, _('Download CA profile')),
-                    regenerate
-                ]),
-                fingerprintNode
-            ]);
         };
 
         updateStatus(currentStatus);
