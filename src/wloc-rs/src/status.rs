@@ -126,6 +126,39 @@ impl Status {
         self.update_detail_lines(event, detail, &[], error, mutate);
     }
 
+    fn update_counters_silent(&self, mutate: impl FnOnce(&mut Counters<'_>)) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutate(&mut Counters {
+            snapshot: &mut inner.snapshot,
+        });
+        inner.snapshot.updated_at = epoch_seconds();
+        let snapshot = inner.snapshot.clone();
+        drop(inner);
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+        let _ = self.notify.try_send(());
+    }
+
+    pub fn count_passthrough_connection(&self) {
+        self.update_counters_silent(|counters| {
+            counters.accepted();
+            counters.passthrough();
+        });
+    }
+
+    pub fn count_tls_intercepted(&self) {
+        self.update_counters_silent(|counters| counters.tls());
+    }
+
+    pub fn count_patched_response(&self) {
+        self.update_counters_silent(|counters| counters.patched());
+    }
+
     pub fn update_detail_lines(
         &self,
         event: &str,

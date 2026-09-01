@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,7 +16,7 @@ use crate::config::{LocationRule, MacAddress, OutboundProxy};
 use crate::network_source::HostapdNetworkSource;
 use crate::status::Status;
 use crate::wloc::{
-    patch_response_following, request_wifi_devices, valid_request, LocationFollower, PatchTarget,
+    patch_response_following, valid_request, LocationFollower, PatchTarget,
 };
 
 const MAX_BODY: usize = 512 * 1024;
@@ -27,6 +27,16 @@ const GLOBAL_STREAM_LIMIT: usize = 2;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 const UPSTREAM_TLS_ATTEMPTS: usize = 2;
 const UPSTREAM_REQUEST_ATTEMPTS: usize = 2;
+
+fn connection_id_seed() -> u32 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let seed = (now.as_secs() as u32)
+        ^ now.subsec_nanos().rotate_left(13)
+        ^ std::process::id().rotate_left(7);
+    seed.max(1)
+}
 
 #[derive(Clone)]
 struct PeerIdentity {
@@ -120,6 +130,7 @@ pub struct Proxy {
     status: Arc<Status>,
     h2_pool: Arc<tokio::sync::Mutex<HashMap<String, H2Entry>>>,
     h2_generation: Arc<AtomicU64>,
+    connection_generation: Arc<AtomicU32>,
     stream_limit: Arc<tokio::sync::Semaphore>,
     followers: HashMap<String, Arc<tokio::sync::Mutex<LocationFollower>>>,
 }
@@ -161,6 +172,7 @@ impl Proxy {
             status,
             h2_pool: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             h2_generation: Arc::new(AtomicU64::new(1)),
+            connection_generation: Arc::new(AtomicU32::new(connection_id_seed())),
             stream_limit: Arc::new(tokio::sync::Semaphore::new(GLOBAL_STREAM_LIMIT)),
             followers,
         }
@@ -264,35 +276,7 @@ impl Proxy {
             );
             return self.tunnel(stream, &OutboundProxy::Direct).await;
         };
-        let ap_id = rule.id.clone();
-        let result = self.handle_target(stream, rule, peer_address.ip()).await;
-        if let Err(ProxyError::ClientClosed(reason)) = &result {
-            self.status.update_detail(
-                "client_cancelled",
-                &self.rule_detail(
-                    &ap_id,
-                    peer_address.ip(),
-                    format!("rule={ap_id} action=cancelled reason={reason}"),
-                ),
-                None,
-                |_| {},
-            );
-            return Ok(());
-        }
-        if let Err(error) = &result {
-            let reason = error.to_string();
-            self.status.update_detail(
-                "ap_failed",
-                &self.rule_detail(
-                    &ap_id,
-                    peer_address.ip(),
-                    format!("rule={ap_id} category={}", error.category()),
-                ),
-                Some(&reason),
-                |c| c.request_failed_for(&ap_id, &reason),
-            );
-        }
-        result
+        self.handle_target(stream, rule, peer_address.ip()).await
     }
 
     async fn handle_target(
@@ -308,12 +292,6 @@ impl Proxy {
             .cloned()
             .ok_or_else(|| ProxyError::Protocol("location_follower_missing".into()))?;
         let outbound = rule.outbound;
-        self.status.update_detail(
-            "connection_accepted",
-            &self.rule_detail(&client, ip, format!("rule={client}")),
-            None,
-            |c| c.accepted(),
-        );
         let sni = tokio::time::timeout(HANDSHAKE_TIMEOUT, peek_sni(&stream))
             .await
             .map_err(|_| ProxyError::ClientTls("client_hello_timeout".into()))?
@@ -321,33 +299,75 @@ impl Proxy {
         let approved = sni
             .as_deref()
             .is_some_and(|host| crate::approved_host(host, &self.domains));
+        if !approved {
+            self.status.count_passthrough_connection();
+            let _ = self.tunnel(stream, &outbound).await;
+            return Ok(());
+        }
+        let hostname = sni.unwrap();
+        let connection_id = loop {
+            let candidate = self.connection_generation.fetch_add(1, Ordering::Relaxed);
+            if candidate != 0 {
+                break candidate;
+            }
+        };
         self.status.update_detail(
-            "client_hello",
+            "connection_accepted",
             &self.rule_detail(
                 &client,
                 ip,
                 format!(
-                    "rule={client} sni={} approved={approved}",
-                    sni.as_deref().unwrap_or("missing")
+                    "connection_id={connection_id} rule={client} host={hostname} approved=true"
                 ),
             ),
             None,
-            |_| {},
+            |c| c.accepted(),
         );
-        if !approved {
-            self.status.update_detail(
-                "sni_passthrough",
-                &self.rule_detail(
-                    &client,
-                    ip,
-                    format!("rule={client} reason=hostname_not_approved"),
-                ),
-                None,
-                |c| c.passthrough(),
-            );
-            return self.tunnel(stream, &outbound).await;
+        let result = self
+            .handle_intercepted(
+                stream,
+                &client,
+                ip,
+                &hostname,
+                connection_id,
+                &outbound,
+                follower,
+            )
+            .await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(ProxyError::ClientClosed(_)) => Ok(()),
+            Err(error) => {
+                let reason = error.to_string();
+                self.status.update_detail(
+                    "ap_failed",
+                    &self.rule_detail(
+                        &client,
+                        ip,
+                        format!(
+                            "connection_id={connection_id} rule={client} host={hostname} category={}",
+                            error.category()
+                        ),
+                    ),
+                    Some(&reason),
+                    |c| c.request_failed_for(&client, &reason),
+                );
+                Ok(())
+            }
         }
-        let hostname = sni.unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_intercepted(
+        &self,
+        stream: TcpStream,
+        client: &str,
+        ip: IpAddr,
+        hostname: &str,
+        connection_id: u64,
+        outbound: &OutboundProxy,
+        follower: Arc<tokio::sync::Mutex<LocationFollower>>,
+    ) -> Result<(), ProxyError> {
         let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(stream))
             .await
             .map_err(|_| ProxyError::ClientTls("handshake_timeout".into()))?
@@ -355,16 +375,7 @@ impl Proxy {
         if tls.get_ref().1.alpn_protocol() != Some(b"h2") {
             return Err(ProxyError::ClientTls("h2_alpn_required".into()));
         }
-        self.status.update_detail(
-            "tls_intercepted",
-            &self.rule_detail(
-                &client,
-                ip,
-                format!("rule={client} host={hostname} alpn=h2"),
-            ),
-            None,
-            |c| c.tls(),
-        );
+        self.status.count_tls_intercepted();
         let mut h2 = h2::server::Builder::new()
             .initial_window_size(64 * 1024)
             .max_frame_size(16 * 1024)
@@ -384,13 +395,22 @@ impl Proxy {
                     };
                     let (request, respond) = accepted.map_err(ProxyError::h2)?;
                     let proxy = self.clone();
-                    let hostname = hostname.clone();
-                    let client = client.clone();
+                    let hostname = hostname.to_owned();
+                    let client = client.to_owned();
                     let outbound = outbound.clone();
                     let follower = Arc::clone(&follower);
                     streams.spawn(async move {
                         proxy
-                            .handle_h2_stream(request, respond, &hostname, follower, &client, ip, &outbound)
+                            .handle_h2_stream(
+                                request,
+                                respond,
+                                &hostname,
+                                follower,
+                                &client,
+                                ip,
+                                connection_id,
+                                &outbound,
+                            )
                             .await
                     });
                 }
@@ -416,6 +436,7 @@ impl Proxy {
         follower: Arc<tokio::sync::Mutex<LocationFollower>>,
         client: &str,
         ip: IpAddr,
+        connection_id: u64,
         outbound: &OutboundProxy,
     ) -> Result<(), ProxyError> {
         let permit_result = tokio::select! {
@@ -442,13 +463,20 @@ impl Proxy {
             }
             upstream = tokio::time::timeout(
                 REQUEST_TIMEOUT,
-                self.forward(request, hostname, &follower, client, ip, outbound),
+                self.forward(
+                    request,
+                    hostname,
+                    &follower,
+                    client,
+                    ip,
+                    connection_id,
+                    outbound,
+                ),
             ) => upstream,
         };
         let upstream = forward_result
             .map_err(|_| ProxyError::Upstream("request_timeout".into()).with_domain(hostname))??;
         let end = upstream.body.is_empty();
-        let delivered_bytes = upstream.body.len();
         let delivered_status = upstream.status.as_u16();
         let delivered_wloc = upstream.wloc;
         let response_mode = upstream.response_mode;
@@ -489,17 +517,22 @@ impl Proxy {
             .map_err(|_| ProxyError::Protocol("response_timeout".into()))??;
         }
         if delivered_wloc || response_mode == "debug" {
+            let target = patched_target
+                .map(|target| {
+                    format!(
+                        " latitude={:.8} longitude={:.8}",
+                        target.latitude, target.longitude
+                    )
+                })
+                .unwrap_or_default();
             self.status.update_detail(
                 "response_delivered",
-                &self.rule_detail(
-                    client,
-                    ip,
-                    format!(
-                        "rule={client} host={hostname} status={delivered_status} bytes={delivered_bytes} mode={response_mode} kind={}",
-                        request_kind
-                            .map(|kind| kind.to_string())
-                            .unwrap_or_else(|| "unknown".into())
-                    ),
+                &format!(
+                    "connection_id={connection_id} status={delivered_status} mode={response_mode} kind={}{}",
+                    request_kind
+                        .map(|kind| kind.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    target
                 ),
                 None,
                 |c| {
@@ -548,6 +581,7 @@ impl Proxy {
         follower: &tokio::sync::Mutex<LocationFollower>,
         client: &str,
         ip: IpAddr,
+        connection_id: u64,
         outbound: &OutboundProxy,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
@@ -577,60 +611,31 @@ impl Proxy {
                 .map_err(ProxyError::h2)?;
         }
         let is_wloc = method == Method::POST && uri.path() == "/clls/wloc" && valid_request(&body);
-        self.status.update_detail(
-            "request_received",
-            &self.rule_detail(
-                client,
-                ip,
-                format!(
-                    "rule={client} host={tls_sni} method={method} path={} body_bytes={} valid_wloc={is_wloc}",
-                    uri.path(),
-                    body.len()
-                ),
-            ),
-            None,
-            |_| {},
-        );
         if self.debug {
-            self.status.update_detail(
-                "debug_response",
-                &self.rule_detail(
-                    client,
-                    ip,
-                    format!("rule={client} host={tls_sni} action=fixed_json"),
-                ),
-                None,
-                |_| {},
-            );
             return Ok(debug_response());
         }
         if is_wloc {
             let request_kind = crate::wloc::request_kind(&body)
                 .map(|kind| kind.to_string())
                 .unwrap_or_else(|| "unknown".into());
-            let wifi_devices = request_wifi_devices(&body)
-                .map(|count| count.to_string())
-                .unwrap_or_else(|| "unknown".into());
             self.status.update_detail(
                 "wloc_request",
-                &self.rule_detail(
-                    client,
-                    ip,
-                    format!(
-                        "rule={client} host={tls_sni} kind={request_kind} wifi_devices={wifi_devices} body_bytes={}",
-                        body.len()
-                    ),
-                ),
+                &format!("connection_id={connection_id} kind={request_kind}"),
                 None,
                 |c| c.wloc(),
             );
         }
 
         let mut upstream_attempt = 1usize;
-        let (mut response, upstream_protocol) = loop {
+        let (mut response, _) = loop {
             let result = self
                 .exchange_upstream(
-                    &method, &uri, &headers, tls_sni, &body, client, ip, outbound,
+                    &method,
+                    &uri,
+                    &headers,
+                    tls_sni,
+                    &body,
+                    outbound,
                 )
                 .await;
             match result {
@@ -639,21 +644,6 @@ impl Proxy {
                         && upstream_attempt < UPSTREAM_REQUEST_ATTEMPTS
                         && retryable_upstream_request_error(&error).is_some() =>
                 {
-                    let reason = retryable_upstream_request_error(&error)
-                        .unwrap_or("transient_upstream_error");
-                    self.status.update_detail(
-                        "upstream_retry",
-                        &self.rule_detail(
-                            client,
-                            ip,
-                            format!(
-                                "host={tls_sni} stage=request attempt={upstream_attempt} next_attempt={} reason={reason}",
-                                upstream_attempt + 1
-                            ),
-                        ),
-                        None,
-                        |_| {},
-                    );
                     self.h2_pool
                         .lock()
                         .await
@@ -663,78 +653,16 @@ impl Proxy {
                 result => break result.map_err(|error| error.with_domain(tls_sni))?,
             }
         };
-        self.status.update_detail(
-            "upstream_response",
-            &self.rule_detail(
-                client,
-                ip,
-                format!(
-                    "host={tls_sni} protocol={upstream_protocol} status={} body_bytes={}",
-                    response.status.as_u16(),
-                    response.body.len()
-                ),
-            ),
-            None,
-            |_| {},
-        );
         let mut response_mode = "forwarded";
         let mut patched_target = None;
         if is_wloc && response.status == StatusCode::OK {
             let mut follower = follower.lock().await;
             match patch_response_following(&response.body, &mut follower) {
                 Ok((patched, target)) => {
-                    let before = response.body.len();
                     response.body = patched.body;
                     response_mode = "upstream_patched";
                     patched_target = Some(target);
-                    let location_lines = patched
-                        .changes
-                        .iter()
-                        .enumerate()
-                        .map(|(index, change)| {
-                            let before_accuracy = change
-                                .accuracy_before
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| "absent".into());
-                            let after_accuracy = change
-                                .accuracy_after
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| "absent".into());
-                            self.rule_detail(
-                                client,
-                                ip,
-                                format!(
-                                    "rule={client} host={tls_sni} source={} index={} before={:.8},{:.8},accuracy_m={} after={:.8},{:.8},accuracy_m={}",
-                                    change.source,
-                                    index + 1,
-                                    change.latitude_before_e8 as f64 / 100_000_000.0,
-                                    change.longitude_before_e8 as f64 / 100_000_000.0,
-                                    before_accuracy,
-                                    change.latitude_after_e8 as f64 / 100_000_000.0,
-                                    change.longitude_after_e8 as f64 / 100_000_000.0,
-                                    after_accuracy
-                                ),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    self.status.update_detail_lines(
-                        "wloc_upstream_patched",
-                        &self.rule_detail(
-                            client,
-                            ip,
-                            format!(
-                                "rule={client} host={tls_sni} bytes_before={before} bytes_after={} wifi_devices={} cell_responses={} locations={} skipped={} changed_fields=latitude,longitude preserved=accuracy,all_other_fields",
-                                response.body.len(),
-                                patched.wifi_devices,
-                                patched.cell_responses,
-                                patched.locations,
-                                patched.skipped_locations
-                            ),
-                        ),
-                        &location_lines,
-                        None,
-                        |c| c.patched(),
-                    );
+                    self.status.count_patched_response();
                 }
                 Err(error) => {
                     let reason = format!("protocol_{error}");
@@ -743,7 +671,9 @@ impl Proxy {
                         &self.rule_detail(
                             client,
                             ip,
-                            format!("host={tls_sni} action=original_response"),
+                            format!(
+                                "connection_id={connection_id} host={tls_sni} action=original_response"
+                            ),
                         ),
                         Some(&reason),
                         |c| c.patch_failed_for(client, &reason),
@@ -771,8 +701,6 @@ impl Proxy {
         headers: &HeaderMap,
         hostname: &str,
         body: &[u8],
-        client: &str,
-        ip: IpAddr,
         outbound: &OutboundProxy,
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
         let pool_key = outbound.pool_key(hostname);
@@ -781,14 +709,6 @@ impl Proxy {
             let proxy_ip = entry.proxy_ip;
             match entry.sender.ready().await {
                 Ok(sender) => {
-                    let mut detail = format!("host={hostname} protocol=h2");
-                    append_upstream_peer(&mut detail, upstream_ip, proxy_ip);
-                    self.status.update_detail(
-                        "upstream_reused",
-                        &self.rule_detail(client, ip, detail),
-                        None,
-                        |_| {},
-                    );
                     return exchange_h2(sender, method, uri, headers, hostname, body)
                         .await
                         .map(|response| (response, "h2"))
@@ -800,38 +720,15 @@ impl Proxy {
             }
         }
 
-        self.status.update_detail(
-            "upstream_connect",
-            &self.rule_detail(
-                client,
-                ip,
-                format!("host={hostname} port=443 outbound={}", outbound.label()),
-            ),
-            None,
-            |_| {},
-        );
         let server_name = rustls::pki_types::ServerName::try_from(hostname.to_owned())
             .map_err(|_| ProxyError::Upstream("invalid_hostname".into()))?;
         let mut tls_attempt = 1usize;
         let (tls, upstream_ip, proxy_ip) = loop {
-            let tcp = tokio::time::timeout(
-                HANDSHAKE_TIMEOUT,
-                connect_outbound(outbound, hostname, 443),
-            )
-            .await
-            .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
+            let tcp =
+                tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_outbound(outbound, hostname, 443))
+                    .await
+                    .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
             let (upstream_ip, proxy_ip) = upstream_peer_addresses(outbound, &tcp);
-            let mut connected_detail = format!(
-                "host={hostname} port=443 outbound={} attempt={tls_attempt}",
-                outbound.label()
-            );
-            append_upstream_peer(&mut connected_detail, upstream_ip, proxy_ip);
-            self.status.update_detail(
-                "upstream_connected",
-                &self.rule_detail(client, ip, connected_detail),
-                None,
-                |_| {},
-            );
             match tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
                 self.connector.connect(server_name.clone(), tcp),
@@ -843,41 +740,26 @@ impl Proxy {
                     if tls_attempt < UPSTREAM_TLS_ATTEMPTS
                         && retryable_tls_handshake_error(&error) =>
                 {
-                    let mut retry_detail = format!(
-                        "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason={}",
-                        tls_attempt + 1,
-                        error.kind()
-                    );
-                    append_upstream_peer(&mut retry_detail, upstream_ip, proxy_ip);
-                    self.status.update_detail(
-                        "upstream_retry",
-                        &self.rule_detail(client, ip, retry_detail),
-                        None,
-                        |_| {},
-                    );
                     tls_attempt += 1;
                 }
                 Ok(Err(error)) => {
-                    return Err(ProxyError::Upstream(format!("tls_verify: {error}"))
-                        .with_target(hostname, upstream_ip, proxy_ip));
+                    return Err(
+                        ProxyError::Upstream(format!("tls_verify: {error}")).with_target(
+                            hostname,
+                            upstream_ip,
+                            proxy_ip,
+                        ),
+                    );
                 }
                 Err(_) if tls_attempt < UPSTREAM_TLS_ATTEMPTS => {
-                    let mut retry_detail = format!(
-                        "host={hostname} stage=tls attempt={tls_attempt} next_attempt={} reason=timeout",
-                        tls_attempt + 1
-                    );
-                    append_upstream_peer(&mut retry_detail, upstream_ip, proxy_ip);
-                    self.status.update_detail(
-                        "upstream_retry",
-                        &self.rule_detail(client, ip, retry_detail),
-                        None,
-                        |_| {},
-                    );
                     tls_attempt += 1;
                 }
                 Err(_) => {
-                    return Err(ProxyError::Upstream("tls_timeout".into())
-                        .with_target(hostname, upstream_ip, proxy_ip));
+                    return Err(ProxyError::Upstream("tls_timeout".into()).with_target(
+                        hostname,
+                        upstream_ip,
+                        proxy_ip,
+                    ));
                 }
             }
         };
@@ -891,8 +773,7 @@ impl Proxy {
                     .handshake::<_, Bytes>(tls)
                     .await
                     .map_err(|error| {
-                        ProxyError::upstream_h2(error)
-                            .with_target(hostname, upstream_ip, proxy_ip)
+                        ProxyError::upstream_h2(error).with_target(hostname, upstream_ip, proxy_ip)
                     })?;
                 let generation = self.h2_generation.fetch_add(1, Ordering::Relaxed);
                 self.h2_pool.lock().await.insert(
@@ -911,8 +792,7 @@ impl Proxy {
                     remove_h2_generation(&pool, &driver_key, generation).await;
                 });
                 let sender = sender.ready().await.map_err(|error| {
-                    ProxyError::upstream_h2(error)
-                        .with_target(hostname, upstream_ip, proxy_ip)
+                    ProxyError::upstream_h2(error).with_target(hostname, upstream_ip, proxy_ip)
                 })?;
                 exchange_h2(sender, method, uri, headers, hostname, body)
                     .await
@@ -974,19 +854,6 @@ fn upstream_peer_addresses(
     match outbound {
         OutboundProxy::Direct => (peer_ip, None),
         OutboundProxy::Http { .. } | OutboundProxy::Socks5 { .. } => (None, peer_ip),
-    }
-}
-
-fn append_upstream_peer(
-    detail: &mut String,
-    upstream_ip: Option<IpAddr>,
-    proxy_ip: Option<IpAddr>,
-) {
-    if let Some(upstream_ip) = upstream_ip {
-        detail.push_str(&format!(" upstream_ip={upstream_ip}"));
-    }
-    if let Some(proxy_ip) = proxy_ip {
-        detail.push_str(&format!(" proxy_ip={proxy_ip}"));
     }
 }
 
