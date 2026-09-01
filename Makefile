@@ -55,7 +55,6 @@ define Package/luci-app-wloc/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 0755 \
-		/etc/uci-defaults/luci-app-wloc-geoip-path \
 		/usr/libexec/rpcd/luci.wloc.service \
 		/usr/libexec/rpcd/luci.wloc.update \
 		/usr/libexec/rpcd/luci.wloc.defaults \
@@ -69,9 +68,6 @@ define Package/luci-app-wloc/postinst
 		/usr/libexec/wloc/firewall.sh \
 		/usr/libexec/wloc/firewall-core.sh \
 		/usr/libexec/wloc/firewall-geo.lua 2>/dev/null || true
-	if [ -f /etc/uci-defaults/luci-app-wloc-geoip-path ]; then
-		sh /etc/uci-defaults/luci-app-wloc-geoip-path && rm -f /etc/uci-defaults/luci-app-wloc-geoip-path
-	fi
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
