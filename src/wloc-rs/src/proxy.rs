@@ -439,6 +439,13 @@ impl Proxy {
         connection_id: u32,
         outbound: &OutboundProxy,
     ) -> Result<(), ProxyError> {
+        let monitored = request.uri().authority().is_some_and(|authority| {
+            crate::approved_host(authority.host(), &self.domains)
+                && authority.host().eq_ignore_ascii_case(hostname)
+        });
+        if !monitored {
+            return Ok(());
+        }
         let permit_result = tokio::select! {
             reset = std::future::poll_fn(|context| respond.poll_reset(context)) => {
                 let reason = match reset {
