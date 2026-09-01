@@ -1,9 +1,7 @@
 #!/bin/sh
 
 # Persistently manages scheduled WLOC AP state in /etc/config/wireless.
-# Outside the disable window the selected wifi-iface is enabled and its
-# wifi-device regulatory country is synchronized from the WLOC rule.
-# Runtime AP state is verified on startup and once per hour as a fallback.
+# The configured and runtime AP state is checked on startup and every 30 minutes.
 
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
@@ -203,7 +201,6 @@ reload_wifi() {
 }
 
 reconcile() {
-    local verify_runtime="${1:-0}"
     WLOC_SCHEDULE_CHANGED=0
     WLOC_SCHEDULE_FAILED=0
     WLOC_SCHEDULE_RUNTIME_MISMATCH=0
@@ -217,7 +214,7 @@ reconcile() {
             return 1
         fi
         reload_wifi || WLOC_SCHEDULE_FAILED=1
-    elif [ "$verify_runtime" -eq 1 ]; then
+    else
         config_foreach verify_wifi_runtime wifi
         if [ "$WLOC_SCHEDULE_RUNTIME_MISMATCH" -eq 1 ]; then
             reload_wifi || WLOC_SCHEDULE_FAILED=1
@@ -227,25 +224,27 @@ reconcile() {
     return "$WLOC_SCHEDULE_FAILED"
 }
 
+seconds_until_next_check() {
+    local minute second elapsed delay
+    minute="$(decimal "$(date +%M)")"
+    second="$(decimal "$(date +%S)")"
+    elapsed=$(( (minute % 30) * 60 + second ))
+    delay=$((1800 - elapsed))
+    [ "$delay" -ge 1 ] || delay=1800
+    printf '%s' "$delay"
+}
+
 run_loop() {
-    local second delay verify_hour last_verify_hour=''
+    local delay
     while :; do
-        verify_hour="$(date +%Y%m%d%H)"
-        if [ "$verify_hour" != "$last_verify_hour" ]; then
-            reconcile 1 || true
-            last_verify_hour="$verify_hour"
-        else
-            reconcile 0 || true
-        fi
-        second="$(decimal "$(date +%S)")"
-        delay=$((60 - second))
-        [ "$delay" -ge 1 ] || delay=60
+        reconcile || true
+        delay="$(seconds_until_next_check)"
         sleep "$delay" || break
     done
 }
 
 case "${1:-}" in
     run) run_loop;;
-    reconcile) reconcile 1;;
+    reconcile) reconcile;;
     *) echo "usage: $0 {run|reconcile}" >&2; exit 2;;
 esac
