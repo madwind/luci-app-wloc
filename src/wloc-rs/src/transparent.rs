@@ -240,7 +240,9 @@ async fn recv_original_datagram(
 ) -> io::Result<(usize, SocketAddrV4, SocketAddrV4)> {
     loop {
         socket.readable().await?;
-        match recv_original_datagram_now(socket, buffer) {
+        match socket.try_io(tokio::io::Interest::READABLE, || {
+            recv_original_datagram_now(socket, buffer)
+        }) {
             Ok(result) => return Ok(result),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
             Err(error) => return Err(error),
