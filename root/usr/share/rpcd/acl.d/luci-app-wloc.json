@@ -8,6 +8,7 @@
         "luci.wloc.defaults": [ "firewall" ],
         "luci.wloc.firewall": [ "read", "validate" ],
         "luci.wloc.geo": [ "status", "check" ],
+        "luci.wloc.geoauto": [ "status" ],
         "luci.wloc.routing": [ "read", "validate" ],
         "luci.wloc.update": [ "status" ]
       },
@@ -18,6 +19,7 @@
         "luci.wloc": [ "restart", "regenerate_ca" ],
         "luci.wloc.firewall": [ "save", "apply" ],
         "luci.wloc.geo": [ "update", "stop" ],
+        "luci.wloc.geoauto": [ "set_auto" ],
         "luci.wloc.routing": [ "save", "apply" ],
         "luci.wloc.update": [ "check", "install", "stop" ]
       },

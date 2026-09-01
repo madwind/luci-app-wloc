@@ -59,14 +59,18 @@ define Package/luci-app-wloc/postinst
 		/usr/libexec/rpcd/luci.wloc.defaults \
 		/usr/libexec/rpcd/luci.wloc.firewall \
 		/usr/libexec/rpcd/luci.wloc.geo \
+		/usr/libexec/rpcd/luci.wloc.geoauto \
 		/usr/libexec/wloc/update.sh \
 		/usr/libexec/wloc/geo-update.sh \
+		/usr/libexec/wloc/geo-smart-update.sh \
+		/usr/libexec/wloc/geo-auto.sh \
 		/usr/libexec/wloc/firewall.sh \
 		/usr/libexec/wloc/firewall-core.sh \
 		/usr/libexec/wloc/firewall-geo.lua 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
+	/usr/libexec/wloc/geo-auto.sh sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic GeoIP update schedule"
 	exit 0
 }
 exit 0
@@ -74,8 +78,11 @@ endef
 
 define Package/luci-app-wloc/prerm
 #!/bin/sh
-# The package framework runs default_prerm first; keep only WLOC-specific cleanup here.
 [ -n "$${IPKG_INSTROOT}" ] || {
+	case "$${1:-remove}" in
+		upgrade) ;;
+		*) [ -x /usr/libexec/wloc/geo-auto.sh ] && /usr/libexec/wloc/geo-auto.sh remove >/dev/null 2>&1 || true;;
+	esac
 	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
 exit 0
