@@ -87,10 +87,6 @@ function createEditor(options) {
             options.onInput(api);
     }
 
-    function confirmDiscard(message) {
-        return !isDirty() || window.confirm(message);
-    }
-
     function addInjectedAction(container, title, className, handler, confirmMessage) {
         if (typeof handler !== 'function')
             return null;
@@ -100,7 +96,7 @@ function createEditor(options) {
             'type': 'button'
         }, title);
         var actionHandler = function() {
-            if (confirmMessage && !confirmDiscard(confirmMessage))
+            if (confirmMessage && !window.confirm(confirmMessage))
                 return Promise.resolve(false);
             return Promise.resolve(handler(api));
         };
@@ -146,10 +142,10 @@ function createEditor(options) {
 
     addInjectedAction(leftActions, _('Format'), 'cbi-button-action', options.format, null);
     addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, null);
-    addInjectedAction(leftActions, _('Load default'), 'cbi-button-action', options.loadDefault,
-        _('Discard unsaved changes and load the default template?'));
-    addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-action', options.reload,
-        _('Discard unsaved changes and reload the saved file?'));
+    addInjectedAction(leftActions, _('Load default'), 'cbi-button-negative', options.loadDefault,
+        _('Load the default template? This will replace the current editor contents. Any unsaved changes will be lost.'));
+    addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-negative', options.reload,
+        _('Reload the saved file? This will replace the current editor contents. Any unsaved changes will be lost.'));
     addInjectedAction(rightActions, _('Apply'), 'cbi-button-apply', options.apply, null);
     addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, null);
 
