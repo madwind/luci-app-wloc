@@ -31,12 +31,8 @@ function createEditor(options) {
     var byteCount = E('span', {}, wlocUi.formatBytes(editorByteLength(savedValue)));
     var byteLimit = E('span', { 'aria-live': 'polite' });
     var state = E('span', { 'aria-live': 'polite' }, options.readonly ? _('Read-only') : _('Saved file'));
-    var leftActions = E('div', {
-        'style': 'display: flex; flex-wrap: wrap; gap: .5rem;'
-    });
-    var rightActions = E('div', {
-        'style': 'display: flex; flex-wrap: wrap; gap: .5rem; margin-left: auto;'
-    });
+    var leftActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem;' });
+    var rightActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem; margin-left: auto;' });
     var toolbar = E('div', {
         'class': 'cbi-page-actions',
         'style': 'display: flex; flex-wrap: wrap; align-items: center; gap: .75rem;'
@@ -44,6 +40,7 @@ function createEditor(options) {
     var hasActions = !options.readonly && [
         options.format,
         options.check,
+        options.loadDefault,
         options.reload,
         options.apply,
         options.applySave
@@ -90,11 +87,11 @@ function createEditor(options) {
             options.onInput(api);
     }
 
-    function confirmDiscard() {
-        return !isDirty() || window.confirm(_('Discard unsaved changes and reload the saved file?'));
+    function confirmDiscard(message) {
+        return !isDirty() || window.confirm(message);
     }
 
-    function addInjectedAction(container, title, className, handler, confirmReload) {
+    function addInjectedAction(container, title, className, handler, confirmMessage) {
         if (typeof handler !== 'function')
             return null;
 
@@ -103,7 +100,7 @@ function createEditor(options) {
             'type': 'button'
         }, title);
         var actionHandler = function() {
-            if (confirmReload && !confirmDiscard())
+            if (confirmMessage && !confirmDiscard(confirmMessage))
                 return Promise.resolve(false);
             return Promise.resolve(handler(api));
         };
@@ -147,11 +144,14 @@ function createEditor(options) {
         withinLimit: withinLimit
     };
 
-    addInjectedAction(leftActions, _('Format'), 'cbi-button-action', options.format, false);
-    addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, false);
-    addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-action', options.reload, true);
-    addInjectedAction(rightActions, _('Apply'), 'cbi-button-apply', options.apply, false);
-    addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, false);
+    addInjectedAction(leftActions, _('Format'), 'cbi-button-action', options.format, null);
+    addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, null);
+    addInjectedAction(leftActions, _('Load default'), 'cbi-button-action', options.loadDefault,
+        _('Discard unsaved changes and load the default template?'));
+    addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-action', options.reload,
+        _('Discard unsaved changes and reload the saved file?'));
+    addInjectedAction(rightActions, _('Apply'), 'cbi-button-apply', options.apply, null);
+    addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, null);
 
     textarea.addEventListener('input', handleInput);
     textarea.addEventListener('keydown', function(event) {

@@ -1,0 +1,34 @@
+#!/bin/sh
+
+. "${WLOC_JSHN_PATH:-/usr/share/libubox/jshn.sh}"
+
+DEFAULT_FIREWALL=${WLOC_DEFAULT_FIREWALL_PATH:-/usr/share/wloc/defaults/firewall.nft}
+
+emit_firewall() {
+    if [ ! -r "$DEFAULT_FIREWALL" ]; then
+        json_init
+        json_add_boolean ok 0
+        json_add_string error 'Default Firewall template is unavailable.'
+        json_dump
+        return
+    fi
+
+    json_init
+    json_add_boolean ok 1
+    json_add_string path "$DEFAULT_FIREWALL"
+    json_add_string config "$(cat "$DEFAULT_FIREWALL")"
+    json_dump
+}
+
+case "$1" in
+list)
+    printf '%s\n' '{"firewall":{}}'
+    ;;
+call)
+    case "$2" in
+        firewall) emit_firewall;;
+        *) printf '%s\n' '{"ok":false,"error":"unknown method"}'; exit 1;;
+    esac
+    ;;
+*) exit 1;;
+esac

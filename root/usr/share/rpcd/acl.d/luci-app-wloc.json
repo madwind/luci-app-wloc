@@ -5,6 +5,7 @@
       "ubus": {
         "log": [ ":subscribe" ],
         "luci.wloc": [ "status", "configured_access_points", "firewall_read", "firewall_validate" ],
+        "luci.wloc.defaults": [ "firewall" ],
         "luci.wloc.routing": [ "read", "validate" ],
         "luci.wloc.update": [ "status" ]
       },

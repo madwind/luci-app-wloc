@@ -4,116 +4,15 @@
 'require poll';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
+'require wloc.nftformat as wlocNftFormat';
 
-var callRead = rpc.declare({
-    object: 'luci.wloc',
-    method: 'firewall_read',
-    expect: { '': {} }
-});
-
-var callValidate = rpc.declare({
-    object: 'luci.wloc',
-    method: 'firewall_validate',
-    params: [ 'config' ],
-    expect: { '': {} }
-});
-
-var callSave = rpc.declare({
-    object: 'luci.wloc',
-    method: 'firewall_save',
-    params: [ 'expected_applied_hash' ],
-    expect: { '': {} }
-});
-
-var callApply = rpc.declare({
-    object: 'luci.wloc',
-    method: 'firewall_apply',
-    params: [ 'config' ],
-    expect: { '': {} }
-});
+var callRead = rpc.declare({ object: 'luci.wloc', method: 'firewall_read', expect: { '': {} } });
+var callValidate = rpc.declare({ object: 'luci.wloc', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} } });
+var callSave = rpc.declare({ object: 'luci.wloc', method: 'firewall_save', params: [ 'expected_applied_hash' ], expect: { '': {} } });
+var callApply = rpc.declare({ object: 'luci.wloc', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} } });
+var callDefault = rpc.declare({ object: 'luci.wloc.defaults', method: 'firewall', expect: { '': {} } });
 
 var RUNTIME_REFRESH_INTERVAL = 10;
-
-function formatNftables(source) {
-    var text = String(source || '').replace(/\r\n?/g, '\n');
-    var lines = [];
-    var line = '';
-    var indent = 0;
-    var quoted = false;
-    var escaped = false;
-    var comment = false;
-
-    function flush() {
-        var value = line.trim();
-        if (value)
-            lines.push('    '.repeat(indent) + value);
-        line = '';
-    }
-
-    function space() {
-        if (line && !/\s$/.test(line))
-            line += ' ';
-    }
-
-    for (var i = 0; i < text.length; i++) {
-        var character = text.charAt(i);
-
-        if (comment) {
-            if (character === '\n') {
-                flush();
-                comment = false;
-            } else {
-                line += character;
-            }
-            continue;
-        }
-
-        if (quoted) {
-            line += character;
-            if (escaped)
-                escaped = false;
-            else if (character === '\\')
-                escaped = true;
-            else if (character === '"')
-                quoted = false;
-            continue;
-        }
-
-        if (character === '#') {
-            space();
-            line += character;
-            comment = true;
-        } else if (character === '"') {
-            line += character;
-            quoted = true;
-        } else if (character === '{') {
-            space();
-            line += '{';
-            flush();
-            indent++;
-        } else if (character === '}') {
-            flush();
-            indent = Math.max(0, indent - 1);
-            line = '}';
-        } else if (character === ';') {
-            line = line.replace(/\s+$/, '') + ';';
-            flush();
-        } else if (character === '\n') {
-            flush();
-        } else if (/\s/.test(character)) {
-            space();
-        } else {
-            if (line === '}')
-                line += ' ';
-            line += character;
-            if (character === ',' && line.length >= 96)
-                flush();
-        }
-    }
-
-    flush();
-    return lines.join('\n') + (lines.length ? '\n' : '');
-}
 
 function firewallError(result, fallback) {
     var messages = {
@@ -197,7 +96,6 @@ return view.extend({
 
         function reloadFirewall(current) {
             setMessage('notice', _('Reloading the saved Firewall file...'));
-
             return callRead().then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to read the Firewall file.')));
@@ -211,17 +109,31 @@ return view.extend({
             });
         }
 
+        function loadDefaultFirewall(current) {
+            setMessage('notice', _('Loading default Firewall template...'));
+            return callDefault().then(function(next) {
+                if (!next || next.ok !== true)
+                    throw new Error(firewallError(next, _('Unable to read the default Firewall template.')));
+                current.setValue(next.config || '');
+                current.focus();
+                setMessage('notice', _('Default Firewall template loaded in the editor. Review before applying.'));
+                return true;
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, _('Unable to read the default Firewall template.')));
+                return false;
+            });
+        }
+
         function withinLimit(current) {
             if (current.withinLimit())
                 return true;
-
             current.focus();
             setMessage('error', _('The Firewall file is larger than 32 KiB.'));
             return false;
         }
 
         function formatFirewall(current) {
-            current.setValue(formatNftables(current.getValue()));
+            current.setValue(wlocNftFormat.format(current.getValue()));
             current.focus();
             setMessage('ok', _('Formatted in the editor. Review before applying.'));
             return Promise.resolve(true);
@@ -230,7 +142,6 @@ return view.extend({
         function checkFirewall(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
-
             setMessage('notice', _('Checking Firewall syntax...'));
             return callValidate(current.getValue()).then(function(next) {
                 if (!next || next.valid !== true)
@@ -246,7 +157,6 @@ return view.extend({
         function applyFirewall(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
-
             setMessage('notice', _('Applying Firewall rules to runtime...'));
             return callApply(current.getValue()).then(function(next) {
                 if (!next || next.ok !== true)
@@ -300,6 +210,7 @@ return view.extend({
             rows: 32,
             format: formatFirewall,
             check: checkFirewall,
+            loadDefault: loadDefaultFirewall,
             reload: reloadFirewall,
             apply: applyFirewall,
             applySave: applySaveFirewall
@@ -330,10 +241,7 @@ return view.extend({
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' },
                 _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [
-                editor.root,
-                message
-            ]),
+            E('div', { 'class': 'cbi-section' }, [ editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
                 E('div', { 'class': 'cbi-section-descr' }, [ runtimeState, ' ', refreshButton ]),
