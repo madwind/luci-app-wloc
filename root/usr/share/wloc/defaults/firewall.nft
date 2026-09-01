@@ -29,10 +29,6 @@ table inet wloc {
         meta mark & 0x00010000 != 0 return
         meta nfproto != ipv4 return
 
-        udp dport { 67, 68 } return
-        ip daddr 255.255.255.255 return
-        ip daddr 224.0.0.0/4 return
-
         meta l4proto { tcp, udp } th dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc dns"
 
         fib daddr type local return
