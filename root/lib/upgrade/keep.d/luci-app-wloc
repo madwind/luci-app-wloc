@@ -2,5 +2,5 @@
 /etc/wloc/firewall.nft
 /etc/wloc/ca.key
 /etc/wloc/ca.der
-/usr/share/wloc/geoip.dat
-/usr/share/wloc/geoip.dat.version
+/usr/share/xray/geoip.dat
+/usr/share/xray/geoip.dat.version
