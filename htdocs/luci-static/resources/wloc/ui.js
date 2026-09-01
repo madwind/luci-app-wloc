@@ -4,6 +4,55 @@
 
 var luciUi = ui;
 
+function pageTitleSuffix() {
+    if (typeof window === 'undefined')
+        return null;
+
+    var marker = '/admin/services/wloc/';
+    var path = String(window.location && window.location.pathname || '');
+    var offset = path.indexOf(marker);
+    if (offset < 0)
+        return null;
+
+    var page = path.slice(offset + marker.length).split('/')[0];
+    if (page === 'overview') return _('Overview');
+    if (page === 'settings') return _('Settings');
+    if (page === 'firewall') return _('Firewall');
+    if (page === 'routing') return _('Routing');
+    if (page === 'updates') return _('Updates');
+    return null;
+}
+
+function brandPageTitles() {
+    if (typeof document === 'undefined')
+        return;
+
+    var suffix = pageTitleSuffix();
+    if (!suffix)
+        return;
+
+    var title = 'WLOC ' + suffix;
+    document.querySelectorAll('.cbi-map-title').forEach(function(node) {
+        if (node.textContent !== title)
+            node.textContent = title;
+    });
+}
+
+function installPageBranding() {
+    if (typeof document === 'undefined' || typeof window === 'undefined')
+        return;
+
+    brandPageTitles();
+    if (typeof MutationObserver !== 'function' || !document.documentElement)
+        return;
+
+    var observer = new MutationObserver(brandPageTitles);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener('pagehide', function() {
+        observer.disconnect();
+    }, { once: true });
+}
+
 function errorMessage(error, fallback) {
     var message = error;
 
@@ -144,8 +193,11 @@ function boundedLines(lines, maxLines, maxBytes) {
     return selected;
 }
 
+installPageBranding();
+
 return baseclass.extend({
     boundedLines: boundedLines,
+    brandPageTitles: brandPageTitles,
     byteLength: byteLength,
     errorMessage: errorMessage,
     formatBytes: formatBytes,
