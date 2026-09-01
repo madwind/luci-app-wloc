@@ -364,7 +364,7 @@ impl Proxy {
         client: &str,
         ip: IpAddr,
         hostname: &str,
-        connection_id: u64,
+        connection_id: u32,
         outbound: &OutboundProxy,
         follower: Arc<tokio::sync::Mutex<LocationFollower>>,
     ) -> Result<(), ProxyError> {
@@ -383,7 +383,7 @@ impl Proxy {
             .max_header_list_size(32 * 1024)
             .handshake::<_, Bytes>(tls)
             .await
-            .map_err(ProxyError::h2)?;
+            .map_err(ProxyError::client_h2)?;
         let mut streams = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
@@ -393,7 +393,7 @@ impl Proxy {
                     else {
                         break;
                     };
-                    let (request, respond) = accepted.map_err(ProxyError::h2)?;
+                    let (request, respond) = accepted.map_err(ProxyError::client_h2)?;
                     let proxy = self.clone();
                     let hostname = hostname.to_owned();
                     let client = client.to_owned();
@@ -436,7 +436,7 @@ impl Proxy {
         follower: Arc<tokio::sync::Mutex<LocationFollower>>,
         client: &str,
         ip: IpAddr,
-        connection_id: u64,
+        connection_id: u32,
         outbound: &OutboundProxy,
     ) -> Result<(), ProxyError> {
         let permit_result = tokio::select! {
@@ -581,7 +581,7 @@ impl Proxy {
         follower: &tokio::sync::Mutex<LocationFollower>,
         client: &str,
         ip: IpAddr,
-        connection_id: u64,
+        connection_id: u32,
         outbound: &OutboundProxy,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
