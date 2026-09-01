@@ -67,7 +67,9 @@ function lookupIpInfo(ip) {
             latitude: coordinates[0],
             longitude: coordinates[1],
             country: result.country || '',
-            location: [ result.city, result.region, result.timezone ].filter(Boolean).join(' · ')
+            city: result.city || '',
+            region: result.region || '',
+            timezone: result.timezone || ''
         };
     });
 }
@@ -409,10 +411,12 @@ return baseclass.extend({
                 longitudeElement.triggerValidation();
                 countryElement.triggerValidation();
                 if (resultNode) {
+                    var location = [ result.city, result.region ].filter(Boolean).join(' · ');
                     resultNode.replaceChildren(
-                        E('strong', {}, '%s, %s'.format(result.latitude, result.longitude)),
-                        E('span', {}, _('Country: %s').format(result.country || _('Unknown'))),
-                        E('span', {}, result.location || _('Location details unavailable'))
+                        E('div', {}, [ E('strong', {}, _('Coordinates:')), ' ', '%s, %s'.format(result.latitude, result.longitude) ]),
+                        E('div', {}, [ E('strong', {}, _('Country:')), ' ', result.country || _('Unknown') ]),
+                        E('div', {}, [ E('strong', {}, _('Location:')), ' ', location || _('Unknown') ]),
+                        E('div', {}, [ E('strong', {}, _('Timezone:')), ' ', result.timezone || _('Unknown') ])
                     );
                 }
             }).catch(function(error) {
