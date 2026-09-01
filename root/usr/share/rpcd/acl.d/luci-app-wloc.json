@@ -17,6 +17,7 @@
     "write": {
       "ubus": {
         "luci.wloc": [ "restart", "regenerate_ca" ],
+        "luci.wloc.service": [ "start", "stop", "restart" ],
         "luci.wloc.firewall": [ "save", "apply" ],
         "luci.wloc.geo": [ "update", "stop" ],
         "luci.wloc.geoauto": [ "set_auto" ],
