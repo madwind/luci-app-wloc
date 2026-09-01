@@ -463,6 +463,34 @@ return view.extend({
             });
         }
 
+        function confirmRegenerateCa() {
+            return new Promise(function(resolve, reject) {
+                ui.showModal(_('Regenerate Root CA'), [
+                    E('p', { 'class': 'alert-message warning' },
+                        _('Regenerating the Root CA permanently replaces the current CA. Devices that trust the existing CA will stop trusting WLOC until the new CA is installed and trusted.')),
+                    E('div', { 'class': 'right' }, [
+                        E('button', {
+                            'class': 'btn',
+                            'type': 'button',
+                            'click': function() {
+                                ui.hideModal();
+                                resolve(false);
+                            }
+                        }, _('Cancel')),
+                        ' ',
+                        E('button', {
+                            'class': 'btn cbi-button cbi-button-negative',
+                            'type': 'button',
+                            'click': function() {
+                                ui.hideModal();
+                                Promise.resolve().then(regenerateCa).then(resolve, reject);
+                            }
+                        }, _('Regenerate CA'))
+                    ])
+                ]);
+            });
+        }
+
         function serviceButton(name, title, className) {
             var button = E('button', {
                 'class': 'btn cbi-button ' + className,
@@ -489,7 +517,7 @@ return view.extend({
                 'class': 'btn cbi-button cbi-button-negative',
                 'type': 'button'
             }, _('Regenerate CA'));
-            regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, regenerateCa));
+            regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, confirmRegenerateCa));
 
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
