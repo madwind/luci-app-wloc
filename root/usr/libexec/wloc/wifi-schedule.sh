@@ -59,7 +59,7 @@ uppercase_country() {
 }
 
 schedule_error() {
-    logger -t wloc-schedule "$1" 2>/dev/null || true
+    logger -t wlocd "wifi schedule: $1" 2>/dev/null || true
 }
 
 warn_unresolved_iface() {
