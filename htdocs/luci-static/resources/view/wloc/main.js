@@ -48,9 +48,9 @@ return view.extend({
         geoipSettings.anonymous = true;
 
         option = geoipSettings.option(form.Value, 'geoip_file', _('GeoIP file'));
-        option.default = '/usr/share/wloc/geoip.dat';
+        option.default = '/usr/share/xray/geoip.dat';
         option.rmempty = false;
-        option.description = _('GeoIP database used to expand %geoip:<tag>% macros in the Firewall editor.');
+        option.description = _('GeoIP database used to expand %geoip:<tag>% macros in the Firewall editor. The version is read from the adjacent .version file.');
         option.validate = function(sectionId, value) {
             value = String(value || '');
             return value.charAt(0) === '/' && !/[\x00\r\n]/.test(value)

@@ -1,0 +1,22 @@
+#!/bin/sh
+
+old_path='/usr/share/wloc/geoip.dat'
+new_path='/usr/share/xray/geoip.dat'
+current="$(uci -q get wloc.main.geoip_file 2>/dev/null || true)"
+
+case "$current" in
+    ''|"$old_path")
+        if [ ! -f "$new_path" ] && [ -f "$old_path" ]; then
+            mkdir -p "${new_path%/*}" || exit 1
+            mv -f "$old_path" "$new_path" || exit 1
+            if [ ! -f "$new_path.version" ] && [ -f "$old_path.version" ]; then
+                mv -f "$old_path.version" "$new_path.version" || true
+            fi
+        fi
+        uci -q set wloc.main.geoip_file="$new_path"
+        ;;
+esac
+
+uci -q get wloc.main.geoip_auto_update >/dev/null 2>&1 || uci -q set wloc.main.geoip_auto_update='0'
+uci -q commit wloc
+exit 0
