@@ -13,6 +13,30 @@ FIREWALL_LAST_WARNINGS=${WLOC_FIREWALL_WARNINGS_PATH:-/var/run/wloc/firewall.war
 FIREWALL_RECOVERING_PATH=${WLOC_FIREWALL_RECOVERING_PATH:-/var/run/wloc/firewall.recovering}
 FIREWALL_RUNTIME_WARNING_PATH=${WLOC_FIREWALL_RUNTIME_WARNING_PATH:-/var/run/wloc/firewall.runtime-warning}
 
+# The persistent/source rules remain declarative-only. The GeoIP compiler is
+# allowed to append generated "add element" statements to its private temporary
+# file after nft-source.lua has already verified that the source owns only WLOC
+# tables and macros. Preserve the original ownership rules for every other path.
+firewall_validate_ownership() {
+    local source="$1"
+    if [ "${WLOC_FIREWALL_GENERATED:-0}" -ne 1 ] && firewall_ownership_stream "$source" |
+        grep -Eq '^[[:space:]]*(add|create|flush|include|delete|destroy|reset|insert|replace|rename)([[:space:]]|$)'; then
+        firewall_error_code='unsupported_firewall_command'
+        firewall_error='Only declarative definitions of table bridge wloc and table inet wloc are supported.'
+        return 1
+    fi
+    if ! firewall_ownership_stream "$source" | awk '
+        /^[[:space:]]*table([[:space:]]|$)/ &&
+            $0 !~ /^[[:space:]]*table[[:space:]]+(bridge|inet)[[:space:]]+wloc([[:space:]]|$)/ {
+            exit 1
+        }
+    '; then
+        firewall_error_code='unsupported_firewall_command'
+        firewall_error='WLOC owns only table bridge wloc and table inet wloc.'
+        return 1
+    fi
+}
+
 firewall_frontend_store_file() {
     local source="$1" destination="$2" directory temporary
     directory="${destination%/*}"
@@ -39,6 +63,7 @@ firewall_frontend_action() {
     fi
     firewall_frontend_store_file "$warnings" "$FIREWALL_LAST_WARNINGS" || true
 
+    WLOC_FIREWALL_GENERATED=1
     case "$action" in
         validate)
             if firewall_validate_file "$compiled"; then rc=0; else rc=$?; fi
@@ -47,6 +72,7 @@ firewall_frontend_action() {
             if firewall_apply_file "$compiled"; then
                 rc=0
                 firewall_frontend_store_file "$source" "$FIREWALL_SOURCE_RUNTIME" || {
+                    WLOC_FIREWALL_GENERATED=0
                     rm -f "$compiled" "$warnings"
                     printf '%s\n' 'unable to store the applied firewall source snapshot' >&2
                     return 1
@@ -59,6 +85,7 @@ firewall_frontend_action() {
             ;;
         *) rc=2;;
     esac
+    WLOC_FIREWALL_GENERATED=0
 
     if [ "$rc" -ne 0 ]; then
         printf '%s\n' "${firewall_error:-nftables operation failed}" >&2
