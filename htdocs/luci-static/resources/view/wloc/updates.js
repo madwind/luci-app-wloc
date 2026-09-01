@@ -161,9 +161,17 @@ return view.extend({
 
         function applyGeo(result) {
             result = result || {};
-            geoRow.installedVersion = result.local_version || (result.ready === true ? _('Installed') : '');
+            if (result.ready === false) {
+                geoRow.installedVersion = '';
+                geoRow.updateAvailable = null;
+            } else {
+                geoRow.installedVersion = result.local_version || (result.ready === true ? _('Installed') : geoRow.installedVersion || '');
+                if (result.update_known === true || result.update_known === 1)
+                    geoRow.updateAvailable = result.update_available === true;
+                else
+                    geoRow.updateAvailable = null;
+            }
             geoRow.latestVersion = result.latest_version || geoRow.latestVersion || '';
-            if (result.update_known === true || result.update_known === 1) geoRow.updateAvailable = result.update_available === true;
             setMeta(geoRow, result.checked, result.last_update);
             renderVersion(geoRow);
 

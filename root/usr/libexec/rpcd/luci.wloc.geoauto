@@ -7,7 +7,8 @@ AUTO=/usr/libexec/wloc/geo-auto.sh
 read_request() {
     local raw
     raw="$(cat)"
-    json_load "${raw:-{}}" 2>/dev/null || json_init
+    [ -n "$raw" ] || raw='{}'
+    json_load "$raw" 2>/dev/null || json_init
 }
 
 case "$1" in
