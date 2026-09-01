@@ -87,6 +87,33 @@ function createEditor(options) {
             options.onInput(api);
     }
 
+    function confirmAction(title, message, handler) {
+        return new Promise(function(resolve, reject) {
+            ui.showModal(title, [
+                E('p', { 'class': 'alert-message warning' }, message),
+                E('div', { 'class': 'right' }, [
+                    E('button', {
+                        'class': 'btn',
+                        'type': 'button',
+                        'click': function() {
+                            ui.hideModal();
+                            resolve(false);
+                        }
+                    }, _('Cancel')),
+                    ' ',
+                    E('button', {
+                        'class': 'btn cbi-button cbi-button-negative',
+                        'type': 'button',
+                        'click': function() {
+                            ui.hideModal();
+                            Promise.resolve().then(handler).then(resolve, reject);
+                        }
+                    }, title)
+                ])
+            ]);
+        });
+    }
+
     function addInjectedAction(container, title, className, handler, confirmMessage) {
         if (typeof handler !== 'function')
             return null;
@@ -96,8 +123,8 @@ function createEditor(options) {
             'type': 'button'
         }, title);
         var actionHandler = function() {
-            if (confirmMessage && !window.confirm(confirmMessage))
-                return Promise.resolve(false);
+            if (confirmMessage)
+                return confirmAction(title, confirmMessage, function() { return handler(api); });
             return Promise.resolve(handler(api));
         };
 
