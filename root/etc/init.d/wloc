@@ -162,7 +162,6 @@ stop_service() {
 
 service_stopped() {
     local rc=0 cleanup_detail
-    "$SCHEDULE" stop >/dev/null 2>&1 || true
     if cleanup_detail="$("$RULES" reset 2>&1)"; then
         :
     else
