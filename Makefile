@@ -53,6 +53,16 @@ endef
 
 define Package/luci-app-wloc/postinst
 #!/bin/sh
+postinst_root="$${IPKG_INSTROOT}"
+geoip_seed="$${postinst_root}/usr/share/wloc/geoip-private.dat"
+geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
+
+if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
+	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
+	cp "$${geoip_seed}" "$${geoip_target}" || exit 1
+	chmod 0644 "$${geoip_target}" 2>/dev/null || true
+fi
+
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 0755 \
 		/usr/libexec/rpcd/luci.wloc.service \
