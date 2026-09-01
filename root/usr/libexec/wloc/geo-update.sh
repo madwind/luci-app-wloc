@@ -349,6 +349,8 @@ start_geoip() {
     state_save || { rmdir "$LOCK" 2>/dev/null || true; emit_error 'Unable to save GeoIP update state.'; return; }
 
     "$0" worker >>"$LOG_DIR/geoip-update.log" 2>&1 </dev/null &
+    pid=$!
+    state_save || true
     emit_state
 }
 
@@ -358,9 +360,9 @@ stop_geoip() {
     case "$status" in
         starting|running|stopping)
             if [ "$pid" -gt 1 ] 2>/dev/null && process_alive "$pid"; then
-                kill "$pid" 2>/dev/null || true
                 status=stopping
                 state_save || true
+                kill "$pid" 2>/dev/null || true
             else
                 status=stopped
                 pid=0
