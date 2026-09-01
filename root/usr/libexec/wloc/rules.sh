@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fixed ingress-interface set and IPv4 TPROXY policy-routing lifecycle.
+# Fixed ingress-interface set and configurable IPv4 TPROXY policy-routing lifecycle.
 
 set -e
 
@@ -8,10 +8,10 @@ set -e
 INGRESS_FAMILY=bridge
 INGRESS_TABLE=wloc
 INGRESS_SET=target_ingress_interfaces
-TPROXY_MARK=0x40000000
-TPROXY_MASK=0x40000000
-TPROXY_TABLE=201
-TPROXY_PRIORITY=32764
+ROUTING_HELPER=${WLOC_ROUTING_HELPER:-/usr/libexec/wloc/routing.sh}
+
+WLOC_ROUTING_HELPER_SOURCE=1
+. "$ROUTING_HELPER"
 
 clear_ingress_interfaces() {
     if nft list set "$INGRESS_FAMILY" "$INGRESS_TABLE" "$INGRESS_SET" >/dev/null 2>&1; then
@@ -19,43 +19,23 @@ clear_ingress_interfaces() {
     fi
 }
 
-policy_rule_exists() {
-    ip -4 rule show 2>/dev/null | grep -Eq \
-        "fwmark ${TPROXY_MARK}/${TPROXY_MASK}.*lookup ${TPROXY_TABLE}"
-}
-
-ensure_policy_routing() {
-    command -v ip >/dev/null 2>&1 || {
-        echo 'wloc: ip-full is required for transparent proxy routing' >&2
-        return 1
-    }
-    ip -4 route replace local 0.0.0.0/0 dev lo table "$TPROXY_TABLE" || {
-        echo 'wloc: unable to install the TPROXY local route' >&2
-        return 1
-    }
-    if ! policy_rule_exists; then
-        ip -4 rule add priority "$TPROXY_PRIORITY" \
-            fwmark "$TPROXY_MARK/$TPROXY_MASK" lookup "$TPROXY_TABLE" || {
-            echo 'wloc: unable to install the TPROXY policy rule' >&2
-            return 1
-        }
-    fi
-}
-
-clear_policy_routing() {
-    local rc=0
-    while ip -4 rule del priority "$TPROXY_PRIORITY" \
-        fwmark "$TPROXY_MARK/$TPROXY_MASK" lookup "$TPROXY_TABLE" >/dev/null 2>&1; do
-        :
-    done
-    ip -4 route flush table "$TPROXY_TABLE" >/dev/null 2>&1 || true
-    return "$rc"
-}
-
 cleanup() {
     local rc=0
     clear_ingress_interfaces || rc=1
-    clear_policy_routing || rc=1
+    if ! routing_deactivate; then
+        printf '%s\n' "wloc: ${routing_error:-unable to deactivate TPROXY policy routing}" >&2
+        rc=1
+    fi
+    return "$rc"
+}
+
+reset() {
+    local rc=0
+    clear_ingress_interfaces || rc=1
+    if ! routing_reset; then
+        printf '%s\n' "wloc: ${routing_error:-unable to reset TPROXY policy routing}" >&2
+        rc=1
+    fi
     return "$rc"
 }
 
@@ -128,7 +108,10 @@ reconcile() {
         echo 'wloc: listen port must be between 1 and 65535 for the transparent proxy' >&2
         return 1
     }
-    ensure_policy_routing || return 1
+    routing_ensure_current || {
+        printf '%s\n' "wloc: ${routing_error:-unable to ensure TPROXY policy routing}" >&2
+        return 1
+    }
     sync_ingress_interfaces || {
         echo 'wloc: ingress-set reconciliation failed' >&2
         return 1
@@ -142,6 +125,7 @@ if [ "${WLOC_RULES_SOURCE:-0}" -ne 1 ]; then
             reconcile "$port"
             ;;
         cleanup) cleanup;;
-        *) echo 'usage: rules.sh {reconcile PORT|cleanup}' >&2; exit 2;;
+        reset) reset;;
+        *) echo 'usage: rules.sh {reconcile PORT|cleanup|reset}' >&2; exit 2;;
     esac
 fi

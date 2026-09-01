@@ -106,11 +106,11 @@ start_service() {
     config_get_bool debug main debug 0
 
     cleanup_detail=''
-    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+    if cleanup_detail="$("$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        startup_failure "firewall cleanup failed: $cleanup_detail; interception remains disabled"
+        startup_failure "runtime cleanup failed: $cleanup_detail; interception remains disabled"
         return 1
     fi
     [ "$enabled" -eq 1 ] || return 0
@@ -150,11 +150,11 @@ start_service() {
 
 stop_service() {
     local rc=0 cleanup_detail
-    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+    if cleanup_detail="$("$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        logger -t wlocd "firewall cleanup failed while stopping service: $cleanup_detail"
+        logger -t wlocd "runtime cleanup failed while stopping service: $cleanup_detail"
         rc=1
     fi
     return "$rc"
@@ -163,11 +163,11 @@ stop_service() {
 service_stopped() {
     local rc=0 cleanup_detail
     "$SCHEDULE" stop >/dev/null 2>&1 || true
-    if cleanup_detail="$("$RULES" cleanup 2>&1)"; then
+    if cleanup_detail="$("$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        logger -t wlocd "firewall cleanup failed after service stop: $cleanup_detail"
+        logger -t wlocd "runtime cleanup failed after service stop: $cleanup_detail"
         rc=1
     fi
     rm -f /var/run/wloc/status.json "$START_ERROR" || rc=1
