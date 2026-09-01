@@ -5,6 +5,7 @@
 'require ui';
 'require uci';
 'require wloc.ui as wlocUi';
+'require wloc.overview as wlocOverview';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
@@ -218,14 +219,11 @@ function runtimeLogSection() {
 }
 
 return view.extend({
-    handleSave: null,
-    handleSaveApply: null,
-    handleReset: null,
-
     load: function() {
         return Promise.all([
             L.resolveDefault(callStatus(), {}),
-            uci.load('system').catch(function() { return {}; })
+            uci.load('system').catch(function() { return {}; }),
+            wlocOverview.load()
         ]);
     },
 
@@ -242,6 +240,7 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var pageVisible = true;
         var statusRequest = null;
+        var overviewController = wlocOverview.create(data && data[2] || {}, initial, refreshStatus);
 
         function applyStatus(result) {
             result = result || {};
@@ -265,6 +264,7 @@ return view.extend({
             wlocUi.setState(firewall, firewallActive ? 'ok' : 'warn', firewallActive ? _('Active') : _('Inactive'));
             wlocUi.setText(accessPoints, String(Number(result.configured_aps) || 0));
             wlocUi.setText(detail, reason || '—');
+            overviewController.updateStatus(result);
             return result;
         }
 
@@ -309,21 +309,24 @@ return view.extend({
             poll.remove(refreshStatus);
         }, { once: true });
 
-        return E('div', { 'class': 'cbi-map' }, [
-            E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Service state and live WLOC runtime log. Configuration is available under Settings.')),
-            E('div', { 'class': 'cbi-section' }, [
-                E('h3', { 'class': 'cbi-section-title' }, _('Service')),
-                valueRow(_('Version'), version),
-                valueRow(_('Service status'), service),
-                valueRow(_('Interception status'), interception),
-                valueRow(_('Firewall'), firewall),
-                valueRow(_('Configured APs'), accessPoints),
-                valueRow(_('Detail'), detail),
-                valueRow(_('Actions'), restart),
-                message
-            ]),
-            runtimeLogSection()
-        ]);
+        return overviewController.render().then(function(overviewForm) {
+            return E('div', { 'class': 'cbi-map' }, [
+                E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
+                E('div', { 'class': 'cbi-map-descr' }, _('Service state, AP locations, Root CA and live WLOC runtime log.')),
+                E('div', { 'class': 'cbi-section' }, [
+                    E('h3', { 'class': 'cbi-section-title' }, _('Service')),
+                    valueRow(_('Version'), version),
+                    valueRow(_('Service status'), service),
+                    valueRow(_('Interception status'), interception),
+                    valueRow(_('Firewall'), firewall),
+                    valueRow(_('Configured APs'), accessPoints),
+                    valueRow(_('Detail'), detail),
+                    valueRow(_('Actions'), restart),
+                    message
+                ]),
+                overviewForm,
+                runtimeLogSection()
+            ]);
+        });
     }
 });
