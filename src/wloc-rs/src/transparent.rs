@@ -15,7 +15,6 @@ use wloc_rs::network_source::HostapdNetworkSource;
 
 const PEER_CACHE_TTL: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
 
@@ -124,13 +123,9 @@ impl TransparentProxy {
         .await
         .map_err(|_| "transparent TCP connect timed out".to_owned())??;
 
-        tokio::time::timeout(
-            TCP_IDLE_TIMEOUT,
-            tokio::io::copy_bidirectional(&mut client, &mut upstream),
-        )
-        .await
-        .map_err(|_| "transparent TCP session timed out".to_owned())?
-        .map_err(io_message)?;
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .map_err(io_message)?;
         Ok(())
     }
 

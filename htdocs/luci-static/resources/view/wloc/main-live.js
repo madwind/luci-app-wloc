@@ -123,6 +123,10 @@ function runtimeLogSection() {
         logLines.push(formatLogEntry(entry, formatter));
         logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
         renderLogs();
+
+        if (message.indexOf('event=response_delivered') !== -1 ||
+            message.indexOf('event=ap_failed') !== -1)
+            window.dispatchEvent(new CustomEvent('wloc-status-refresh'));
     }
 
     function consumeSseFrame(frame) {

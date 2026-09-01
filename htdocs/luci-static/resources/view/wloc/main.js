@@ -591,6 +591,7 @@ return view.extend({
                 refresh();
         });
         window.addEventListener('focus', refresh);
+        window.addEventListener('wloc-status-refresh', refresh);
 
         return map.render().then(function(formNode) {
             renderApActivity(initialStatus);
