@@ -13,7 +13,7 @@
   "admin/services/wloc/settings": {
     "title": "Settings",
     "order": 2,
-    "action": { "type": "view", "path": "wloc/settings" }
+    "action": { "type": "view", "path": "wloc/main" }
   },
   "admin/services/wloc/firewall": {
     "title": "Firewall",
