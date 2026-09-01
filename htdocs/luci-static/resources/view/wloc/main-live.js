@@ -128,6 +128,10 @@ function runtimeLogSection() {
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
+    var initialLogsLoaded = false;
+    var pendingLiveEntries = [];
+    var recentLogKeys = Object.create(null);
+    var recentLogKeyOrder = [];
     var streamController = null;
     var reconnectTimer = null;
 
@@ -143,30 +147,65 @@ function runtimeLogSection() {
         logOutput.scrollTop = wasAtBottom ? logOutput.scrollHeight : oldScrollTop;
     }
 
-    function appendLogEntry(entry) {
+    function isRelevantLogEntry(entry) {
         var message = entry && entry.msg != null ? String(entry.msg) : '';
-        if (message.toLowerCase().indexOf(LOG_TAG) === -1)
+        return message.toLowerCase().indexOf(LOG_TAG) !== -1;
+    }
+
+    function logEntryKey(entry) {
+        return String(entry && entry.time != null ? entry.time : '') + '\n' +
+            String(entry && entry.priority != null ? entry.priority : '') + '\n' +
+            String(entry && entry.msg != null ? entry.msg : '');
+    }
+
+    function rememberLogEntry(entry) {
+        var key = logEntryKey(entry);
+        if (recentLogKeys[key])
+            return false;
+
+        recentLogKeys[key] = true;
+        recentLogKeyOrder.push(key);
+        while (recentLogKeyOrder.length > LOG_FETCH_LINES * 2)
+            delete recentLogKeys[recentLogKeyOrder.shift()];
+        return true;
+    }
+
+    function appendLogEntry(entry) {
+        if (!isRelevantLogEntry(entry))
             return;
+        if (!initialLogsLoaded) {
+            pendingLiveEntries.push(entry);
+            return;
+        }
+        if (!rememberLogEntry(entry))
+            return;
+
         logLines.push(formatLogEntry(entry, formatter));
         logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
         renderLogs();
     }
 
+    function mergeInitialLogs(entries) {
+        var merged = [];
+
+        (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
+            if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+                return;
+            merged.push(formatLogEntry(entry, formatter));
+        });
+
+        pendingLiveEntries = [];
+        initialLogsLoaded = true;
+        logLines = wlocUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
+        renderLogs();
+    }
+
     function loadInitialLogs() {
-        wlocUi.setState(logState, 'notice', _('Loading'));
         return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
-            logLines = (Array.isArray(entries) ? entries : []).filter(function(entry) {
-                var message = entry && entry.msg != null ? String(entry.msg) : '';
-                return message.toLowerCase().indexOf(LOG_TAG) !== -1;
-            }).map(function(entry) {
-                return formatLogEntry(entry, formatter);
-            });
-            logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
-            renderLogs();
+            mergeInitialLogs(entries);
         }).catch(function(error) {
             console.warn(error);
-        }).then(function() {
-            return startLogStream();
+            mergeInitialLogs([]);
         });
     }
 
@@ -268,6 +307,7 @@ function runtimeLogSection() {
     }, { once: true });
 
     loadInitialLogs();
+    startLogStream();
 
     return E('div', { 'class': 'cbi-section' }, [
         E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
