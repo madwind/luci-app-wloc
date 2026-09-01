@@ -13,8 +13,15 @@ var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expe
 var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc.service', method: 'restart', expect: {} });
 var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
+var callLogRead = rpc.declare({
+    object: 'log',
+    method: 'read',
+    params: [ 'lines', 'stream', 'oneshot' ],
+    expect: { log: [] }
+});
 
 var LOG_TAG = 'wlocd';
+var LOG_FETCH_LINES = 1000;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
 var LOG_RECONNECT_MS = 2000;
@@ -106,7 +113,7 @@ function formatLogEntry(entry, formatter) {
 
 function runtimeLogSection() {
     var formatter = logDateFormatter();
-    var logState = E('span', { 'aria-live': 'polite' }, _('Connecting'));
+    var logState = E('span', { 'aria-live': 'polite' }, _('Loading'));
     var logFilter = E('input', {
         'class': 'cbi-input-text', 'type': 'search', 'placeholder': _('Filter'),
         'autocomplete': 'off', 'spellcheck': 'false', 'aria-label': _('Filter runtime log')
@@ -143,6 +150,24 @@ function runtimeLogSection() {
         logLines.push(formatLogEntry(entry, formatter));
         logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
         renderLogs();
+    }
+
+    function loadInitialLogs() {
+        wlocUi.setState(logState, 'notice', _('Loading'));
+        return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
+            logLines = (Array.isArray(entries) ? entries : []).filter(function(entry) {
+                var message = entry && entry.msg != null ? String(entry.msg) : '';
+                return message.toLowerCase().indexOf(LOG_TAG) !== -1;
+            }).map(function(entry) {
+                return formatLogEntry(entry, formatter);
+            });
+            logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
+            renderLogs();
+        }).catch(function(error) {
+            console.warn(error);
+        }).then(function() {
+            return startLogStream();
+        });
     }
 
     function consumeSseFrame(frame) {
@@ -242,7 +267,7 @@ function runtimeLogSection() {
         stopLogStream();
     }, { once: true });
 
-    startLogStream();
+    loadInitialLogs();
 
     return E('div', { 'class': 'cbi-section' }, [
         E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
