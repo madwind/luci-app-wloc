@@ -17,7 +17,7 @@ return view.extend({
         var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
         settings.anonymous = true;
 
-        var option = settings.option(form.Flag, 'enabled', _('Enable location interception'));
+        var option = settings.option(form.Flag, 'enabled', _('Enable service'));
         option.default = '0';
         option.rmempty = false;
 
