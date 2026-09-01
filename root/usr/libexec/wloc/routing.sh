@@ -147,7 +147,7 @@ routing_parse_file() {
             }
             set -- $value
             route_prefix="$6"
-            route_table="$10"
+            route_table="${10}"
             routing_ipv4_prefix_valid "$route_prefix" || {
                 routing_set_error 'invalid IPv4 local route prefix'
                 return 1
@@ -164,7 +164,7 @@ routing_parse_file() {
             set -- $value
             rule_priority="$6"
             mark_mask="$8"
-            rule_table="$10"
+            rule_table="${10}"
             rule_seen=1
             continue
         fi
