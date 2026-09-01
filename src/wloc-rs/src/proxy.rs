@@ -26,6 +26,7 @@ const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 const GLOBAL_STREAM_LIMIT: usize = 2;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 const UPSTREAM_TLS_ATTEMPTS: usize = 2;
+const UPSTREAM_REQUEST_ATTEMPTS: usize = 2;
 
 #[derive(Clone)]
 struct PeerIdentity {
@@ -625,12 +626,43 @@ impl Proxy {
             );
         }
 
-        let (mut response, upstream_protocol) = self
-            .exchange_upstream(
-                &method, &uri, &headers, tls_sni, &body, client, ip, outbound,
-            )
-            .await
-            .map_err(|error| error.with_domain(tls_sni))?;
+        let mut upstream_attempt = 1usize;
+        let (mut response, upstream_protocol) = loop {
+            let result = self
+                .exchange_upstream(
+                    &method, &uri, &headers, tls_sni, &body, client, ip, outbound,
+                )
+                .await;
+            match result {
+                Err(error)
+                    if is_wloc
+                        && upstream_attempt < UPSTREAM_REQUEST_ATTEMPTS
+                        && retryable_upstream_request_error(&error).is_some() =>
+                {
+                    let reason = retryable_upstream_request_error(&error)
+                        .unwrap_or("transient_upstream_error");
+                    self.status.update_detail(
+                        "upstream_retry",
+                        &self.rule_detail(
+                            client,
+                            ip,
+                            format!(
+                                "host={tls_sni} stage=request attempt={upstream_attempt} next_attempt={} reason={reason}",
+                                upstream_attempt + 1
+                            ),
+                        ),
+                        None,
+                        |_| {},
+                    );
+                    self.h2_pool
+                        .lock()
+                        .await
+                        .remove(&outbound.pool_key(tls_sni));
+                    upstream_attempt += 1;
+                }
+                result => break result.map_err(|error| error.with_domain(tls_sni))?,
+            }
+        };
         self.status.update_detail(
             "upstream_response",
             &self.rule_detail(
@@ -914,6 +946,24 @@ fn retryable_tls_handshake_error(error: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::BrokenPipe
     )
+}
+
+fn retryable_upstream_request_error(error: &ProxyError) -> Option<&'static str> {
+    let ProxyError::Upstream(message) = error else {
+        return None;
+    };
+    let message = message.to_ascii_lowercase();
+    if message.contains("connection reset") {
+        Some("connection_reset")
+    } else if message.contains("connection aborted") {
+        Some("connection_aborted")
+    } else if message.contains("broken pipe") {
+        Some("broken_pipe")
+    } else if message.contains("unexpected end of file") || message.contains("early eof") {
+        Some("unexpected_eof")
+    } else {
+        None
+    }
 }
 
 fn upstream_peer_addresses(
