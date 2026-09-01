@@ -8,22 +8,59 @@
 'require wloc.overview as wlocOverview';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
-var callRestart = rpc.declare({ object: 'luci.wloc', method: 'restart', expect: {} });
+var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expect: {} });
+var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: {} });
+var callRestart = rpc.declare({ object: 'luci.wloc.service', method: 'restart', expect: {} });
 
 var LOG_TAG = 'wlocd';
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
 var LOG_RECONNECT_MS = 2000;
+var ACTION_TIMEOUT = 20000;
 
 function truthy(value) {
     return value === true || value === 1 || value === '1' || value === 'true';
 }
 
-function valueRow(label, field) {
-    return E('div', { 'class': 'cbi-value' }, [
-        E('div', { 'class': 'cbi-value-title' }, label),
-        E('div', { 'class': 'cbi-value-field' }, [ field ])
+function numberOrNull(value) {
+    var number = Number(value);
+    return isFinite(number) && number >= 0 ? number : null;
+}
+
+function tableRow(label, value) {
+    return E('tr', { 'class': 'tr' }, [
+        E('th', { 'class': 'th cbi-section-table-cell' }, label),
+        E('td', { 'class': 'td cbi-section-table-cell' }, value)
     ]);
+}
+
+function formatUptime(startedAt) {
+    var started = numberOrNull(startedAt);
+    if (started === null || started <= 0)
+        return '—';
+
+    var seconds = Math.max(0, Math.floor(Date.now() / 1000 - started));
+    var days = Math.floor(seconds / 86400);
+    var hours = Math.floor(seconds % 86400 / 3600);
+    var minutes = Math.floor(seconds % 3600 / 60);
+
+    if (days > 0)
+        return _('%sd %sh %sm').format(days, hours, minutes);
+    if (hours > 0)
+        return _('%sh %sm').format(hours, minutes);
+    if (minutes > 0)
+        return _('%sm').format(minutes);
+    return _('%ss').format(seconds);
+}
+
+function actionText(action) {
+    if (action === 'start')
+        return _('Start');
+    if (action === 'stop')
+        return _('Stop');
+    if (action === 'restart')
+        return _('Restart');
+    return _('Service action');
 }
 
 function logDateFormatter() {
@@ -231,51 +268,94 @@ return view.extend({
         document.title = _('WLOC | Overview');
 
         var initial = data && data[0] || {};
-        var version = E('span');
         var service = E('span', { 'aria-live': 'polite' });
-        var interception = E('span', { 'aria-live': 'polite' });
+        var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
-        var accessPoints = E('span');
-        var detail = E('span');
+        var routing = E('span', { 'aria-live': 'polite' });
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
+        var serviceButtons = [];
         var pageVisible = true;
         var statusRequest = null;
+        var actionInProgress = false;
+        var actionDeadline = 0;
+        var lastStatus = null;
         var overviewController = wlocOverview.create(data && data[2] || {}, initial, refreshStatus);
+
+        function setMessage(state, value) {
+            if (!value) {
+                message.className = 'cbi-section-descr';
+                message.textContent = '';
+                return;
+            }
+            wlocUi.setState(message, state, value);
+        }
+
+        function updateActionButtons() {
+            var runningKnown = lastStatus && lastStatus.running !== undefined;
+            var running = runningKnown && truthy(lastStatus.running);
+            var enabled = lastStatus && truthy(lastStatus.enabled);
+
+            serviceButtons.forEach(function(button) {
+                button.node.disabled = actionInProgress || !runningKnown ||
+                    (button.name === 'start' && (running || !enabled)) ||
+                    (button.name === 'stop' && !running) ||
+                    (button.name === 'restart' && !running);
+            });
+        }
 
         function applyStatus(result) {
             result = result || {};
-            var enabled = truthy(result.enabled);
-            var running = truthy(result.running);
-            var armed = truthy(result.armed);
-            var firewallActive = truthy(result.firewall_active);
-            var pathConflict = truthy(result.path_conflict);
-            var reason = result.service_reason || result.last_error || '';
+            lastStatus = result;
 
-            wlocUi.setText(version, result.version || _('Unknown'));
-            wlocUi.setState(service, running ? 'ok' : enabled ? 'warn' : 'notice', running ? _('Running') : enabled ? _('Stopped') : _('Disabled'));
+            var runningKnown = result.running !== undefined;
+            var running = runningKnown && truthy(result.running);
+            var firewallKnown = result.firewall_active !== undefined;
+            var firewallActive = firewallKnown && truthy(result.firewall_active);
+            var routingKnown = result.armed !== undefined;
+            var routingActive = routingKnown && running && truthy(result.armed);
+            var reason = String(result.service_reason || '');
 
-            if (!enabled) wlocUi.setState(interception, 'notice', _('Disabled'));
-            else if (pathConflict) wlocUi.setState(interception, 'error', _('Traffic conflict'));
-            else if (!running) wlocUi.setState(interception, 'error', _('Error'));
-            else if (!armed) wlocUi.setState(interception, 'warn', _('Recovering'));
-            else if (!firewallActive) wlocUi.setState(interception, 'error', _('Error'));
-            else wlocUi.setState(interception, 'ok', _('Active'));
+            wlocUi.setState(service, running ? 'ok' : runningKnown ? 'warn' : 'notice',
+                runningKnown ? (running ? _('Running') : _('Stopped')) : _('Unavailable'));
+            wlocUi.setText(uptime, running ? formatUptime(result.session_started_at) : '—');
+            wlocUi.setState(firewall, firewallActive ? 'ok' : firewallKnown ? 'warn' : 'notice',
+                firewallKnown ? (firewallActive ? _('Active') : _('Inactive')) : _('Unavailable'));
 
-            wlocUi.setState(firewall, firewallActive ? 'ok' : 'warn', firewallActive ? _('Active') : _('Inactive'));
-            wlocUi.setText(accessPoints, String(Number(result.configured_aps) || 0));
-            wlocUi.setText(detail, reason || '—');
+            if (!routingKnown) {
+                wlocUi.setState(routing, 'notice', _('Unavailable'));
+            } else if (routingActive) {
+                wlocUi.setState(routing, 'ok', _('Active · IPv4'));
+            } else {
+                wlocUi.setState(routing, 'warn', _('Inactive'));
+            }
+
+            if (!actionInProgress)
+                setMessage(reason ? 'error' : 'notice', reason);
+
             overviewController.updateStatus(result);
+            updateActionButtons();
             return result;
         }
 
+        function showStatusUnavailable(error) {
+            if (!lastStatus) {
+                wlocUi.setState(service, 'notice', _('Unavailable'));
+                wlocUi.setText(uptime, '—');
+                wlocUi.setState(firewall, 'notice', _('Unavailable'));
+                wlocUi.setState(routing, 'notice', _('Unavailable'));
+            }
+            if (error && !actionInProgress)
+                console.warn(error);
+            updateActionButtons();
+        }
+
         function refreshStatus() {
-            if (!pageVisible || statusRequest) return statusRequest || Promise.resolve();
+            if (!pageVisible || statusRequest)
+                return statusRequest || Promise.resolve();
+
             statusRequest = callStatus().then(applyStatus).catch(function(error) {
-                wlocUi.setState(service, 'error', _('Unavailable'));
-                wlocUi.setState(interception, 'error', _('Unavailable'));
-                wlocUi.setState(firewall, 'error', _('Unavailable'));
-                wlocUi.setText(detail, error && error.message ? error.message : _('Unable to read service status.'));
-                return false;
+                showStatusUnavailable(error);
+                return null;
             }).then(function(result) {
                 statusRequest = null;
                 return result;
@@ -283,50 +363,96 @@ return view.extend({
             return statusRequest;
         }
 
-        var restart = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Restart service'));
-        restart.addEventListener('click', ui.createHandlerFn(restart, function() {
-            restart.disabled = true;
-            wlocUi.setState(message, 'notice', _('Restarting WLOC...'));
-            return callRestart().then(function(result) {
-                if (result && result.ok === false) throw new Error(result.error || _('Restart failed.'));
-                return refreshStatus();
-            }).then(function() {
-                wlocUi.setState(message, 'ok', _('WLOC restarted.'));
-                return true;
+        function waitForLifecycle(action) {
+            return callStatus().then(function(result) {
+                applyStatus(result);
+                var running = truthy(result && result.running);
+                var complete = action === 'stop' ? !running : running;
+
+                if (complete)
+                    return result;
+                if (Date.now() >= actionDeadline)
+                    throw new Error(_('WLOC did not reach the requested state within 20 seconds.'));
+
+                setMessage('notice', action === 'stop' ? _('Stopping WLOC...') : _('Starting WLOC...'));
+                return new Promise(function(resolve) {
+                    window.setTimeout(resolve, 750);
+                }).then(function() {
+                    return waitForLifecycle(action);
+                });
+            });
+        }
+
+        function serviceAction(action) {
+            var request = action === 'start' ? callStart : action === 'stop' ? callStop : callRestart;
+            actionInProgress = true;
+            actionDeadline = Date.now() + ACTION_TIMEOUT;
+            setMessage('notice', _('%s requested...').format(actionText(action)));
+            updateActionButtons();
+
+            return request().then(function(result) {
+                if (result && result.ok === false)
+                    throw new Error(result.error || _('Service action failed.'));
+                return waitForLifecycle(action);
+            }).then(function(result) {
+                setMessage('ok', action === 'start' ? _('WLOC started.') : action === 'stop' ? _('WLOC stopped.') : _('WLOC restarted.'));
+                return result;
             }).catch(function(error) {
-                wlocUi.setState(message, 'error', wlocUi.errorMessage(error, _('Restart failed.')));
+                setMessage('error', wlocUi.errorMessage(error, _('Service action failed.')));
                 return false;
             }).then(function(result) {
-                restart.disabled = false;
+                actionInProgress = false;
+                updateActionButtons();
                 return result;
             });
-        }));
+        }
+
+        function serviceButton(name, title, className) {
+            var button = E('button', {
+                'class': 'btn cbi-button ' + className,
+                'type': 'button'
+            }, title);
+            serviceButtons.push({ name: name, node: button });
+            button.addEventListener('click', ui.createHandlerFn(button, function() {
+                return serviceAction(name);
+            }));
+            return button;
+        }
 
         applyStatus(initial);
-        poll.add(refreshStatus, 2);
+        poll.add(refreshStatus, L.env.pollinterval);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
             poll.remove(refreshStatus);
         }, { once: true });
 
         return overviewController.render().then(function(overviewForm) {
-            return E('div', { 'class': 'cbi-map' }, [
+            var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
-                E('div', { 'class': 'cbi-map-descr' }, _('Service state, AP locations, Root CA and live WLOC runtime log.')),
+                E('div', { 'class': 'cbi-map-descr' }, _('WLOC process, runtime integration, AP locations, Root CA and live log.')),
                 E('div', { 'class': 'cbi-section' }, [
-                    E('h3', { 'class': 'cbi-section-title' }, _('Service')),
-                    valueRow(_('Version'), version),
-                    valueRow(_('Service status'), service),
-                    valueRow(_('Interception status'), interception),
-                    valueRow(_('Firewall'), firewall),
-                    valueRow(_('Configured APs'), accessPoints),
-                    valueRow(_('Detail'), detail),
-                    valueRow(_('Actions'), restart),
+                    E('h3', { 'class': 'cbi-section-title' }, _('Runtime')),
+                    E('table', { 'class': 'table cbi-section-table' }, [
+                        E('tbody', {}, [
+                            tableRow(_('WLOC'), service),
+                            tableRow(_('Uptime'), uptime),
+                            tableRow(_('Firewall'), firewall),
+                            tableRow(_('Routing'), routing)
+                        ])
+                    ]),
+                    E('div', { 'class': 'cbi-page-actions' }, [
+                        serviceButton('start', _('Start'), 'cbi-button-positive'),
+                        serviceButton('stop', _('Stop'), 'cbi-button-negative'),
+                        serviceButton('restart', _('Restart'), 'cbi-button-positive')
+                    ]),
                     message
                 ]),
                 overviewForm,
                 runtimeLogSection()
             ]);
+
+            updateActionButtons();
+            return root;
         });
     }
 });
