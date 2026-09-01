@@ -3,11 +3,13 @@
 # Persistently manages scheduled WLOC AP state in /etc/config/wireless.
 # Outside the disable window the selected wifi-iface is enabled and its
 # wifi-device regulatory country is synchronized from the WLOC rule.
+# Runtime AP state is verified on startup and once per hour as a fallback.
 
 . "${WLOC_LIB_FUNCTIONS:-/lib/functions.sh}"
 AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 WLOC_SCHEDULE_CHANGED=0
 WLOC_SCHEDULE_FAILED=0
+WLOC_SCHEDULE_RUNTIME_MISMATCH=0
 
 load_ap_lib() {
     [ "${WLOC_AP_LIB_LOADED:-0}" -eq 1 ] || . "$AP_LIB"
@@ -153,6 +155,45 @@ reconcile_wifi() {
         set_wireless_value "wireless.$device.country" "$country" "wireless.$device.country"
 }
 
+verify_wifi_runtime() {
+    local section="$1" enabled schedule_enabled start end iface desired runtime_active
+    case "$section" in ''|*[!A-Za-z0-9_-]*) return 0;; esac
+
+    config_get_bool enabled "$section" enabled 1
+    [ "$enabled" -eq 1 ] || return 0
+    config_get_bool schedule_enabled "$section" schedule_enabled 0
+    [ "$schedule_enabled" -eq 1 ] || return 0
+
+    config_get start "$section" schedule_start ''
+    config_get end "$section" schedule_end ''
+    valid_time "$start" && valid_time "$end" || return 0
+
+    config_get iface "$section" iface ''
+    [ -n "$iface" ] || return 0
+
+    if window_active "$start" "$end"; then
+        desired=0
+    else
+        desired=1
+    fi
+
+    load_ap_lib
+    if wloc_ap_get_hostapd_status "$iface" >/dev/null 2>&1; then
+        runtime_active=1
+    else
+        runtime_active=0
+    fi
+
+    [ "$runtime_active" -eq "$desired" ] && return 0
+
+    WLOC_SCHEDULE_RUNTIME_MISMATCH=1
+    if [ "$desired" -eq 1 ]; then
+        schedule_error "runtime state mismatch for $iface: expected enabled; reloading WiFi"
+    else
+        schedule_error "runtime state mismatch for $iface: expected disabled; reloading WiFi"
+    fi
+}
+
 reload_wifi() {
     if wifi reload >/dev/null 2>&1; then
         return 0
@@ -162,8 +203,10 @@ reload_wifi() {
 }
 
 reconcile() {
+    local verify_runtime="${1:-0}"
     WLOC_SCHEDULE_CHANGED=0
     WLOC_SCHEDULE_FAILED=0
+    WLOC_SCHEDULE_RUNTIME_MISMATCH=0
     config_load wloc || return 1
     WLOC_NOW_MINUTES="$(time_minutes "$(date +%H:%M)")"
     config_foreach reconcile_wifi wifi
@@ -174,15 +217,26 @@ reconcile() {
             return 1
         fi
         reload_wifi || WLOC_SCHEDULE_FAILED=1
+    elif [ "$verify_runtime" -eq 1 ]; then
+        config_foreach verify_wifi_runtime wifi
+        if [ "$WLOC_SCHEDULE_RUNTIME_MISMATCH" -eq 1 ]; then
+            reload_wifi || WLOC_SCHEDULE_FAILED=1
+        fi
     fi
 
     return "$WLOC_SCHEDULE_FAILED"
 }
 
 run_loop() {
-    local second delay
+    local second delay verify_hour last_verify_hour=''
     while :; do
-        reconcile || true
+        verify_hour="$(date +%Y%m%d%H)"
+        if [ "$verify_hour" != "$last_verify_hour" ]; then
+            reconcile 1 || true
+            last_verify_hour="$verify_hour"
+        else
+            reconcile 0 || true
+        fi
         second="$(decimal "$(date +%S)")"
         delay=$((60 - second))
         [ "$delay" -ge 1 ] || delay=60
@@ -192,6 +246,6 @@ run_loop() {
 
 case "${1:-}" in
     run) run_loop;;
-    reconcile) reconcile;;
+    reconcile) reconcile 1;;
     *) echo "usage: $0 {run|reconcile}" >&2; exit 2;;
 esac
