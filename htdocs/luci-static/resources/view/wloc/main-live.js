@@ -12,6 +12,7 @@ var callRouting = rpc.declare({ object: 'luci.wloc.routing', method: 'read', exp
 var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expect: {} });
 var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc.service', method: 'restart', expect: {} });
+var callRegenerate = rpc.declare({ object: 'luci.wloc', method: 'regenerate_ca', expect: {} });
 
 var LOG_TAG = 'wlocd';
 var LOG_LINES = 300;
@@ -256,6 +257,19 @@ function runtimeLogSection() {
     ]);
 }
 
+function removeEmbeddedCaSection(node) {
+    if (!node || !node.querySelectorAll)
+        return;
+
+    Array.prototype.forEach.call(node.querySelectorAll('.cbi-section-title'), function(title) {
+        if (String(title.textContent || '').trim() !== _('Root CA'))
+            return;
+        var section = title.closest ? title.closest('.cbi-section') : title.parentNode;
+        if (section && section.parentNode)
+            section.parentNode.removeChild(section);
+    });
+}
+
 return view.extend({
     load: function() {
         return Promise.all([
@@ -275,8 +289,10 @@ return view.extend({
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
         var routing = E('span', { 'aria-live': 'polite' });
+        var caFingerprint = E('span', { 'aria-live': 'polite' });
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var serviceButtons = [];
+        var regenerateButton = null;
         var pageVisible = true;
         var statusRequest = null;
         var actionInProgress = false;
@@ -301,9 +317,11 @@ return view.extend({
             serviceButtons.forEach(function(button) {
                 button.node.disabled = actionInProgress || !runningKnown ||
                     (button.name === 'start' && (running || !enabled)) ||
-                    (button.name === 'stop' && !running) ||
-                    (button.name === 'restart' && !running);
+                    (button.name === 'stop' && !running);
             });
+
+            if (regenerateButton)
+                regenerateButton.disabled = actionInProgress || !enabled;
         }
 
         function applyStatus(result, routingResult) {
@@ -324,6 +342,7 @@ return view.extend({
             wlocUi.setText(uptime, running ? formatUptime(result.session_started_at) : '—');
             wlocUi.setState(firewall, firewallActive ? 'ok' : firewallKnown ? 'warn' : 'notice',
                 firewallKnown ? (firewallActive ? _('Active') : _('Inactive')) : _('Unavailable'));
+            wlocUi.setText(caFingerprint, result.fingerprint || _('Not generated'));
 
             if (!routingKnown) {
                 wlocUi.setState(routing, 'notice', _('Unavailable'));
@@ -347,6 +366,7 @@ return view.extend({
                 wlocUi.setText(uptime, '—');
                 wlocUi.setState(firewall, 'notice', _('Unavailable'));
                 wlocUi.setState(routing, 'notice', _('Unavailable'));
+                wlocUi.setText(caFingerprint, _('Unavailable'));
             }
             if (error && !actionInProgress)
                 console.warn(error);
@@ -421,6 +441,28 @@ return view.extend({
             });
         }
 
+        function regenerateCa() {
+            actionInProgress = true;
+            setMessage('notice', _('Regenerating Root CA...'));
+            updateActionButtons();
+
+            return callRegenerate().then(function(result) {
+                if (result && result.ok === false)
+                    throw new Error(String(result.detail || result.error || result.error_code || _('Unable to regenerate the Root CA.')));
+                return refreshStatus();
+            }).then(function() {
+                setMessage('ok', _('Root CA regenerated. Reinstall and trust it on the iPhone.'));
+                return true;
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, _('Unable to regenerate the Root CA.')));
+                return false;
+            }).then(function(result) {
+                actionInProgress = false;
+                updateActionButtons();
+                return result;
+            });
+        }
+
         function serviceButton(name, title, className) {
             var button = E('button', {
                 'class': 'btn cbi-button ' + className,
@@ -441,6 +483,14 @@ return view.extend({
         }, { once: true });
 
         return overviewController.render().then(function(overviewForm) {
+            removeEmbeddedCaSection(overviewForm);
+
+            regenerateButton = E('button', {
+                'class': 'btn cbi-button cbi-button-negative',
+                'type': 'button'
+            }, _('Regenerate CA'));
+            regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, regenerateCa));
+
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
                 E('div', { 'class': 'cbi-map-descr' }, _('WLOC process, runtime integration, AP locations, Root CA and live log.')),
@@ -451,13 +501,16 @@ return view.extend({
                             tableRow(_('WLOC'), service),
                             tableRow(_('Uptime'), uptime),
                             tableRow(_('Firewall'), firewall),
-                            tableRow(_('Routing'), routing)
+                            tableRow(_('Routing'), routing),
+                            tableRow(_('Root CA SHA-256'), caFingerprint)
                         ])
                     ]),
                     E('div', { 'class': 'cbi-page-actions' }, [
                         serviceButton('start', _('Start'), 'cbi-button-positive'),
+                        serviceButton('restart', _('Restart'), 'cbi-button-positive'),
+                        E('a', { 'class': 'btn cbi-button cbi-button-action', href: '/wloc-ca.mobileconfig' }, _('Download CA')),
                         serviceButton('stop', _('Stop'), 'cbi-button-negative'),
-                        serviceButton('restart', _('Restart'), 'cbi-button-positive')
+                        regenerateButton
                     ]),
                     message
                 ]),
