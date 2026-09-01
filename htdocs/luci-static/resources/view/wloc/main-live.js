@@ -8,6 +8,7 @@
 'require wloc.overview as wlocOverview';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
+var callRouting = rpc.declare({ object: 'luci.wloc.routing', method: 'read', expect: {} });
 var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expect: {} });
 var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: {} });
 var callRestart = rpc.declare({ object: 'luci.wloc.service', method: 'restart', expect: {} });
@@ -260,7 +261,8 @@ return view.extend({
         return Promise.all([
             L.resolveDefault(callStatus(), {}),
             uci.load('system').catch(function() { return {}; }),
-            wlocOverview.load()
+            wlocOverview.load(),
+            L.resolveDefault(callRouting(), {})
         ]);
     },
 
@@ -268,6 +270,7 @@ return view.extend({
         document.title = _('WLOC | Overview');
 
         var initial = data && data[0] || {};
+        var initialRouting = data && data[3] || {};
         var service = E('span', { 'aria-live': 'polite' });
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
@@ -303,16 +306,17 @@ return view.extend({
             });
         }
 
-        function applyStatus(result) {
+        function applyStatus(result, routingResult) {
             result = result || {};
+            routingResult = routingResult || {};
             lastStatus = result;
 
             var runningKnown = result.running !== undefined;
             var running = runningKnown && truthy(result.running);
             var firewallKnown = result.firewall_active !== undefined;
             var firewallActive = firewallKnown && truthy(result.firewall_active);
-            var routingKnown = result.armed !== undefined;
-            var routingActive = routingKnown && running && truthy(result.armed);
+            var routingKnown = routingResult.ok === true && routingResult.route_active !== undefined;
+            var routingActive = routingKnown && truthy(routingResult.route_active);
             var reason = String(result.service_reason || '');
 
             wlocUi.setState(service, running ? 'ok' : runningKnown ? 'warn' : 'notice',
@@ -349,11 +353,20 @@ return view.extend({
             updateActionButtons();
         }
 
+        function readRuntimeStatus() {
+            return Promise.all([
+                callStatus(),
+                L.resolveDefault(callRouting(), {})
+            ]);
+        }
+
         function refreshStatus() {
             if (!pageVisible || statusRequest)
                 return statusRequest || Promise.resolve();
 
-            statusRequest = callStatus().then(applyStatus).catch(function(error) {
+            statusRequest = readRuntimeStatus().then(function(results) {
+                return applyStatus(results[0], results[1]);
+            }).catch(function(error) {
                 showStatusUnavailable(error);
                 return null;
             }).then(function(result) {
@@ -364,9 +377,10 @@ return view.extend({
         }
 
         function waitForLifecycle(action) {
-            return callStatus().then(function(result) {
-                applyStatus(result);
-                var running = truthy(result && result.running);
+            return readRuntimeStatus().then(function(results) {
+                var result = results[0] || {};
+                applyStatus(result, results[1]);
+                var running = truthy(result.running);
                 var complete = action === 'stop' ? !running : running;
 
                 if (complete)
@@ -419,7 +433,7 @@ return view.extend({
             return button;
         }
 
-        applyStatus(initial);
+        applyStatus(initial, initialRouting);
         poll.add(refreshStatus, L.env.pollinterval);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
