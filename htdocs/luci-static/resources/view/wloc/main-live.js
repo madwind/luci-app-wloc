@@ -71,27 +71,11 @@ function actionText(action) {
     return _('Service action');
 }
 
-function legacyLogTimestamp(value) {
-    var date = new Date(value);
-    if (isNaN(date.getTime()))
-        return '';
-
-    var iso = date.toISOString();
-    return iso.slice(0, 10).replace(/-/g, '/') + ' ' +
-        iso.slice(11, 19) + '.' + iso.slice(20, 23) + '000';
-}
-
 function formatLogEntry(entry) {
     var message = entry && entry.msg != null ? String(entry.msg) : '';
-    message = message
+    return message
         .replace(/^wlocd(?:\[\d+\])?:\s*/, '')
         .replace(/^wlocd:\s*/, '');
-
-    if (/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{6}\s/.test(message))
-        return message;
-
-    var timestamp = legacyLogTimestamp(entry && entry.time);
-    return timestamp ? timestamp + ' ' + message : message;
 }
 
 function runtimeLogSection() {
