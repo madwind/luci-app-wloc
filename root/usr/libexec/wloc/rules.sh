@@ -10,6 +10,14 @@ INGRESS_TABLE=wloc
 INGRESS_SET=target_ingress_interfaces
 ROUTING_HELPER=${WLOC_ROUTING_HELPER:-/usr/libexec/wloc/routing.sh}
 
+if [ -z "${WLOC_ROUTING_PATH:-}" ]; then
+    if [ -r /etc/wloc/routing.conf ]; then
+        WLOC_ROUTING_PATH=/etc/wloc/routing.conf
+    else
+        WLOC_ROUTING_PATH=/usr/share/wloc/defaults/routing.conf
+    fi
+fi
+
 WLOC_ROUTING_HELPER_SOURCE=1
 . "$ROUTING_HELPER"
 
