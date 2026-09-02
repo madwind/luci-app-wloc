@@ -598,12 +598,19 @@ return view.extend({
                             tableRow(_('Root CA SHA-256'), caFingerprint)
                         ])
                     ]),
-                    E('div', { 'class': 'cbi-page-actions' }, [
-                        serviceButton('start', _('Start'), 'cbi-button-positive'),
-                        serviceButton('restart', _('Restart'), 'cbi-button-positive'),
-                        E('a', { 'class': 'btn cbi-button cbi-button-action', href: '/wloc-ca.mobileconfig' }, _('Download CA')),
-                        serviceButton('stop', _('Stop'), 'cbi-button-negative'),
-                        regenerateButton
+                    E('div', {
+                        'class': 'cbi-page-actions',
+                        'style': 'display:flex; flex-wrap:wrap; align-items:center; gap:.75rem;'
+                    }, [
+                        E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.5rem;' }, [
+                            serviceButton('start', _('Start'), 'cbi-button-positive'),
+                            serviceButton('restart', _('Restart'), 'cbi-button-positive'),
+                            E('a', { 'class': 'btn cbi-button cbi-button-action', href: '/wloc-ca.mobileconfig' }, _('Download CA')),
+                            regenerateButton
+                        ]),
+                        E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.5rem; margin-left:auto;' }, [
+                            serviceButton('stop', _('Stop'), 'cbi-button-negative')
+                        ])
                     ]),
                     message
                 ]),

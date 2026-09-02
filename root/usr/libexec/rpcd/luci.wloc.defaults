@@ -3,30 +3,33 @@
 . "${WLOC_JSHN_PATH:-/usr/share/libubox/jshn.sh}"
 
 DEFAULT_FIREWALL=${WLOC_DEFAULT_FIREWALL_PATH:-/usr/share/wloc/defaults/firewall.nft}
+DEFAULT_ROUTING=${WLOC_DEFAULT_ROUTING_PATH:-/usr/share/wloc/defaults/routing.conf}
 
-emit_firewall() {
-    if [ ! -r "$DEFAULT_FIREWALL" ]; then
+emit_default() {
+    local path="$1" label="$2"
+    if [ ! -r "$path" ]; then
         json_init
         json_add_boolean ok 0
-        json_add_string error 'Default Firewall template is unavailable.'
+        json_add_string error "Default $label template is unavailable."
         json_dump
         return
     fi
 
     json_init
     json_add_boolean ok 1
-    json_add_string path "$DEFAULT_FIREWALL"
-    json_add_string config "$(cat "$DEFAULT_FIREWALL")"
+    json_add_string path "$path"
+    json_add_string config "$(cat "$path")"
     json_dump
 }
 
 case "$1" in
 list)
-    printf '%s\n' '{"firewall":{}}'
+    printf '%s\n' '{"firewall":{},"routing":{}}'
     ;;
 call)
     case "$2" in
-        firewall) emit_firewall;;
+        firewall) emit_default "$DEFAULT_FIREWALL" 'Firewall';;
+        routing) emit_default "$DEFAULT_ROUTING" 'Routing';;
         *) printf '%s\n' '{"ok":false,"error":"unknown method"}'; exit 1;;
     esac
     ;;

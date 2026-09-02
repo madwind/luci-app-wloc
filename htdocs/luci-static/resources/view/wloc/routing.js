@@ -36,6 +36,13 @@ var callApply = rpc.declare({
     reject: true
 });
 
+var callDefault = rpc.declare({
+    object: 'luci.wloc.defaults',
+    method: 'routing',
+    expect: { '': {} },
+    reject: true
+});
+
 var RUNTIME_REFRESH_INTERVAL = 10;
 
 function routingMessage(result, fallback) {
@@ -151,6 +158,22 @@ return view.extend({
             });
         }
 
+        function loadDefaultRouting(current) {
+            setMessage('notice', _('Loading default Routing template...'));
+
+            return callDefault().then(function(next) {
+                return requireOk(next, _('Unable to read the default Routing template.'));
+            }).then(function(next) {
+                current.setValue(next.config || '');
+                current.focus();
+                setMessage('notice', _('Default Routing template loaded in the editor. Review before applying.'));
+                return true;
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, _('Unable to read the default Routing template.')));
+                return false;
+            });
+        }
+
         function withinLimit(current) {
             if (current.withinLimit())
                 return true;
@@ -236,6 +259,7 @@ return view.extend({
             rows: 16,
             format: formatRoutingEditor,
             check: checkRouting,
+            loadDefault: loadDefaultRouting,
             reload: reloadRouting,
             apply: applyRouting,
             applySave: applySaveRouting
