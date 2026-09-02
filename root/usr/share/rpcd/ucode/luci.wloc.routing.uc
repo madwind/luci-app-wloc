@@ -6,6 +6,7 @@ import { access, chmod, mkdtemp, mkdir, open, popen, rmdir, unlink } from 'fs';
 
 const RUNTIME = '/var/run/wloc';
 const SOURCE = '/etc/wloc/routing.conf';
+const DEFAULT_SOURCE = '/usr/share/wloc/defaults/routing.conf';
 const APPLIED = '/var/run/wloc/routing.applied.conf';
 const HELPER = '/usr/libexec/wloc/routing.sh';
 const RPC_DIRECTORY_MODE = 448;
@@ -100,9 +101,16 @@ function run_payload(command, value) {
 
 function routing_read() {
     let config = read_file(SOURCE);
-    if (config == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
+    let using_default = false;
+    if (config == null) {
+        config = read_file(DEFAULT_SOURCE);
+        using_default = true;
+    }
+    if (config == null) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}`, path: SOURCE };
 
     let active = run_helper([ 'active' ]);
+    if (!active.ok && using_default && read_file(APPLIED) == null)
+        active = { ok: true, output: '# No active policy routing commands are installed.\n' };
     if (!active.ok) return { ok: false, error: active.error || 'unable to inspect policy routing', path: SOURCE };
     let ready = run_helper([ 'ready' ]);
     let applied = read_file(APPLIED) || '';
@@ -112,6 +120,7 @@ function routing_read() {
         path: SOURCE,
         config: config,
         bytes: length(config),
+        using_default: using_default,
         active: active.output || '# No active policy routing commands are installed.\n',
         route_active: ready.ok === true,
         applied_config: applied,
