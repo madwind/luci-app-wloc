@@ -3,7 +3,6 @@
 'require poll';
 'require rpc';
 'require ui';
-'require uci';
 'require wloc.ui as wlocUi';
 'require wloc.overview as wlocOverview';
 
@@ -72,47 +71,30 @@ function actionText(action) {
     return _('Service action');
 }
 
-function logDateFormatter() {
-    var timezone = uci.get('system', '@system[0]', 'zonename');
-    timezone = timezone ? String(timezone).replace(/ /g, '_') : undefined;
+function legacyLogTimestamp(value) {
+    var date = new Date(value);
+    if (isNaN(date.getTime()))
+        return '';
 
-    try {
-        return new Intl.DateTimeFormat('en-US', {
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hourCycle: 'h23', timeZone: timezone
-        });
-    } catch (error) {
-        return null;
-    }
+    var iso = date.toISOString();
+    return iso.slice(0, 10).replace(/-/g, '/') + ' ' +
+        iso.slice(11, 19) + '.' + iso.slice(20, 23) + '000';
 }
 
-function formatLogTimestamp(date, formatter) {
-    if (formatter && typeof formatter.formatToParts === 'function') {
-        try {
-            var values = {};
-            formatter.formatToParts(date).forEach(function(part) {
-                if (part.type !== 'literal')
-                    values[part.type] = part.value;
-            });
-            if (values.year && values.month && values.day && values.hour && values.minute && values.second)
-                return '%s-%s-%s %s:%s:%s'.format(values.year, values.month, values.day, values.hour, values.minute, values.second);
-        } catch (error) {
-            // Fall through to UTC below.
-        }
-    }
-    return date.toISOString().slice(0, 19).replace('T', ' ');
-}
-
-function formatLogEntry(entry, formatter) {
+function formatLogEntry(entry) {
     var message = entry && entry.msg != null ? String(entry.msg) : '';
-    var date = new Date(entry && entry.time);
-    var timestamp = !isNaN(date.getTime()) ? formatLogTimestamp(date, formatter) : '';
-    return timestamp ? '[' + timestamp + '] ' + message : message;
+    message = message
+        .replace(/^wlocd(?:\[\d+\])?:\s*/, '')
+        .replace(/^wlocd:\s*/, '');
+
+    if (/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{6}\s/.test(message))
+        return message;
+
+    var timestamp = legacyLogTimestamp(entry && entry.time);
+    return timestamp ? timestamp + ' ' + message : message;
 }
 
 function runtimeLogSection() {
-    var formatter = logDateFormatter();
     var logState = E('span', { 'aria-live': 'polite' }, _('Loading'));
     var logFilter = E('input', {
         'class': 'cbi-input-text', 'type': 'search', 'placeholder': _('Filter'),
@@ -124,7 +106,7 @@ function runtimeLogSection() {
         'rows': 20, 'wrap': 'off', 'spellcheck': 'false', 'readonly': true,
         'role': 'log', 'aria-label': _('WLOC runtime log')
     });
-    var paused = false;
+    var logStopped = false;
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
@@ -180,7 +162,7 @@ function runtimeLogSection() {
         if (!rememberLogEntry(entry))
             return;
 
-        logLines.push(formatLogEntry(entry, formatter));
+        logLines.push(formatLogEntry(entry));
         logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
         renderLogs();
     }
@@ -191,7 +173,7 @@ function runtimeLogSection() {
         (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
             if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
                 return;
-            merged.push(formatLogEntry(entry, formatter));
+            merged.push(formatLogEntry(entry));
         });
 
         pendingLiveEntries = [];
@@ -248,7 +230,7 @@ function runtimeLogSection() {
     }
 
     function scheduleReconnect() {
-        if (paused || !pageVisible || reconnectTimer !== null) return;
+        if (logStopped || !pageVisible || reconnectTimer !== null) return;
         wlocUi.setState(logState, 'notice', _('Reconnecting'));
         reconnectTimer = window.setTimeout(function() {
             reconnectTimer = null;
@@ -257,7 +239,7 @@ function runtimeLogSection() {
     }
 
     function startLogStream() {
-        if (paused || !pageVisible || streamController) return Promise.resolve();
+        if (logStopped || !pageVisible || streamController) return Promise.resolve();
         if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
             wlocUi.setState(logState, 'warn', _('Unavailable'));
             return Promise.resolve();
@@ -289,16 +271,17 @@ function runtimeLogSection() {
     });
     logFilter.addEventListener('input', renderLogs);
 
-    var pauseButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Pause'));
-    pauseButton.addEventListener('click', ui.createHandlerFn(pauseButton, function() {
-        paused = !paused;
-        pauseButton.textContent = paused ? _('Resume') : _('Pause');
-        if (paused) {
+    var logStreamButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Stop'));
+    logStreamButton.addEventListener('click', ui.createHandlerFn(logStreamButton, function() {
+        logStopped = !logStopped;
+        logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
+        if (logStopped) {
             stopLogStream();
-            wlocUi.setState(logState, 'notice', _('Paused'));
+            wlocUi.setState(logState, 'notice', _('Stopped'));
             return Promise.resolve();
         }
-        return startLogStream();
+        startLogStream();
+        return Promise.resolve();
     }));
 
     window.addEventListener('pagehide', function() {
@@ -315,7 +298,7 @@ function runtimeLogSection() {
             logState,
             E('div', { 'style': 'display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: auto;' }, [
                 E('label', { 'style': 'display: inline-flex; align-items: center; gap: .5rem;' }, [ _('Filter'), logFilter ]),
-                pauseButton
+                logStreamButton
             ])
         ]),
         logOutput
@@ -339,7 +322,6 @@ return view.extend({
     load: function() {
         return Promise.all([
             L.resolveDefault(callStatus(), {}),
-            uci.load('system').catch(function() { return {}; }),
             wlocOverview.load(),
             L.resolveDefault(callRouting(), {})
         ]);
@@ -349,7 +331,7 @@ return view.extend({
         document.title = _('WLOC | Overview');
 
         var initial = data && data[0] || {};
-        var initialRouting = data && data[3] || {};
+        var initialRouting = data && data[2] || {};
         var service = E('span', { 'aria-live': 'polite' });
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
@@ -363,7 +345,7 @@ return view.extend({
         var actionInProgress = false;
         var actionDeadline = 0;
         var lastStatus = null;
-        var overviewController = wlocOverview.create(data && data[2] || {}, initial, refreshStatus);
+        var overviewController = wlocOverview.create(data && data[1] || {}, initial, refreshStatus);
 
         function setMessage(state, value) {
             if (!value) {
