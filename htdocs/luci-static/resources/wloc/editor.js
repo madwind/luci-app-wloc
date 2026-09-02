@@ -31,6 +31,7 @@ function createEditor(options) {
     var byteCount = E('span', {}, wlocUi.formatBytes(editorByteLength(savedValue)));
     var byteLimit = E('span', { 'aria-live': 'polite' });
     var state = E('span', { 'aria-live': 'polite' }, options.readonly ? _('Read-only') : _('Saved file'));
+    var cursorPosition = E('span', { 'aria-live': 'polite' }, _('Ln 1, Col 1'));
     var leftActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem;' });
     var rightActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem; margin-left: auto;' });
     var toolbar = E('div', {
@@ -51,7 +52,8 @@ function createEditor(options) {
         E('label', { 'class': 'cbi-section-descr', 'for': id }, label),
         textarea,
         E('div', { 'class': 'cbi-section-descr' }, [
-            _('Size'), ': ', byteCount, ' / ', wlocUi.formatBytes(maxBytes), ' · ', state, ' ', byteLimit
+            _('Size'), ': ', byteCount, ' / ', wlocUi.formatBytes(maxBytes), ' · ', state,
+            ' · ', cursorPosition, ' ', byteLimit
         ])
     ];
     var api;
@@ -66,11 +68,22 @@ function createEditor(options) {
         return textarea.value !== savedValue;
     }
 
+    function updateCursorPosition() {
+        var position = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : 0;
+        var before = textarea.value.slice(0, Math.max(0, position));
+        var lastBreak = before.lastIndexOf('\n');
+        var line = before.split('\n').length;
+        var column = position - lastBreak;
+
+        wlocUi.setText(cursorPosition, _('Ln %d, Col %d').format(line, column));
+    }
+
     function updateState() {
         var bytes = editorByteLength(textarea.value);
 
         wlocUi.setText(byteCount, wlocUi.formatBytes(bytes));
         wlocUi.setText(state, options.readonly ? _('Read-only') : isDirty() ? _('Unsaved edits') : _('Saved file'));
+        updateCursorPosition();
 
         if (bytes > maxBytes) {
             wlocUi.setState(byteLimit, 'error', _('%s maximum; current size is %s.').format(
@@ -85,6 +98,18 @@ function createEditor(options) {
         updateState();
         if (options.onInput)
             options.onInput(api);
+    }
+
+    function handleKeydown(event) {
+        if (event.key !== 'Tab' || options.readonly)
+            return;
+
+        event.preventDefault();
+        var start = textarea.selectionStart;
+        var end = textarea.selectionEnd;
+        textarea.value = textarea.value.slice(0, start) + '    ' + textarea.value.slice(end);
+        textarea.selectionStart = textarea.selectionEnd = start + 4;
+        handleInput();
     }
 
     function confirmAction(title, message, handler) {
@@ -177,20 +202,18 @@ function createEditor(options) {
     addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, null);
 
     textarea.addEventListener('input', handleInput);
-    textarea.addEventListener('keydown', function(event) {
-        if (event.key !== 'Tab' || options.readonly)
-            return;
-        event.preventDefault();
-        var start = textarea.selectionStart;
-        var end = textarea.selectionEnd;
-        textarea.value = textarea.value.slice(0, start) + '    ' + textarea.value.slice(end);
-        textarea.selectionStart = textarea.selectionEnd = start + 4;
-        handleInput();
-    });
+    textarea.addEventListener('keydown', handleKeydown);
+    textarea.addEventListener('keyup', updateCursorPosition);
+    textarea.addEventListener('click', updateCursorPosition);
+    textarea.addEventListener('select', updateCursorPosition);
     updateState();
 
     api.destroy = function() {
         textarea.removeEventListener('input', handleInput);
+        textarea.removeEventListener('keydown', handleKeydown);
+        textarea.removeEventListener('keyup', updateCursorPosition);
+        textarea.removeEventListener('click', updateCursorPosition);
+        textarea.removeEventListener('select', updateCursorPosition);
     };
 
     return api;
