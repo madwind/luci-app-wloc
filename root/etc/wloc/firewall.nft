@@ -20,6 +20,13 @@ table inet wloc {
         elements = { %geoip:private%, %geoip:cn% }
     }
 
+    set bypass_v6 {
+        type ipv6_addr
+        flags interval
+        auto-merge
+        elements = { %geoip:private%, %geoip:cn% }
+    }
+
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
         policy accept;
@@ -27,12 +34,12 @@ table inet wloc {
         meta mark & 0x80000000 == 0 return
         ct direction reply return
         meta mark & 0x00010000 != 0 return
-        meta nfproto != ipv4 return
 
         meta l4proto { tcp, udp } th dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc dns"
 
         fib daddr type local return
-        ip daddr @bypass_v4 return
+        meta nfproto ipv4 ip daddr @bypass_v4 return
+        meta nfproto ipv6 ip6 daddr @bypass_v6 return
 
         meta l4proto { tcp, udp } ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc traffic"
     }

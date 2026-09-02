@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fixed ingress-interface set and configurable IPv4 TPROXY policy-routing lifecycle.
+# Fixed ingress-interface set and configurable IPv4/IPv6 TPROXY policy-routing lifecycle.
 
 set -e
 
