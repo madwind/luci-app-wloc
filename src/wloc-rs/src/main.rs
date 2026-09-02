@@ -1,6 +1,6 @@
 mod transparent;
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -70,12 +70,24 @@ fn record_startup_error(error: &str) {
     }
 }
 
-fn listener(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+fn listener_v4(port: u16) -> std::io::Result<tokio::net::TcpListener> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
     #[cfg(target_os = "linux")]
     socket.set_ip_transparent_v4(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
+    socket.listen(128)?;
+    socket.set_nonblocking(true)?;
+    tokio::net::TcpListener::from_std(socket.into())
+}
+
+fn listener_v6(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_only_v6(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_ip_transparent_v6(true)?;
+    socket.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0).into())?;
     socket.listen(128)?;
     socket.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(socket.into())
@@ -133,8 +145,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let transparent_tcp_listener = listener(config.listen_port)?;
-        let transparent_udp_listener = transparent::udp_listener(config.listen_port)?;
+        let transparent_tcp_listener_v4 = listener_v4(config.listen_port)?;
+        let transparent_tcp_listener_v6 = listener_v6(config.listen_port)?;
+        let (transparent_udp_listener_v4, transparent_udp_listener_v6) =
+            transparent::udp_listeners(config.listen_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
@@ -159,7 +173,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "listener_ready",
             &format!(
-                "transparent_tcp_udp=0.0.0.0:{} unified=true",
+                "transparent_tcp_udp=0.0.0.0,[::]:{} dual_stack=true",
                 config.listen_port
             ),
             None,
@@ -282,10 +296,16 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
 
         let relay = Arc::new(transparent::TransparentProxy::new(config.rules.clone()));
-        let udp_relay = Arc::clone(&relay);
+        let udp_relay_v4 = Arc::clone(&relay);
         tokio::spawn(async move {
-            if let Err(error) = udp_relay.run_udp(transparent_udp_listener).await {
-                eprintln!("wlocd: udp_listener=failed error={error}");
+            if let Err(error) = udp_relay_v4.run_udp(transparent_udp_listener_v4).await {
+                eprintln!("wlocd: udp_listener=failed family=ipv4 error={error}");
+            }
+        });
+        let udp_relay_v6 = Arc::clone(&relay);
+        tokio::spawn(async move {
+            if let Err(error) = udp_relay_v6.run_udp(transparent_udp_listener_v6).await {
+                eprintln!("wlocd: udp_listener=failed family=ipv6 error={error}");
             }
         });
 
@@ -304,7 +324,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .acquire_owned()
                 .await
                 .map_err(std::io::Error::other)?;
-            let (stream, _) = transparent_tcp_listener.accept().await?;
+            let (stream, _) = tokio::select! {
+            accepted = transparent_tcp_listener_v4.accept() => accepted?,
+            accepted = transparent_tcp_listener_v6.accept() => accepted?,
+        };
             let destination_port = match stream.local_addr() {
                 Ok(destination) => destination.port(),
                 Err(error) => {

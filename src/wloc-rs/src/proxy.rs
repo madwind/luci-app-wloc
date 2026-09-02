@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -51,50 +51,78 @@ struct PeerCacheEntry {
 }
 
 #[cfg(target_os = "linux")]
-fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
+fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddr> {
     use std::os::fd::AsRawFd;
 
     const SO_ORIGINAL_DST: libc::c_int = 80;
-    let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_IP,
-            SO_ORIGINAL_DST,
-            (&mut address as *mut libc::sockaddr_in).cast(),
-            &mut length,
-        )
-    };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error());
+    match stream.local_addr()? {
+        SocketAddr::V4(_) => {
+            let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            let result = unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_IP,
+                    SO_ORIGINAL_DST,
+                    (&mut address as *mut libc::sockaddr_in).cast(),
+                    &mut length,
+                )
+            };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if address.sin_family != libc::AF_INET as libc::sa_family_t
+                || usize::try_from(length).unwrap_or(0) < std::mem::size_of::<libc::sockaddr_in>()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid IPv4 SO_ORIGINAL_DST address",
+                ));
+            }
+            Ok(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)),
+                u16::from_be(address.sin_port),
+            )))
+        }
+        SocketAddr::V6(_) => {
+            let mut address: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+            let mut length = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+            let result = unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_IPV6,
+                    SO_ORIGINAL_DST,
+                    (&mut address as *mut libc::sockaddr_in6).cast(),
+                    &mut length,
+                )
+            };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if address.sin6_family != libc::AF_INET6 as libc::sa_family_t
+                || usize::try_from(length).unwrap_or(0) < std::mem::size_of::<libc::sockaddr_in6>()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid IPv6 SO_ORIGINAL_DST address",
+                ));
+            }
+            Ok(SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from(address.sin6_addr.s6_addr),
+                u16::from_be(address.sin6_port),
+                address.sin6_flowinfo,
+                address.sin6_scope_id,
+            )))
+        }
     }
-    if address.sin_family != libc::AF_INET as libc::sa_family_t
-        || usize::try_from(length).unwrap_or(0) < std::mem::size_of::<libc::sockaddr_in>()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid SO_ORIGINAL_DST address",
-        ));
-    }
-    Ok(SocketAddrV4::new(
-        Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)),
-        u16::from_be(address.sin_port),
-    ))
 }
 
-fn passthrough_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
+fn passthrough_destination(stream: &TcpStream) -> std::io::Result<SocketAddr> {
     #[cfg(target_os = "linux")]
     if let Ok(destination) = original_destination(stream) {
         return Ok(destination);
     }
-    match stream.local_addr()? {
-        SocketAddr::V4(destination) => Ok(destination),
-        SocketAddr::V6(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "IPv6 destination on IPv4 listener",
-        )),
-    }
+    stream.local_addr()
 }
 
 pub struct UpstreamResponse {
@@ -124,7 +152,7 @@ pub struct Proxy {
     debug: bool,
     arp_path: PathBuf,
     dhcp_leases_path: PathBuf,
-    peer_cache: Arc<tokio::sync::Mutex<HashMap<Ipv4Addr, PeerCacheEntry>>>,
+    peer_cache: Arc<tokio::sync::Mutex<HashMap<IpAddr, PeerCacheEntry>>>,
     network_source: HostapdNetworkSource,
     listen_port: u16,
     status: Arc<Status>,
@@ -195,7 +223,7 @@ impl Proxy {
         }
     }
 
-    async fn identity_for(&self, peer: Ipv4Addr) -> Result<Option<PeerIdentity>, String> {
+    async fn identity_for(&self, peer: IpAddr) -> Result<Option<PeerIdentity>, String> {
         let cached = self.peer_cache.lock().await.get(&peer).cloned();
         if let Some(entry) = cached.filter(|entry| entry.expires_at > Instant::now()) {
             return Ok(Some(entry.identity));
@@ -203,7 +231,7 @@ impl Proxy {
         let arp_path = self.arp_path.clone();
         let dhcp_leases_path = self.dhcp_leases_path.clone();
         let resolved = tokio::task::spawn_blocking(move || {
-            neighbor_mac_for(&arp_path, &dhcp_leases_path, peer)
+            neighbor_identity_for(&arp_path, &dhcp_leases_path, peer)
         })
         .await
         .map_err(|error| format!("neighbor lookup task failed: {error}"))?;
@@ -221,9 +249,6 @@ impl Proxy {
     }
 
     async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
-        let IpAddr::V4(peer) = peer else {
-            return Ok(None);
-        };
         let Some(identity) = self.identity_for(peer).await? else {
             return Ok(None);
         };
@@ -1055,9 +1080,11 @@ fn arp_mac_for(path: &Path, address: Ipv4Addr) -> Option<MacAddress> {
     None
 }
 
-fn ip_neigh_mac_for(address: Ipv4Addr) -> Option<MacAddress> {
+fn ip_neigh_mac_for(address: IpAddr) -> Option<MacAddress> {
+    let address_text = address.to_string();
+    let family = if address.is_ipv4() { "-4" } else { "-6" };
     let output = std::process::Command::new("ip")
-        .args(["neigh", "show", &address.to_string()])
+        .args([family, "neigh", "show", &address_text])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1130,35 +1157,46 @@ fn unmatched_context(
     format!("device=\"{device}\" matched=false mac={mac} ip={ip} lookup={lookup}")
 }
 
-fn neighbor_mac_for(
+fn neighbor_identity_for(
     arp_path: &Path,
     dhcp_leases_path: &Path,
-    address: Ipv4Addr,
+    address: IpAddr,
 ) -> Option<(PeerIdentity, &'static str)> {
-    dhcp_lease_identity_for(dhcp_leases_path, address)
-        .map(|identity| (identity, "dhcp_lease"))
-        .or_else(|| {
-            arp_mac_for(arp_path, address).map(|mac| {
-                (
-                    PeerIdentity {
-                        mac,
-                        hostname: None,
-                    },
-                    "arp",
-                )
+    match address {
+        IpAddr::V4(address) => dhcp_lease_identity_for(dhcp_leases_path, address)
+            .map(|identity| (identity, "dhcp_lease"))
+            .or_else(|| {
+                arp_mac_for(arp_path, address).map(|mac| {
+                    (
+                        PeerIdentity {
+                            mac,
+                            hostname: None,
+                        },
+                        "arp",
+                    )
+                })
             })
-        })
-        .or_else(|| {
-            ip_neigh_mac_for(address).map(|mac| {
-                (
-                    PeerIdentity {
-                        mac,
-                        hostname: None,
-                    },
-                    "ip_neigh",
-                )
-            })
-        })
+            .or_else(|| {
+                ip_neigh_mac_for(IpAddr::V4(address)).map(|mac| {
+                    (
+                        PeerIdentity {
+                            mac,
+                            hostname: None,
+                        },
+                        "ip_neigh",
+                    )
+                })
+            }),
+        IpAddr::V6(address) => ip_neigh_mac_for(IpAddr::V6(address)).map(|mac| {
+            (
+                PeerIdentity {
+                    mac,
+                    hostname: None,
+                },
+                "ip_neigh6",
+            )
+        }),
+    }
 }
 
 fn debug_response() -> UpstreamResponse {
