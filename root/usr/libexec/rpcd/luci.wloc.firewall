@@ -5,11 +5,6 @@
 FIREWALL=${WLOC_FIREWALL_PATH:-/etc/wloc/firewall.nft}
 FIREWALL_DEFAULT=${WLOC_FIREWALL_DEFAULT_PATH:-/usr/share/wloc/defaults/firewall.nft}
 FIREWALL_HELPER=${WLOC_FIREWALL_HELPER_PATH:-/usr/libexec/wloc/firewall.sh}
-GEO_COMPILER=${WLOC_FIREWALL_GEO_COMPILER:-/usr/libexec/wloc/firewall-geo.lua}
-SOURCE_RUNTIME=${WLOC_FIREWALL_SOURCE_RUNTIME:-/var/run/wloc/firewall.applied.source.nft}
-WARNINGS=${WLOC_FIREWALL_WARNINGS_PATH:-/var/run/wloc/firewall.warnings}
-RECOVERING=${WLOC_FIREWALL_RECOVERING_PATH:-/var/run/wloc/firewall.recovering}
-RUNTIME_WARNING=${WLOC_FIREWALL_RUNTIME_WARNING_PATH:-/var/run/wloc/firewall.runtime-warning}
 RUNTIME_DIR=${WLOC_RUNTIME_DIR:-/var/run/wloc}
 
 json_error() {
@@ -20,16 +15,6 @@ json_error() {
     json_dump
 }
 
-add_warnings() {
-    json_add_array warnings
-    if [ -r "$WARNINGS" ]; then
-        while IFS= read -r warning; do
-            [ -z "$warning" ] || json_add_string '' "$warning"
-        done <"$WARNINGS"
-    fi
-    json_close_array
-}
-
 read_request() {
     local request
     request="$(cat)"
@@ -38,31 +23,12 @@ read_request() {
     [ "${#firewall_config}" -le 1048576 ]
 }
 
-fold_active() {
-    local active="$1" source="$2" active_file folded
-    [ -n "$active" ] || return 0
-    [ -r "$source" ] || { printf '%s' "$active"; return 0; }
-    mkdir -p "$RUNTIME_DIR" || { printf '%s' "$active"; return 0; }
-    active_file="$(mktemp "$RUNTIME_DIR/firewall-active.XXXXXX")" || { printf '%s' "$active"; return 0; }
-    printf '%s\n' "$active" >"$active_file"
-    folded="$(lua "$GEO_COMPILER" fold "$source" "$active_file" 2>/dev/null || true)"
-    rm -f "$active_file"
-    [ -n "$folded" ] && printf '%s' "$folded" || printf '%s' "$active"
-}
-
 emit_read() {
-    local config config_source active source folded recovering warning
+    local config_source config active
     config_source="$FIREWALL"
     [ -r "$config_source" ] || config_source="$FIREWALL_DEFAULT"
     config="$(cat "$config_source" 2>/dev/null || true)"
     active="$("$FIREWALL_HELPER" active 2>/dev/null || true)"
-    source="$SOURCE_RUNTIME"
-    [ -r "$source" ] || source="$FIREWALL"
-    [ -r "$source" ] || source="$FIREWALL_DEFAULT"
-    folded="$(fold_active "$active" "$source")"
-    recovering="$(cat "$RECOVERING" 2>/dev/null || echo 0)"
-    warning="$(cat "$RUNTIME_WARNING" 2>/dev/null || true)"
-    case "$recovering" in 1|true|yes) recovering=1;; *) recovering=0;; esac
 
     [ -n "$config" ] || { json_error 'Unable to read the Firewall file.'; return; }
     json_init
@@ -70,11 +36,10 @@ emit_read() {
     json_add_string path "$FIREWALL"
     json_add_string config "$config"
     [ "$config_source" = "$FIREWALL_DEFAULT" ] && json_add_boolean using_default 1 || json_add_boolean using_default 0
-    json_add_string active "${folded:-# No WLOC nftables tables are active.}"
+    json_add_string active "${active:-# No WLOC nftables tables are active.}"
     [ -n "$active" ] && json_add_boolean active_found 1 || json_add_boolean active_found 0
-    json_add_boolean recovering "$recovering"
-    json_add_string warning "$warning"
-    add_warnings
+    json_add_boolean recovering 0
+    json_add_string warning ''
     json_dump
 }
 
@@ -98,7 +63,6 @@ emit_validate() {
         json_init
         json_add_boolean ok 1
         json_add_boolean valid 1
-        add_warnings
         json_dump
     else
         json_init
@@ -106,7 +70,6 @@ emit_validate() {
         json_add_boolean valid 0
         json_add_string error 'nftables syntax check failed'
         json_add_string detail "${firewall_detail:-validation failed}"
-        add_warnings
         json_dump
     fi
 }

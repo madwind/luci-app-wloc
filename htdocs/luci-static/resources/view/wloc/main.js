@@ -12,7 +12,7 @@ return view.extend({
         document.title = _('WLOC | Settings');
 
         var map = new form.Map('wloc', _('Settings'),
-            _('Persistent WLOC service and GeoIP configuration. AP locations and the Root CA are managed from Overview.'));
+            _('Persistent WLOC service configuration. AP locations and the Root CA are managed from Overview.'));
 
         var settings = map.section(form.NamedSection, 'main', 'wloc', _('Service settings'));
         settings.anonymous = true;
@@ -43,28 +43,6 @@ return view.extend({
         option.default = '0';
         option.rmempty = false;
         option.description = _('When enabled, requests to the fixed Apple WLOC endpoints return {"wloc":"ok"} without contacting the upstream server.');
-
-        var geoipSettings = map.section(form.NamedSection, 'main', 'wloc', _('GeoIP'));
-        geoipSettings.anonymous = true;
-
-        option = geoipSettings.option(form.Value, 'geoip_file', _('GeoIP file'));
-        option.default = '/usr/share/xray/geoip.dat';
-        option.rmempty = false;
-        option.description = _('GeoIP database used to expand %geoip:<tag>% macros in the Firewall editor. The version is read from the adjacent .version file.');
-        option.validate = function(sectionId, value) {
-            value = String(value || '');
-            return value.charAt(0) === '/' && !/[\x00\r\n]/.test(value)
-                ? true : _('Enter an absolute file path.');
-        };
-
-        option = geoipSettings.option(form.Value, 'geoip_url', _('GeoIP source'));
-        option.default = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat';
-        option.rmempty = false;
-        option.description = _('HTTPS source used by the Updates page when checking or downloading GeoIP.');
-        option.validate = function(sectionId, value) {
-            return /^https:\/\/\S+$/.test(String(value || ''))
-                ? true : _('Enter an HTTPS URL.');
-        };
 
         return map.render();
     }

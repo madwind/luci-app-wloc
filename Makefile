@@ -22,10 +22,9 @@ LUCI_EXTRA_DEPENDS:= \
 	kmod-nft-tproxy (>=0), \
 	ip-full (>=0), \
 	jshn (>=0), \
-	lua (>=0), \
 	uclient-fetch (>=0)
 
-LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, GeoIP macros, rpcd and LuCI.
+LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
@@ -53,18 +52,10 @@ define Package/luci-app-wloc/postinst
 #!/bin/sh
 postinst_root="$${IPKG_INSTROOT}"
 version_cache="$${postinst_root}/usr/share/wloc/installed-version"
-geoip_seed="$${postinst_root}/usr/share/wloc/geoip-private.dat"
-geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
 
 mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
 printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
 chmod 0644 "$${version_cache}" 2>/dev/null || true
-
-if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
-	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
-	cp "$${geoip_seed}" "$${geoip_target}" || exit 1
-	chmod 0644 "$${geoip_target}" 2>/dev/null || true
-fi
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 0755 \
@@ -72,19 +63,14 @@ fi
 		/usr/libexec/rpcd/luci.wloc.update \
 		/usr/libexec/rpcd/luci.wloc.defaults \
 		/usr/libexec/rpcd/luci.wloc.firewall \
-		/usr/libexec/rpcd/luci.wloc.geo \
-		/usr/libexec/rpcd/luci.wloc.geoauto \
 		/usr/libexec/wloc/update.sh \
-		/usr/libexec/wloc/geo-update.sh \
-		/usr/libexec/wloc/geo-smart-update.sh \
-		/usr/libexec/wloc/geo-auto.sh \
 		/usr/libexec/wloc/firewall.sh \
 		/usr/libexec/wloc/firewall-core.sh \
-		/usr/libexec/wloc/firewall-geo.lua 2>/dev/null || true
+		/usr/libexec/wloc/migrate-legacy.sh 2>/dev/null || true
+	/usr/libexec/wloc/migrate-legacy.sh >/dev/null 2>&1 || logger -t wloc 'legacy GeoIP configuration migration failed'
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
-	/usr/libexec/wloc/geo-auto.sh sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic GeoIP update schedule"
 	exit 0
 }
 exit 0
@@ -95,10 +81,7 @@ define Package/luci-app-wloc/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	case "$${1:-remove}" in
 		upgrade) ;;
-		*)
-			rm -f /usr/share/wloc/installed-version
-			[ -x /usr/libexec/wloc/geo-auto.sh ] && /usr/libexec/wloc/geo-auto.sh remove >/dev/null 2>&1 || true
-			;;
+		*) rm -f /usr/share/wloc/installed-version;;
 	esac
 	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }

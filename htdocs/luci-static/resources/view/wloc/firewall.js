@@ -19,11 +19,6 @@ function firewallError(result, fallback) {
     return detail || fallback;
 }
 
-function warningDetail(result) {
-    var warnings = result && Array.isArray(result.warnings) ? result.warnings : [];
-    return warnings.filter(Boolean).join('; ');
-}
-
 return view.extend({
     load: function() {
         return L.resolveDefault(callRead(), { ok: false, error: _('Unable to read nftables rules.') });
@@ -50,9 +45,7 @@ return view.extend({
         }
 
         function updateRuntime(next) {
-            activeEditor.markSaved(next && next.active
-                ? next.active
-                : _('# No WLOC nftables tables are active.\n'));
+            activeEditor.markSaved(next && next.active ? next.active : _('# No WLOC nftables tables are active.\n'));
             wlocUi.setState(runtimeState, next && next.recovering === true ? 'warn' : 'ok',
                 next && next.recovering === true
                     ? (next.warning || _('Recovering · auto refresh every 10 seconds'))
@@ -62,9 +55,7 @@ return view.extend({
         function refreshRuntime(manual) {
             if (!pageVisible || runtimeRequest)
                 return runtimeRequest || Promise.resolve();
-
-            if (manual)
-                wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
+            if (manual) wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
             runtimeRequest = callRead().then(function(next) {
                 if (!next || next.ok !== true)
@@ -78,7 +69,6 @@ return view.extend({
                 runtimeRequest = null;
                 return next;
             });
-
             return runtimeRequest;
         }
 
@@ -113,8 +103,7 @@ return view.extend({
         }
 
         function withinLimit(current) {
-            if (current.withinLimit())
-                return true;
+            if (current.withinLimit()) return true;
             current.focus();
             setMessage('error', _('The Firewall file is larger than 32 KiB.'));
             return false;
@@ -128,16 +117,12 @@ return view.extend({
         }
 
         function checkFirewall(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
+            if (!withinLimit(current)) return Promise.resolve(false);
             setMessage('notice', _('Checking Firewall syntax...'));
             return callValidate(current.getValue()).then(function(next) {
                 if (!next || next.valid !== true)
                     throw new Error(firewallError(next, _('Firewall syntax check failed.')));
-                var warning = warningDetail(next);
-                setMessage(warning ? 'warn' : 'ok', warning
-                    ? _('Firewall syntax check passed with warning: %s').format(warning)
-                    : _('Firewall syntax check passed.'));
+                setMessage('ok', _('Firewall syntax check passed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Firewall syntax check failed.')));
@@ -146,19 +131,15 @@ return view.extend({
         }
 
         function applyFirewall(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
+            if (!withinLimit(current)) return Promise.resolve(false);
             setMessage('notice', _('Applying Firewall rules to runtime...'));
             return callApply(current.getValue()).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
                 updateRuntime(next);
-                var warning = warningDetail(next);
-                setMessage(warning ? 'warn' : (next.recovering === true ? 'warn' : 'ok'), warning
-                    ? _('Applied to runtime with warning: %s').format(warning)
-                    : next.recovering === true
-                        ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
-                        : _('Applied to runtime; the saved file was not changed.'));
+                setMessage(next.recovering === true ? 'warn' : 'ok', next.recovering === true
+                    ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
+                    : _('Applied to runtime; the saved file was not changed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to apply Firewall rules.')));
@@ -167,11 +148,8 @@ return view.extend({
         }
 
         function applySaveFirewall(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
-
+            if (!withinLimit(current)) return Promise.resolve(false);
             var applied = false;
-            var warning = '';
             var value = current.getValue();
             setMessage('notice', _('Applying Firewall rules and saving the file...'));
 
@@ -179,17 +157,13 @@ return view.extend({
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
                 applied = true;
-                warning = warningDetail(next);
                 updateRuntime(next);
                 return callSave(value);
             }).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('The Firewall file could not be saved.')));
-                warning = warning || warningDetail(next);
                 current.markSaved(next.config === undefined ? value : next.config);
-                setMessage(warning ? 'warn' : 'ok', warning
-                    ? _('Applied and saved with warning: %s').format(warning)
-                    : _('Applied to runtime and saved to the Firewall file.'));
+                setMessage('ok', _('Applied to runtime and saved to the Firewall file.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, applied
@@ -223,9 +197,7 @@ return view.extend({
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
         }, _('Refresh'));
-        refreshButton.addEventListener('click', function() {
-            refreshRuntime(true);
-        });
+        refreshButton.addEventListener('click', function() { refreshRuntime(true); });
 
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
@@ -238,16 +210,10 @@ return view.extend({
             poll.remove(refreshRuntime);
         }, { once: true });
 
-        var geoipHelp = E('div', { 'class': 'cbi-section-descr' }, [
-            _('GeoIP macro: put '), E('code', {}, '%geoip:<tag>%'),
-            _(' inside the elements of a named IPv4 or IPv6 address set. The set type selects the address family. Missing tags are ignored with a warning; update GeoIP to activate them.')
-        ]);
-
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-            E('div', { 'class': 'cbi-map-descr' },
-                _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [ geoipHelp, editor.root, message ]),
+            E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
+            E('div', { 'class': 'cbi-section' }, [ editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
                 runtimeToolbar,

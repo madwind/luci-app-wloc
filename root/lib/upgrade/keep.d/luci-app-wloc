@@ -3,5 +3,3 @@
 /etc/wloc/routing.conf
 /etc/wloc/ca.key
 /etc/wloc/ca.der
-/usr/share/xray/geoip.dat
-/usr/share/xray/geoip.dat.version
