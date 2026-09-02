@@ -52,7 +52,6 @@ struct Inner {
 }
 
 pub struct Status {
-    started: Instant,
     inner: Mutex<Inner>,
     pending: Arc<Mutex<Option<Snapshot>>>,
     notify: mpsc::SyncSender<()>,
@@ -103,10 +102,9 @@ impl Status {
         let (notify, receiver) = mpsc::sync_channel(1);
         spawn_writer(path.clone(), Arc::clone(&pending), receiver)?;
         write_atomic(&path, &initial)?;
-        eprintln!("wlocd: [+000.000s] event=session_started configured_aps={configured_aps}");
+        eprintln!("wlocd: event=session_started configured_aps={configured_aps}");
 
         Ok(Self {
-            started: Instant::now(),
             inner: Mutex::new(Inner {
                 snapshot,
                 upstream_targets: HashMap::new(),
@@ -248,12 +246,12 @@ impl Status {
 
         eprintln!(
             "wlocd: {}",
-            format_log_line(self.started, event, detail, enriched_error.as_deref())
+            format_log_line(event, detail, enriched_error.as_deref())
         );
         for line in extra_lines {
             eprintln!(
                 "wlocd: {}",
-                format_log_line(self.started, "wloc_location_patched", line, None)
+                format_log_line("wloc_location_patched", line, None)
             );
         }
 
@@ -267,9 +265,8 @@ impl Status {
     }
 }
 
-fn format_log_line(started: Instant, event: &str, detail: &str, error: Option<&str>) -> String {
-    let elapsed = started.elapsed().as_secs_f64();
-    let mut line = format!("[+{elapsed:07.3}s] event={}", safe_text(event, 80));
+fn format_log_line(event: &str, detail: &str, error: Option<&str>) -> String {
+    let mut line = format!("event={}", safe_text(event, 80));
     if !detail.is_empty() {
         line.push(' ');
         line.push_str(&safe_text(detail, MAX_LOG_LINE_CHARS));
