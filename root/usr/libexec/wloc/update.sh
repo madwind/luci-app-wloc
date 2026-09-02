@@ -6,6 +6,7 @@ STATE_DIR=/tmp/wloc-update
 STATE="$STATE_DIR/wloc.json"
 LOCK="$STATE_DIR/wloc.lock"
 LOG="$STATE_DIR/wloc.log"
+VERSION_CACHE=/usr/share/wloc/installed-version
 PACKAGE=luci-app-wloc
 REPO=madwind/luci-app-wloc
 API_URL="https://api.github.com/repos/$REPO/releases/latest"
@@ -14,6 +15,14 @@ UPDATER=/usr/libexec/wloc/update.sh
 
 trim() {
     printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+cached_installed_version() {
+    local version
+    [ -r "$VERSION_CACHE" ] || return 1
+    IFS= read -r version <"$VERSION_CACHE" || return 1
+    [ -n "$version" ] || return 1
+    printf '%s\n' "$version"
 }
 
 installed_version() {
@@ -72,26 +81,35 @@ state_defaults() {
 }
 
 load_state() {
+    local cached
     state_defaults
-    [ -s "$STATE" ] || return 0
-    json_load_file "$STATE" 2>/dev/null || return 0
-    json_get_var st_status status
-    json_get_var st_phase phase
-    json_get_var st_pid pid
-    json_get_var st_started started
-    json_get_var st_finished finished
-    json_get_var st_installed installed_version
-    json_get_var st_latest latest_version
-    json_get_var st_available update_available
-    json_get_var st_checked checked
-    json_get_var st_check_ok check_ok
-    json_get_var st_last_check_error last_check_error
-    json_get_var st_last_update last_update
-    json_get_var st_updated updated
-    json_get_var st_post_check_error post_check_error
-    json_get_var st_error error
-    json_get_var st_message message
+    if [ -s "$STATE" ] && json_load_file "$STATE" 2>/dev/null; then
+        json_get_var st_status status
+        json_get_var st_phase phase
+        json_get_var st_pid pid
+        json_get_var st_started started
+        json_get_var st_finished finished
+        json_get_var st_installed installed_version
+        json_get_var st_latest latest_version
+        json_get_var st_available update_available
+        json_get_var st_checked checked
+        json_get_var st_check_ok check_ok
+        json_get_var st_last_check_error last_check_error
+        json_get_var st_last_update last_update
+        json_get_var st_updated updated
+        json_get_var st_post_check_error post_check_error
+        json_get_var st_error error
+        json_get_var st_message message
+    fi
     [ -n "$st_status" ] || st_status=idle
+
+    cached="$(cached_installed_version 2>/dev/null || true)"
+    if [ -n "$cached" ]; then
+        case "$st_status" in
+            starting|running|stopping) [ -n "$st_installed" ] || st_installed="$cached";;
+            *) st_installed="$cached";;
+        esac
+    fi
 }
 
 write_json_state() {
@@ -151,22 +169,14 @@ normalize_stale_worker() {
 }
 
 emit_status() {
-    local current relation available
     load_state
     normalize_stale_worker
-    current="$(installed_version)"
-    [ -z "$current" ] || st_installed="$current"
-    available="$st_available"
-    if [ -n "$st_installed" ] && [ -n "$st_latest" ]; then
-        relation="$(version_relation "$st_latest" "$st_installed")"
-        case "$relation" in '>') available=1;; '='|'<') available=0;; esac
-    fi
 
     json_init
     json_add_boolean ok 1
     [ -z "$st_installed" ] || json_add_string installed_version "$st_installed"
     [ -z "$st_latest" ] || json_add_string latest_version "$st_latest"
-    case "$available" in 0|1) json_add_boolean update_available "$available";; esac
+    case "$st_available" in 0|1) json_add_boolean update_available "$st_available";; esac
     case "$st_checked" in ''|*[!0-9]*) ;; *) [ "$st_checked" -le 0 ] || json_add_int checked "$st_checked";; esac
     case "$st_check_ok" in 0|1) json_add_boolean check_ok "$st_check_ok";; esac
     [ -z "$st_last_check_error" ] || json_add_string last_check_error "$st_last_check_error"
@@ -196,7 +206,8 @@ probe_release() {
     local release_json sha_file relation
     PROBE_OK=0
     PROBE_ERROR=''
-    PROBE_INSTALLED="$(installed_version)"
+    PROBE_INSTALLED="$(cached_installed_version 2>/dev/null || true)"
+    [ -n "$PROBE_INSTALLED" ] || PROBE_INSTALLED="$(installed_version)"
     PROBE_LATEST=''
     PROBE_AVAILABLE=''
     PROBE_TAG=''
@@ -322,7 +333,8 @@ worker_done() {
     st_updated="$updated"
     st_error=''
     st_message="$2"
-    st_installed="$(installed_version)"
+    st_installed="$(cached_installed_version 2>/dev/null || true)"
+    [ -n "$st_installed" ] || st_installed="$(installed_version)"
     if [ -n "$st_installed" ] && [ -n "$st_latest" ]; then
         case "$(version_relation "$st_latest" "$st_installed")" in
             '>') st_available=1;;
@@ -384,7 +396,8 @@ worker_update() {
     rm -f "$apk" "$sha_file" "$install_log"
 
     /etc/init.d/wloc restart >/dev/null 2>&1 || true
-    st_installed="$(installed_version)"
+    st_installed="$(cached_installed_version 2>/dev/null || true)"
+    [ -n "$st_installed" ] || st_installed="$(installed_version)"
     st_post_check_error=''
     if [ -z "$st_installed" ]; then
         st_post_check_error='Unable to verify the installed WLOC version after update.'
@@ -416,7 +429,7 @@ start_update() {
     st_started="$(date +%s)"
     st_finished=0
     st_pid=0
-    st_installed="$(installed_version)"
+    st_installed="$(cached_installed_version 2>/dev/null || true)"
     st_updated=0
     st_post_check_error=''
     st_error=''

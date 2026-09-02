@@ -14,6 +14,9 @@ var callGeoStop = rpc.declare({ object: 'luci.wloc.geo', method: 'stop', expect:
 var callGeoAutoStatus = rpc.declare({ object: 'luci.wloc.geoauto', method: 'status', expect: { '': {} }, reject: true });
 var callGeoAutoSet = rpc.declare({ object: 'luci.wloc.geoauto', method: 'set_auto', params: [ 'enabled' ], expect: { '': {} }, reject: true });
 
+var SOFTWARE_RECONCILE_ATTEMPTS = 5;
+var SOFTWARE_RECONCILE_DELAY = 1000;
+
 function formatTimestamp(value) {
     var seconds = Number(value || 0);
     if (!seconds) return '—';
@@ -41,9 +44,10 @@ function formatTimestamp(value) {
     }
 
     var amount = Math.round(delta / divisor);
+    var locale = document.documentElement && document.documentElement.getAttribute('lang') || 'en';
     try {
         if (typeof Intl !== 'undefined' && typeof Intl.RelativeTimeFormat === 'function')
-            return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(amount, unit);
+            return new Intl.RelativeTimeFormat(locale, { numeric: 'always' }).format(amount, unit);
     } catch (e) {}
 
     var count = Math.abs(amount);
@@ -236,6 +240,66 @@ return view.extend({
             ]);
         }
 
+        function delay(milliseconds) {
+            return new Promise(function(resolve) {
+                window.setTimeout(resolve, milliseconds);
+            });
+        }
+
+        function reconcileSoftwareStart(requestedAt, attempt) {
+            if (!pageVisible)
+                return Promise.resolve(false);
+
+            return delay(SOFTWARE_RECONCILE_DELAY).then(function() {
+                return callSoftwareStatus();
+            }).then(function(result) {
+                if (!result || result.ok !== true)
+                    return false;
+
+                var operation = result.operation || {};
+                var started = Number(operation.started || 0);
+                var recent = started > 0 && started >= requestedAt - 5;
+                var known = [ 'starting', 'running', 'stopping', 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0;
+                if (!recent || !known)
+                    return false;
+
+                applySoftware(result);
+                return true;
+            }).catch(function() {
+                return false;
+            }).then(function(recovered) {
+                if (recovered || attempt + 1 >= SOFTWARE_RECONCILE_ATTEMPTS)
+                    return recovered;
+                return reconcileSoftwareStart(requestedAt, attempt + 1);
+            });
+        }
+
+        function runSoftwareUpdate() {
+            var fallback = _('Unable to update WLOC.');
+            var requestedAt = Math.floor(Date.now() / 1000);
+            softwareRow.update.disabled = true;
+            softwareRow.stop.disabled = true;
+            wlocUi.setState(softwareRow.status, 'notice', _('Checking for updates...'));
+
+            return callSoftwareInstall().then(function(result) {
+                return { result: wlocUi.requireOk(result, fallback), recovered: false };
+            }, function(error) {
+                return reconcileSoftwareStart(requestedAt, 0).then(function(recovered) {
+                    if (recovered)
+                        return { result: null, recovered: true };
+                    throw error;
+                });
+            }).then(function(outcome) {
+                if (!outcome.recovered)
+                    applySoftware(outcome.result);
+                return refresh();
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, fallback));
+                softwareRow.update.disabled = false;
+                return refresh();
+            });
+        }
+
         function runUpdate(row, request, apply, fallback) {
             row.update.disabled = true;
             row.stop.disabled = true;
@@ -257,7 +321,7 @@ return view.extend({
         }
 
         softwareRow.update.addEventListener('click', ui.createHandlerFn(softwareRow.update, function() {
-            return runUpdate(softwareRow, callSoftwareInstall, applySoftware, _('Unable to update WLOC.'));
+            return runSoftwareUpdate();
         }));
         softwareRow.stop.addEventListener('click', ui.createHandlerFn(softwareRow.stop, function() {
             return runStop(softwareRow, callSoftwareStop, applySoftware, _('Unable to stop WLOC update.'));

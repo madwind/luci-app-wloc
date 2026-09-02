@@ -54,8 +54,13 @@ endef
 define Package/luci-app-wloc/postinst
 #!/bin/sh
 postinst_root="$${IPKG_INSTROOT}"
+version_cache="$${postinst_root}/usr/share/wloc/installed-version"
 geoip_seed="$${postinst_root}/usr/share/wloc/geoip-private.dat"
 geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
+
+mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
+printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
+chmod 0644 "$${version_cache}" 2>/dev/null || true
 
 if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
 	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
@@ -92,7 +97,10 @@ define Package/luci-app-wloc/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	case "$${1:-remove}" in
 		upgrade) ;;
-		*) [ -x /usr/libexec/wloc/geo-auto.sh ] && /usr/libexec/wloc/geo-auto.sh remove >/dev/null 2>&1 || true;;
+		*)
+			rm -f /usr/share/wloc/installed-version
+			[ -x /usr/libexec/wloc/geo-auto.sh ] && /usr/libexec/wloc/geo-auto.sh remove >/dev/null 2>&1 || true
+			;;
 	esac
 	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
