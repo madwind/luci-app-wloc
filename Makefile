@@ -47,8 +47,6 @@ export RUST_TARGET RUST_LINKER_ENV TARGET_CC_NOCACHE TARGET_AR TARGET_CFLAGS
 
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
-/etc/wloc/firewall.nft
-/etc/wloc/routing.conf
 endef
 
 define Package/luci-app-wloc/postinst
