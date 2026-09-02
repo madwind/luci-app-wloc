@@ -17,7 +17,7 @@ table inet wloc {
         type ipv4_addr
         flags interval
         auto-merge
-        elements = { %geoip:private% }
+        elements = { %geoip:private%, %geoip:cn% }
     }
 
     chain transparent_prerouting {
