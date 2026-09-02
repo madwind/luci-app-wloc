@@ -1,7 +1,14 @@
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        crate::logging::write(format_args!($($arg)*));
+    }};
+}
+
 pub mod ca;
 pub mod client_hello;
 pub mod config;
 pub mod http1;
+pub mod logging;
 pub mod network_source;
 pub mod proxy;
 pub mod status;
