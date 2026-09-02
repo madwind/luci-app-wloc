@@ -1,3 +1,9 @@
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        wloc_rs::logging::write(format_args!($($arg)*));
+    }};
+}
+
 mod transparent;
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
