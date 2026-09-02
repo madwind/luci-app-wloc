@@ -3,19 +3,24 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
+use tokio_rustls::TlsConnector;
 use wloc_rs::config::{LocationRule, MacAddress, OutboundProxy};
 use wloc_rs::network_source::HostapdNetworkSource;
 
 const PEER_CACHE_TTL: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const DOH_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_DNS_MESSAGE: usize = u16::MAX as usize;
+const DOH_ENDPOINTS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)];
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
 const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
 
@@ -121,11 +126,14 @@ impl TransparentProxy {
             .as_ref()
             .map(|rule| rule.outbound.clone())
             .unwrap_or(OutboundProxy::Direct);
-        let upstream_destination = rewrite_destination(destination);
+
+        if destination.port() == 53 {
+            return handle_dns_tcp(&mut client, &outbound).await;
+        }
 
         let mut upstream = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            connect_tcp_outbound(&outbound, upstream_destination),
+            connect_tcp_outbound(&outbound, destination),
         )
         .await
         .map_err(|_| "transparent TCP connect timed out".to_owned())??;
@@ -171,6 +179,15 @@ impl TransparentProxy {
             Some(rule) => (rule.id, rule.outbound),
             None => ("direct".to_owned(), OutboundProxy::Direct),
         };
+
+        if destination.port() == 53 {
+            let response = doh_query(&outbound, &payload).await?;
+            send_spoofed_udp(destination, client, &response)
+                .await
+                .map_err(io_message)?;
+            return Ok(());
+        }
+
         let key = UdpSessionKey {
             client,
             destination,
@@ -193,7 +210,6 @@ impl TransparentProxy {
                         let result = run_udp_session(
                             client,
                             destination,
-                            rewrite_destination(destination),
                             session_outbound,
                             receiver,
                         )
@@ -216,6 +232,137 @@ impl TransparentProxy {
         }
         Err("unable to queue UDP datagram".into())
     }
+}
+
+async fn handle_dns_tcp(client: &mut TcpStream, outbound: &OutboundProxy) -> Result<(), String> {
+    loop {
+        let mut length = [0_u8; 2];
+        if let Err(error) = client.read_exact(&mut length).await {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                return Ok(());
+            }
+            return Err(io_message(error));
+        }
+        let query_len = usize::from(u16::from_be_bytes(length));
+        if query_len == 0 {
+            return Err("empty TCP DNS query".into());
+        }
+        let mut query = vec![0_u8; query_len];
+        client.read_exact(&mut query).await.map_err(io_message)?;
+        let response = doh_query(outbound, &query).await?;
+        let response_len = u16::try_from(response.len())
+            .map_err(|_| "DoH response exceeds TCP DNS framing limit".to_owned())?;
+        client
+            .write_all(&response_len.to_be_bytes())
+            .await
+            .map_err(io_message)?;
+        client.write_all(&response).await.map_err(io_message)?;
+    }
+}
+
+async fn doh_query(outbound: &OutboundProxy, query: &[u8]) -> Result<Vec<u8>, String> {
+    validate_dns_message(query, "query")?;
+    let mut last_error = String::new();
+
+    for endpoint in DOH_ENDPOINTS {
+        match doh_query_endpoint(outbound, endpoint, query).await {
+            Ok(response) if dns_servfail(&response) => {
+                last_error = format!("{endpoint} returned SERVFAIL");
+            }
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = format!("{endpoint}: {error}");
+            }
+        }
+    }
+
+    Err(format!("DoH query failed: {last_error}"))
+}
+
+async fn doh_query_endpoint(
+    outbound: &OutboundProxy,
+    endpoint: Ipv4Addr,
+    query: &[u8],
+) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(DOH_TIMEOUT, async {
+        let destination = SocketAddr::V4(SocketAddrV4::new(endpoint, 443));
+        let tcp = connect_tcp_outbound(outbound, destination).await?;
+        let server_name = rustls::pki_types::ServerName::try_from(endpoint.to_string())
+            .map_err(|_| "invalid DoH TLS server name".to_owned())?;
+        let tls = doh_connector()
+            .connect(server_name, tcp)
+            .await
+            .map_err(|error| format!("DoH TLS failed: {error}"))?;
+        if tls.get_ref().1.alpn_protocol() != Some(b"http/1.1") {
+            return Err("DoH endpoint did not negotiate HTTP/1.1".into());
+        }
+
+        let uri = format!("https://{endpoint}/dns-query")
+            .parse::<Uri>()
+            .map_err(|error| format!("invalid DoH URI: {error}"))?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/dns-message"),
+        );
+        headers.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("application/dns-message"),
+        );
+        let host = endpoint.to_string();
+        let response = wloc_rs::http1::exchange(
+            tls,
+            &Method::POST,
+            &uri,
+            &headers,
+            &host,
+            query,
+        )
+        .await
+        .map_err(|error| format!("DoH HTTP failed: {error}"))?;
+        if response.status != StatusCode::OK {
+            return Err(format!("DoH HTTP status {}", response.status.as_u16()));
+        }
+        validate_dns_message(&response.body, "response")?;
+        if response.body[..2] != query[..2] {
+            return Err("DoH response transaction ID mismatch".into());
+        }
+        Ok(response.body)
+    })
+    .await
+    .map_err(|_| "DoH request timed out".to_owned())?
+}
+
+fn doh_connector() -> TlsConnector {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    let config = CONFIG.get_or_init(|| {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let versions = [&rustls::version::TLS13, &rustls::version::TLS12];
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&versions)
+            .expect("built-in TLS versions are supported")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Arc::new(config)
+    });
+    TlsConnector::from(Arc::clone(config))
+}
+
+fn validate_dns_message(message: &[u8], kind: &str) -> Result<(), String> {
+    if message.len() < 12 {
+        return Err(format!("DNS {kind} is shorter than the header"));
+    }
+    if message.len() > MAX_DNS_MESSAGE {
+        return Err(format!("DNS {kind} exceeds 65535 bytes"));
+    }
+    Ok(())
+}
+
+fn dns_servfail(message: &[u8]) -> bool {
+    message.len() >= 4 && message[3] & 0x0f == 2
 }
 
 pub fn udp_listeners(port: u16) -> io::Result<(UdpSocket, UdpSocket)> {
@@ -378,19 +525,17 @@ fn recv_original_datagram_v6_now(
 
 async fn run_udp_session(
     client: SocketAddr,
-    original_destination: SocketAddr,
     upstream_destination: SocketAddr,
     outbound: OutboundProxy,
     receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
     match outbound {
         OutboundProxy::Direct => {
-            run_direct_udp_session(client, original_destination, upstream_destination, receiver).await
+            run_direct_udp_session(client, upstream_destination, receiver).await
         }
         OutboundProxy::Socks5 { host, port } => {
             run_socks_udp_session(
                 client,
-                original_destination,
                 upstream_destination,
                 &host,
                 port,
@@ -404,7 +549,6 @@ async fn run_udp_session(
 
 async fn run_direct_udp_session(
     client: SocketAddr,
-    original_destination: SocketAddr,
     upstream_destination: SocketAddr,
     mut receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
@@ -422,8 +566,7 @@ async fn run_direct_udp_session(
             }
             response = upstream.recv_from(&mut buffer) => {
                 let (size, source) = response.map_err(io_message)?;
-                let reply_source = if original_destination.port() == 53 { original_destination } else { source };
-                send_spoofed_udp(reply_source, client, &buffer[..size]).await.map_err(io_message)?;
+                send_spoofed_udp(source, client, &buffer[..size]).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             _ = &mut idle => return Ok(()),
@@ -433,7 +576,6 @@ async fn run_direct_udp_session(
 
 async fn run_socks_udp_session(
     client: SocketAddr,
-    original_destination: SocketAddr,
     upstream_destination: SocketAddr,
     host: &str,
     port: u16,
@@ -460,8 +602,7 @@ async fn run_socks_udp_session(
                 let (size, sender) = response.map_err(io_message)?;
                 if sender != relay { continue; }
                 let (source, payload) = decode_socks_udp(&buffer[..size])?;
-                let reply_source = if original_destination.port() == 53 { original_destination } else { source };
-                send_spoofed_udp(reply_source, client, payload).await.map_err(io_message)?;
+                send_spoofed_udp(source, client, payload).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             _ = &mut idle => return Ok(()),
@@ -670,21 +811,6 @@ async fn discard_socks_address(stream: &mut TcpStream, atyp: u8) -> Result<(), S
     let mut discard = vec![0_u8; address_len + 2];
     stream.read_exact(&mut discard).await.map_err(io_message)?;
     Ok(())
-}
-
-fn rewrite_destination(destination: SocketAddr) -> SocketAddr {
-    if destination.port() != 53 {
-        return destination;
-    }
-    match destination {
-        SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(8, 8, 4, 4), 53)),
-        SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(
-            "2001:4860:4860::8844".parse::<Ipv6Addr>().expect("valid built-in IPv6 DNS address"),
-            53,
-            0,
-            0,
-        )),
-    }
 }
 
 fn unspecified_for(address: SocketAddr) -> SocketAddr {
