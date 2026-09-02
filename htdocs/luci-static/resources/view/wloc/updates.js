@@ -122,7 +122,9 @@ return view.extend({
                 latestVersion: '',
                 checkedAt: 0,
                 lastUpdateAt: 0,
-                updateAvailable: null
+                updateAvailable: null,
+                operationStarted: 0,
+                operationFinished: 0
             };
             var children = [
                 E('h4', {}, label),
@@ -176,6 +178,8 @@ return view.extend({
             if (result.installed_version) softwareRow.installedVersion = String(result.installed_version);
             if (result.latest_version) softwareRow.latestVersion = String(result.latest_version);
             if (result.update_available !== undefined && result.update_available !== null) softwareRow.updateAvailable = result.update_available === true;
+            if (operation.started != null) softwareRow.operationStarted = Number(operation.started) || 0;
+            if (operation.finished != null) softwareRow.operationFinished = Number(operation.finished) || 0;
             setMeta(softwareRow, result.checked, result.last_update);
             renderVersion(softwareRow);
 
@@ -246,7 +250,7 @@ return view.extend({
             });
         }
 
-        function reconcileSoftwareStart(requestedAt, attempt) {
+        function reconcileSoftwareStart(previousStarted, previousFinished, attempt) {
             if (!pageVisible)
                 return Promise.resolve(false);
 
@@ -258,9 +262,11 @@ return view.extend({
 
                 var operation = result.operation || {};
                 var started = Number(operation.started || 0);
-                var recent = started > 0 && started >= requestedAt - 5;
-                var known = [ 'starting', 'running', 'stopping', 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0;
-                if (!recent || !known)
+                var finished = Number(operation.finished || 0);
+                var active = [ 'starting', 'running', 'stopping' ].indexOf(operation.status) >= 0;
+                var changed = (started > 0 && started !== previousStarted) || (finished > 0 && finished !== previousFinished);
+                var known = active || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0;
+                if (!known || (!active && !changed))
                     return false;
 
                 applySoftware(result);
@@ -270,13 +276,14 @@ return view.extend({
             }).then(function(recovered) {
                 if (recovered || attempt + 1 >= SOFTWARE_RECONCILE_ATTEMPTS)
                     return recovered;
-                return reconcileSoftwareStart(requestedAt, attempt + 1);
+                return reconcileSoftwareStart(previousStarted, previousFinished, attempt + 1);
             });
         }
 
         function runSoftwareUpdate() {
             var fallback = _('Unable to update WLOC.');
-            var requestedAt = Math.floor(Date.now() / 1000);
+            var previousStarted = softwareRow.operationStarted;
+            var previousFinished = softwareRow.operationFinished;
             softwareRow.update.disabled = true;
             softwareRow.stop.disabled = true;
             wlocUi.setState(softwareRow.status, 'notice', _('Checking for updates...'));
@@ -284,7 +291,7 @@ return view.extend({
             return callSoftwareInstall().then(function(result) {
                 return { result: wlocUi.requireOk(result, fallback), recovered: false };
             }, function(error) {
-                return reconcileSoftwareStart(requestedAt, 0).then(function(recovered) {
+                return reconcileSoftwareStart(previousStarted, previousFinished, 0).then(function(recovered) {
                     if (recovered)
                         return { result: null, recovered: true };
                     throw error;
