@@ -77,6 +77,14 @@ function progressText(result) {
     return downloaded > 0 ? _('Downloading · %s').format(wlocUi.formatBytes(downloaded)) : _('Downloading...');
 }
 
+function activeStatus(status) {
+    return [ 'starting', 'running', 'stopping' ].indexOf(status) >= 0;
+}
+
+function terminalStatus(status) {
+    return [ 'done', 'failed', 'stopped' ].indexOf(status) >= 0;
+}
+
 return view.extend({
     handleSave: null,
     handleSaveApply: null,
@@ -124,7 +132,8 @@ return view.extend({
                 lastUpdateAt: 0,
                 updateAvailable: null,
                 operationStarted: 0,
-                operationFinished: 0
+                operationFinished: 0,
+                updateLocked: false
             };
             var children = [
                 E('h4', {}, label),
@@ -183,16 +192,19 @@ return view.extend({
             setMeta(softwareRow, result.checked, result.last_update);
             renderVersion(softwareRow);
 
-            if ([ 'starting', 'running', 'stopping' ].indexOf(operation.status) >= 0) {
+            if (activeStatus(operation.status)) {
+                softwareRow.updateLocked = true;
                 wlocUi.setState(softwareRow.status, 'notice', operation.status === 'stopping' ? _('Stopping...') : softwarePhase(operation));
                 softwareRow.update.disabled = true;
                 softwareRow.stop.disabled = operation.phase === 'installing' || operation.status === 'stopping';
             } else {
+                if (terminalStatus(operation.status)) softwareRow.updateLocked = false;
                 if (operation.status === 'failed') wlocUi.setState(softwareRow.status, 'error', operation.error || _('Update failed'));
                 else if (operation.status === 'stopped') wlocUi.setState(softwareRow.status, 'notice', _('Stopped'));
+                else if (operation.status === 'done' && operation.updated === true && result.post_check_error) wlocUi.setState(softwareRow.status, 'warn', _('Updated') + ' · ' + result.post_check_error);
                 else if (result.check_ok === false && result.last_check_error) wlocUi.setState(softwareRow.status, 'error', result.last_check_error);
                 else setIdle(softwareRow, softwareRow.updateAvailable, _('Ready'));
-                softwareRow.update.disabled = false;
+                softwareRow.update.disabled = softwareRow.updateLocked;
                 softwareRow.stop.disabled = true;
             }
             return result;
@@ -214,16 +226,19 @@ return view.extend({
             setMeta(geoRow, result.checked, result.last_update);
             renderVersion(geoRow);
 
-            if ([ 'starting', 'running', 'stopping' ].indexOf(result.status) >= 0) {
+            if (activeStatus(result.status)) {
+                geoRow.updateLocked = true;
                 wlocUi.setState(geoRow.status, 'notice', result.status === 'stopping' ? _('Stopping...') : progressText(result));
                 geoRow.update.disabled = true;
                 geoRow.stop.disabled = result.status === 'stopping';
             } else {
+                if (terminalStatus(result.status)) geoRow.updateLocked = false;
                 if (result.status === 'failed') wlocUi.setState(geoRow.status, 'error', result.error || _('Update failed'));
                 else if (result.status === 'stopped') wlocUi.setState(geoRow.status, 'notice', _('Stopped'));
+                else if (result.status === 'done' && result.updated === true && result.post_check_error) wlocUi.setState(geoRow.status, 'warn', _('Updated') + ' · ' + result.post_check_error);
                 else if (result.check_ok === false && result.last_check_error) wlocUi.setState(geoRow.status, 'error', result.last_check_error);
                 else setIdle(geoRow, geoRow.updateAvailable, result.ready === true ? _('Ready') : _('Missing'));
-                geoRow.update.disabled = false;
+                geoRow.update.disabled = geoRow.updateLocked;
                 geoRow.stop.disabled = true;
             }
             return result;
@@ -239,8 +254,14 @@ return view.extend({
         function refresh() {
             if (!pageVisible) return Promise.resolve();
             return Promise.all([
-                callSoftwareStatus().then(applySoftware).catch(function(error) { wlocUi.setState(softwareRow.status, 'error', wlocUi.errorMessage(error, _('Unable to read software update status.'))); }),
-                callGeoStatus().then(applyGeo).catch(function(error) { wlocUi.setState(geoRow.status, 'error', wlocUi.errorMessage(error, _('Unable to read GeoIP update status.'))); })
+                callSoftwareStatus().then(applySoftware).catch(function(error) {
+                    if (!softwareRow.updateLocked)
+                        wlocUi.setState(softwareRow.status, 'error', wlocUi.errorMessage(error, _('Unable to read software update status.')));
+                }),
+                callGeoStatus().then(applyGeo).catch(function(error) {
+                    if (!geoRow.updateLocked)
+                        wlocUi.setState(geoRow.status, 'error', wlocUi.errorMessage(error, _('Unable to read GeoIP update status.')));
+                })
             ]);
         }
 
@@ -263,9 +284,9 @@ return view.extend({
                 var operation = result.operation || {};
                 var started = Number(operation.started || 0);
                 var finished = Number(operation.finished || 0);
-                var active = [ 'starting', 'running', 'stopping' ].indexOf(operation.status) >= 0;
+                var active = activeStatus(operation.status);
                 var changed = (started > 0 && started !== previousStarted) || (finished > 0 && finished !== previousFinished);
-                var known = active || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0;
+                var known = active || terminalStatus(operation.status);
                 if (!known || (!active && !changed))
                     return false;
 
@@ -284,6 +305,7 @@ return view.extend({
             var fallback = _('Unable to update WLOC.');
             var previousStarted = softwareRow.operationStarted;
             var previousFinished = softwareRow.operationFinished;
+            softwareRow.updateLocked = true;
             softwareRow.update.disabled = true;
             softwareRow.stop.disabled = true;
             wlocUi.setState(softwareRow.status, 'notice', _('Checking for updates...'));
@@ -301,6 +323,7 @@ return view.extend({
                     applySoftware(outcome.result);
                 return refresh();
             }).catch(function(error) {
+                softwareRow.updateLocked = false;
                 setMessage('error', wlocUi.errorMessage(error, fallback));
                 softwareRow.update.disabled = false;
                 return refresh();
@@ -308,10 +331,20 @@ return view.extend({
         }
 
         function runUpdate(row, request, apply, fallback) {
+            row.updateLocked = true;
             row.update.disabled = true;
             row.stop.disabled = true;
             wlocUi.setState(row.status, 'notice', _('Checking for updates...'));
-            return request().then(function(result) { return wlocUi.requireOk(result, fallback); }).then(apply).then(function() { return refresh(); }).catch(function(error) {
+            return request().then(function(result) {
+                result = wlocUi.requireOk(result, fallback);
+                apply(result);
+                if (!activeStatus(result.status) && !terminalStatus(result.status)) {
+                    row.updateLocked = false;
+                    row.update.disabled = false;
+                }
+                return refresh();
+            }).catch(function(error) {
+                row.updateLocked = false;
                 setMessage('error', wlocUi.errorMessage(error, fallback));
                 row.update.disabled = false;
                 return refresh();
