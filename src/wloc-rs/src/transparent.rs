@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use bytes::Bytes;
+use http::{Method, Request, StatusCode, Uri};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -293,44 +294,105 @@ async fn doh_query_endpoint(
             .connect(server_name, tcp)
             .await
             .map_err(|error| format!("DoH TLS failed: {error}"))?;
-        if tls.get_ref().1.alpn_protocol() != Some(b"http/1.1") {
-            return Err("DoH endpoint did not negotiate HTTP/1.1".into());
+        if tls.get_ref().1.alpn_protocol() != Some(b"h2") {
+            return Err("DoH endpoint did not negotiate HTTP/2".into());
         }
+
+        let (sender, connection) = h2::client::Builder::new()
+            .initial_window_size(64 * 1024)
+            .max_frame_size(16 * 1024)
+            .max_header_list_size(32 * 1024)
+            .handshake::<_, Bytes>(tls)
+            .await
+            .map_err(|error| format!("DoH HTTP/2 handshake failed: {error}"))?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut sender = sender
+            .ready()
+            .await
+            .map_err(|error| format!("DoH HTTP/2 connection failed: {error}"))?;
 
         let uri = format!("https://{endpoint}/dns-query")
             .parse::<Uri>()
             .map_err(|error| format!("invalid DoH URI: {error}"))?;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/dns-message"),
-        );
-        headers.insert(
-            http::header::ACCEPT,
-            HeaderValue::from_static("application/dns-message"),
-        );
-        let host = endpoint.to_string();
-        let response = wloc_rs::http1::exchange(
-            tls,
-            &Method::POST,
-            &uri,
-            &headers,
-            &host,
-            query,
-        )
-        .await
-        .map_err(|error| format!("DoH HTTP failed: {error}"))?;
-        if response.status != StatusCode::OK {
-            return Err(format!("DoH HTTP status {}", response.status.as_u16()));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(http::header::CONTENT_TYPE, "application/dns-message")
+            .header(http::header::ACCEPT, "application/dns-message")
+            .body(())
+            .map_err(|error| format!("invalid DoH HTTP/2 request: {error}"))?;
+        let (response, mut send) = sender
+            .send_request(request, false)
+            .map_err(|error| format!("DoH HTTP/2 request failed: {error}"))?;
+        send_doh_h2_data(&mut send, query).await?;
+
+        let mut response = response
+            .await
+            .map_err(|error| format!("DoH HTTP/2 response failed: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(format!("DoH HTTP status {}", response.status().as_u16()));
         }
-        validate_dns_message(&response.body, "response")?;
-        if response.body[..2] != query[..2] {
+        let content_type = response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .unwrap_or("");
+        if !content_type.eq_ignore_ascii_case("application/dns-message") {
+            return Err(format!("DoH response content type is {content_type:?}"));
+        }
+
+        let mut body = Vec::new();
+        while let Some(chunk) = response.body_mut().data().await {
+            let chunk = chunk.map_err(|error| format!("DoH HTTP/2 body failed: {error}"))?;
+            if body.len().saturating_add(chunk.len()) > MAX_DNS_MESSAGE {
+                return Err("DNS response exceeds 65535 bytes".into());
+            }
+            body.extend_from_slice(&chunk);
+            response
+                .body_mut()
+                .flow_control()
+                .release_capacity(chunk.len())
+                .map_err(|error| format!("DoH HTTP/2 flow control failed: {error}"))?;
+        }
+        validate_dns_message(&body, "response")?;
+        if body[..2] != query[..2] {
             return Err("DoH response transaction ID mismatch".into());
         }
-        Ok(response.body)
+        Ok(body)
     })
     .await
     .map_err(|_| "DoH request timed out".to_owned())?
+}
+
+async fn send_doh_h2_data(
+    sender: &mut h2::SendStream<Bytes>,
+    body: &[u8],
+) -> Result<(), String> {
+    let mut offset = 0;
+    while offset < body.len() {
+        sender.reserve_capacity((body.len() - offset).min(16 * 1024));
+        let capacity = std::future::poll_fn(|context| sender.poll_capacity(context))
+            .await
+            .ok_or_else(|| "DoH HTTP/2 stream closed while sending request".to_owned())?
+            .map_err(|error| format!("DoH HTTP/2 send failed: {error}"))?;
+        if capacity == 0 {
+            continue;
+        }
+        let count = capacity.min(body.len() - offset).min(16 * 1024);
+        let end_stream = offset + count == body.len();
+        sender
+            .send_data(
+                Bytes::copy_from_slice(&body[offset..offset + count]),
+                end_stream,
+            )
+            .map_err(|error| format!("DoH HTTP/2 send failed: {error}"))?;
+        offset += count;
+    }
+    Ok(())
 }
 
 fn doh_connector() -> TlsConnector {
@@ -345,7 +407,7 @@ fn doh_connector() -> TlsConnector {
             .expect("built-in TLS versions are supported")
             .with_root_certificates(roots)
             .with_no_client_auth();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        config.alpn_protocols = vec![b"h2".to_vec()];
         Arc::new(config)
     });
     TlsConnector::from(Arc::clone(config))
