@@ -316,28 +316,46 @@ routing_remove_current() {
 }
 
 routing_apply_file() {
-    local source="$1" locked_here=0 rc=1 old_snapshot='' rollback_file apply_error rollback_error=''
+    local source="$1" locked_here=0 rc=1 old_snapshot='' new_snapshot='' rollback_file
+    local old_valid=0 changed=1 apply_error='' rollback_error=''
     if [ "${ROUTING_LOCK_HELD:-0}" -ne 1 ]; then routing_lock_acquire || return 1; locked_here=1; fi
-    if routing_parse_file "$source" && routing_write_atomic "$ROUTING_NORMALIZED" "$ROUTING_RUNTIME_NEXT"; then
-        if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then
-            old_snapshot="$ROUTING_NORMALIZED"
-            routing_remove_current
-        fi
-        if routing_parse_file "$ROUTING_RUNTIME_NEXT" && routing_apply_current; then
-            if mv -f "$ROUTING_RUNTIME_NEXT" "$ROUTING_RUNTIME"; then routing_error=''; rc=0; else routing_set_error 'unable to promote the applied routing snapshot'; fi
-        else
-            apply_error="$routing_error"
-        fi
-        if [ "$rc" -ne 0 ] && [ -n "$old_snapshot" ]; then
-            rollback_file="${ROUTING_RUNTIME}.rollback.$$"
-            if routing_write_atomic "$old_snapshot" "$rollback_file" && routing_parse_file "$rollback_file"; then
-                routing_apply_current || rollback_error="$routing_error"
+    if routing_parse_file "$source"; then
+        new_snapshot="$ROUTING_NORMALIZED"
+        if routing_write_atomic "$new_snapshot" "$ROUTING_RUNTIME_NEXT"; then
+            if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then
+                old_valid=1
+                old_snapshot="$ROUTING_NORMALIZED"
+                [ "$old_snapshot" = "$new_snapshot" ] && changed=0
             fi
-            rm -f "$rollback_file"
-        fi
-        if [ "$rc" -ne 0 ]; then
-            [ -n "$apply_error" ] && routing_error="$apply_error"
-            [ -z "$rollback_error" ] || routing_error="$routing_error; rollback failed: $rollback_error"
+            if [ "$old_valid" -eq 1 ] && [ "$changed" -eq 1 ]; then
+                routing_remove_current
+            fi
+            if routing_parse_file "$ROUTING_RUNTIME_NEXT" && routing_apply_current; then
+                if mv -f "$ROUTING_RUNTIME_NEXT" "$ROUTING_RUNTIME"; then
+                    routing_error=''
+                    rc=0
+                else
+                    apply_error='unable to promote the applied routing snapshot'
+                fi
+            else
+                apply_error="$routing_error"
+            fi
+            if [ "$rc" -ne 0 ] && [ "$changed" -eq 1 ]; then
+                if routing_parse_file "$ROUTING_RUNTIME_NEXT"; then
+                    routing_remove_current
+                fi
+                if [ "$old_valid" -eq 1 ]; then
+                    rollback_file="${ROUTING_RUNTIME}.rollback.$$"
+                    if routing_write_atomic "$old_snapshot" "$rollback_file" && routing_parse_file "$rollback_file"; then
+                        routing_apply_current || rollback_error="$routing_error"
+                    fi
+                    rm -f "$rollback_file"
+                fi
+            fi
+            if [ "$rc" -ne 0 ]; then
+                routing_error="$apply_error"
+                [ -z "$rollback_error" ] || routing_error="$routing_error; rollback failed: $rollback_error"
+            fi
         fi
     fi
     [ "$rc" -eq 0 ] || rm -f "$ROUTING_RUNTIME_NEXT"
