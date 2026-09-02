@@ -17,14 +17,14 @@ table inet wloc {
         type ipv4_addr
         flags interval
         auto-merge
-        elements = { %geoip:private%, %geoip:cn% }
+        elements = { %geoip:private% }
     }
 
     set bypass_v6 {
         type ipv6_addr
         flags interval
         auto-merge
-        elements = { %geoip:private%, %geoip:cn% }
+        elements = { %geoip:private% }
     }
 
     chain transparent_prerouting {
