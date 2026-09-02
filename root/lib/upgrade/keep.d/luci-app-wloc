@@ -1,5 +1,6 @@
 /etc/config/wloc
 /etc/wloc/firewall.nft
+/etc/wloc/routing.conf
 /etc/wloc/ca.key
 /etc/wloc/ca.der
 /usr/share/xray/geoip.dat
