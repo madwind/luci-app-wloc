@@ -58,8 +58,59 @@ pub async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         if raw.len() > MAX_WIRE_RESPONSE {
             return Err(ProxyError::Upstream("HTTP/1 response exceeds bound".into()));
         }
+        if response_has_complete_content_length(&raw)? {
+            break;
+        }
     }
     parse(&raw)
+}
+
+fn response_has_complete_content_length(raw: &[u8]) -> Result<bool, ProxyError> {
+    let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        if raw.len() > MAX_HEADERS {
+            return Err(ProxyError::Upstream("HTTP/1 headers exceed bound".into()));
+        }
+        return Ok(false);
+    };
+    if header_end > MAX_HEADERS {
+        return Err(ProxyError::Upstream("HTTP/1 headers exceed bound".into()));
+    }
+    let text = std::str::from_utf8(&raw[..header_end])
+        .map_err(|_| ProxyError::Upstream("non-UTF8 HTTP/1 headers".into()))?;
+    let mut content_length = None;
+    let mut transfer_encoding_present = false;
+    for line in text.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|_| ProxyError::Upstream("invalid HTTP/1 content length".into()))?;
+            if content_length.is_some_and(|existing| existing != parsed) {
+                return Err(ProxyError::Upstream(
+                    "conflicting HTTP/1 content lengths".into(),
+                ));
+            }
+            content_length = Some(parsed);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            transfer_encoding_present = true;
+        }
+    }
+    if transfer_encoding_present && content_length.is_some() {
+        return Err(ProxyError::Upstream(
+            "ambiguous HTTP/1 message framing".into(),
+        ));
+    }
+    let Some(content_length) = content_length else {
+        return Ok(false);
+    };
+    if content_length > MAX_RESPONSE {
+        return Err(ProxyError::Upstream("HTTP/1 body exceeds bound".into()));
+    }
+    Ok(raw.len().saturating_sub(header_end + 4) >= content_length)
 }
 
 fn parse(raw: &[u8]) -> Result<UpstreamResponse, ProxyError> {
