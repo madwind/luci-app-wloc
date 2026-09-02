@@ -6,6 +6,7 @@ STOP=10
 
 RULES=/usr/libexec/wloc/rules.sh
 FIREWALL=/etc/wloc/firewall.nft
+FIREWALL_DEFAULT=/usr/share/wloc/defaults/firewall.nft
 FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
 AP_LIB=/usr/libexec/wloc/ap-lib.sh
@@ -86,9 +87,12 @@ startup_warning() {
 }
 
 start_service() {
+    local firewall_source
     mkdir -p /var/run/wloc
     rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
-    if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$FIREWALL" 2>&1)"; then
+    firewall_source="$FIREWALL"
+    [ -r "$firewall_source" ] || firewall_source="$FIREWALL_DEFAULT"
+    if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$firewall_source" 2>&1)"; then
         startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}"
     fi
     config_load wloc
