@@ -15,12 +15,14 @@ function createEditor(options) {
     var id = options.id || 'wloc-editor';
     var label = options.label || _('Text editor');
     var maxBytes = Number(options.maxBytes) || MAX_EDITOR_BYTES;
+    var minHeight = options.minHeight || '24em';
+    var rows = options.rows || 24;
     var savedValue = String(options.value === undefined || options.value === null ? '' : options.value);
     var textarea = E('textarea', {
         'id': id,
         'class': 'cbi-input-text',
-        'style': 'display: block; width: 100%; min-height: ' + (options.minHeight || '24em') + '; box-sizing: border-box;',
-        'rows': options.rows || 24,
+        'style': 'display: block; width: 100%; min-height: ' + minHeight + '; box-sizing: border-box;',
+        'rows': rows,
         'wrap': 'off',
         'spellcheck': 'false',
         'autocapitalize': 'off',
@@ -98,18 +100,6 @@ function createEditor(options) {
         updateState();
         if (options.onInput)
             options.onInput(api);
-    }
-
-    function handleKeydown(event) {
-        if (event.key !== 'Tab' || options.readonly)
-            return;
-
-        event.preventDefault();
-        var start = textarea.selectionStart;
-        var end = textarea.selectionEnd;
-        textarea.value = textarea.value.slice(0, start) + '    ' + textarea.value.slice(end);
-        textarea.selectionStart = textarea.selectionEnd = start + 4;
-        handleInput();
     }
 
     function confirmAction(title, message, handler) {
@@ -192,7 +182,7 @@ function createEditor(options) {
         withinLimit: withinLimit
     };
 
-    addInjectedAction(leftActions, _('Format'), 'cbi-button-action', options.format, null);
+    addInjectedAction(leftActions, options.formatLabel || _('Format'), 'cbi-button-action', options.format, null);
     addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, null);
     addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-negative', options.reload,
         _('Reload the saved file? This will replace the current editor contents. Any unsaved changes will be lost.'));
@@ -202,7 +192,6 @@ function createEditor(options) {
     addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, null);
 
     textarea.addEventListener('input', handleInput);
-    textarea.addEventListener('keydown', handleKeydown);
     textarea.addEventListener('keyup', updateCursorPosition);
     textarea.addEventListener('click', updateCursorPosition);
     textarea.addEventListener('select', updateCursorPosition);
@@ -210,7 +199,6 @@ function createEditor(options) {
 
     api.destroy = function() {
         textarea.removeEventListener('input', handleInput);
-        textarea.removeEventListener('keydown', handleKeydown);
         textarea.removeEventListener('keyup', updateCursorPosition);
         textarea.removeEventListener('click', updateCursorPosition);
         textarea.removeEventListener('select', updateCursorPosition);
