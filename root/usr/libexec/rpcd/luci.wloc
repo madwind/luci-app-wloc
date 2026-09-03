@@ -21,7 +21,7 @@ AP_LIB=${WLOC_AP_LIB_PATH:-/usr/libexec/wloc/ap-lib.sh}
 WLOC_FIREWALL_HELPER_SOURCE=1
 . "$FIREWALL_HELPER"
 
-firewall_rpc_error() {
+rpc_error() {
     local code="$1" message="$2" detail="${3:-}"
     json_init
     json_add_boolean ok 0
@@ -41,12 +41,12 @@ cleanup_rules() {
 }
 
 cleanup_failure_response() {
-    firewall_rpc_error cleanup_failed \
+    rpc_error cleanup_failed \
         'Unable to clean up WLOC firewall rules.' "$cleanup_error"
 }
 
 ca_regeneration_failure_response() {
-    firewall_rpc_error ca_regeneration_failed \
+    rpc_error ca_regeneration_failed \
         'Unable to regenerate the WLOC Root CA.' "$1"
 }
 
@@ -105,209 +105,6 @@ ca_regeneration_success_response() {
     json_add_string fingerprint "$CA_REGENERATED_FINGERPRINT"
     json_add_string profile_url '/wloc-ca.mobileconfig'
     json_dump
-}
-
-firewall_response_state() {
-    local state_armed state_last_event
-    runtime_ready=0
-    recovering=0
-    runtime_warning=''
-
-    if [ "${FIREWALL_RUNTIME_STATE_SET:-0}" -eq 1 ]; then
-        runtime_ready="${FIREWALL_RUNTIME_READY:-0}"
-        recovering="${FIREWALL_RUNTIME_RECOVERING:-0}"
-        runtime_warning="${FIREWALL_RUNTIME_WARNING:-}"
-        return 0
-    fi
-
-    [ -s "$STATE" ] || return 0
-    state_armed=0
-    state_last_event=''
-    json_load_file "$STATE" 2>/dev/null || return 0
-    json_get_var state_armed armed
-    json_get_var state_last_event last_event
-    case "$state_armed" in 1|true|yes) runtime_ready=1;; esac
-    case "$state_last_event" in
-        lease_failed|cleanup_failed)
-            recovering=1
-            case "$state_last_event" in
-                cleanup_failed)
-                    runtime_warning='Runtime rule cleanup failed; WLOC will retry automatically.'
-                    ;;
-                *) runtime_warning='Runtime rule refresh failed; WLOC will retry automatically.';;
-            esac
-            ;;
-    esac
-}
-
-_firewall_response() {
-    firewall_response_state
-    firewall_collect_active
-    json_init
-    json_add_boolean ok 1
-    json_add_string path "$FIREWALL"
-    json_add_string config "$(cat "$FIREWALL" 2>/dev/null || true)"
-    json_add_string applied "$(cat "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-    json_add_string saved_hash "$(firewall_file_hash "$FIREWALL" 2>/dev/null || true)"
-    json_add_string applied_hash "$(firewall_file_hash "$FIREWALL_RUNTIME" 2>/dev/null || true)"
-    [ -r "$FIREWALL" ] && json_add_boolean persistent_present 1 || json_add_boolean persistent_present 0
-    [ -r "$FIREWALL_RUNTIME" ] && json_add_boolean applied_present 1 || json_add_boolean applied_present 0
-    json_add_boolean runtime_ready "$runtime_ready"
-    json_add_boolean recovering "$recovering"
-    json_add_string warning "$runtime_warning"
-    json_add_string active "${FIREWALL_ACTIVE:-# No WLOC nftables tables are active.}"
-    json_add_boolean active_found "$FIREWALL_ACTIVE_FOUND"
-    json_add_boolean bridge_active "$FIREWALL_BRIDGE_ACTIVE_FOUND"
-    json_add_boolean inet_active "$FIREWALL_INET_ACTIVE_FOUND"
-    json_add_int table_count "$FIREWALL_TABLE_COUNT"
-    json_add_int active_table_count "$FIREWALL_ACTIVE_TABLE_COUNT"
-    json_dump
-}
-
-firewall_response() {
-    local locked_here=0 rc
-    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
-        firewall_lock_acquire || {
-            firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
-                "${firewall_error:-Another firewall operation is already in progress. Please retry.}"
-            return 0
-        }
-        locked_here=1
-    fi
-    if _firewall_response; then
-        rc=0
-    else
-        rc=$?
-    fi
-    if [ "$locked_here" -eq 1 ]; then
-        firewall_lock_release
-    fi
-    return "$rc"
-}
-
-firewall_request_config() {
-    local request
-    request="$(cat)"
-    json_load "$request" 2>/dev/null || return 1
-    json_get_var firewall_config config
-    [ "${#firewall_config}" -le 1048576 ]
-}
-
-firewall_request_save() {
-    local request
-    request="$(cat)"
-    expected_applied_hash=''
-    json_load "$request" 2>/dev/null || return 1
-    json_get_var expected_applied_hash expected_applied_hash
-    [ -n "$expected_applied_hash" ] && [ "${#expected_applied_hash}" -le 256 ]
-}
-
-emit_firewall_validate() {
-    local source
-    mkdir -p "$FIREWALL_RUNTIME_DIR"
-    source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-source.XXXXXX")" || exit 1
-    printf '%s' "$firewall_config" >"$source"
-    if firewall_validate_file "$source"; then
-        json_init; json_add_boolean ok 1; json_add_boolean valid 1; json_dump
-    else
-        case "${firewall_error_code:-nft_check_failed}" in
-            firewall_busy)
-                firewall_rpc_error firewall_busy \
-                    'Another firewall operation is already in progress. Please retry.' "$firewall_error";;
-            unsupported_firewall_command)
-                firewall_rpc_error unsupported_firewall_command \
-                    'Only table bridge wloc and table inet wloc definitions are supported.' "$firewall_error";;
-            *)
-                json_init; json_add_boolean ok 0; json_add_boolean valid 0
-                json_add_string error 'nftables syntax check failed'
-                json_add_string error_code nft_check_failed
-                json_add_string detail "$firewall_error"; json_dump;;
-        esac
-    fi
-    rm -f "$source"
-}
-
-emit_firewall_save() {
-    local expected="${1:-${expected_applied_hash:-}}"
-    if ! firewall_save_snapshot "$expected"; then
-        firewall_rpc_error "${firewall_error_code:-persistent_save_failed}" \
-            "${firewall_error:-The applied firewall rules could not be saved persistently.}"
-        return
-    fi
-    json_init
-    json_add_boolean ok 1
-    json_add_string path "$FIREWALL"
-    json_add_string saved_hash "$FIREWALL_SAVED_HASH"
-    json_add_string applied_hash "$FIREWALL_APPLIED_HASH"
-    json_dump
-}
-
-emit_firewall_apply() {
-    local source apply_rc response_rc locked_here=0
-    mkdir -p "$FIREWALL_RUNTIME_DIR"
-    source="$(mktemp "$FIREWALL_RUNTIME_DIR/firewall-apply-source.XXXXXX")" || exit 1
-    if ! printf '%s' "$firewall_config" >"$source"; then
-        rm -f "$source"
-        json_init; json_add_boolean ok 0
-        json_add_string error 'Unable to stage the firewall rules.'
-        json_dump
-        return
-    fi
-    if [ "${FIREWALL_LOCK_HELD:-0}" -ne 1 ]; then
-        firewall_lock_acquire || {
-            firewall_rpc_error "${firewall_error_code:-firewall_busy}" \
-                "${firewall_error:-Another firewall operation is already in progress. Please retry.}"
-            rm -f "$source"
-            return
-        }
-        locked_here=1
-    fi
-    FIREWALL_RUNTIME_PROMOTION_FAILED=0
-    if _firewall_apply_file "$source"; then
-        apply_rc=0
-    else
-        apply_rc=$?
-    fi
-    rm -f "$source"
-    if [ "$apply_rc" -ne 0 ]; then
-        if [ "${FIREWALL_RUNTIME_PROMOTION_FAILED:-0}" -eq 1 ]; then
-            firewall_rpc_error snapshot_promote_failed \
-                'Fatal consistency error: nftables rules were applied but the runtime snapshot could not be promoted.' \
-                "$firewall_error"
-        else
-            case "${firewall_error_code:-nft_apply_failed}" in
-                firewall_busy)
-                    firewall_rpc_error firewall_busy \
-                        'Another firewall operation is already in progress. Please retry.' \
-                        "$firewall_error";;
-                snapshot_stage_failed)
-                    firewall_rpc_error snapshot_stage_failed \
-                        'The runtime snapshot could not be staged.' "$firewall_error";;
-                unsupported_firewall_command)
-                    firewall_rpc_error unsupported_firewall_command \
-                        'Only declarative nftables table definitions are supported.' "$firewall_error";;
-                nft_check_failed)
-                    firewall_rpc_error nft_check_failed \
-                        'The nftables syntax check failed.' "$firewall_error";;
-                *)
-                    firewall_rpc_error nft_apply_failed \
-                        'The nftables transaction failed.' "$firewall_error";;
-            esac
-        fi
-        if [ "$locked_here" -eq 1 ]; then
-            firewall_lock_release
-        fi
-        return
-    fi
-    if _firewall_response; then
-        response_rc=0
-    else
-        response_rc=$?
-    fi
-    if [ "$locked_here" -eq 1 ]; then
-        firewall_lock_release
-    fi
-    return "$response_rc"
 }
 
 load_runtime_state() {
@@ -422,7 +219,7 @@ emit_status() {
                 service_reason='Runtime rule cleanup failed'
                 [ -z "$last_error" ] || service_reason="$service_reason: $last_error"
                 ;;
-            esac
+        esac
     elif [ "$daemon_running" -eq 1 ] && [ "$conflict" -eq 1 ]; then
         service_reason='transparent-proxy path conflict; redirected packets are not reaching the WLOC listener'
     fi
@@ -469,9 +266,9 @@ emit_status() {
         json_add_boolean success "$activity_success"
         json_add_string last_error "$activity_error"
         json_close_object
-    done <<EOF
+    done <<EOF_ACTIVITY
 $activity_rows
-EOF
+EOF_ACTIVITY
     json_close_array
     json_dump
 }
@@ -507,7 +304,6 @@ emit_configured_access_points() {
         json_add_string ssid "$ssid"
         json_add_boolean disabled "$disabled"
         json_add_boolean active "$active"
-        json_add_boolean up "$active"
         json_close_object
     }
     config_load wireless
@@ -520,7 +316,7 @@ rpc_regenerate_ca() {
     local enabled old_fingerprint path
     enabled="$(uci -q get wloc.main.enabled 2>/dev/null || true)"
     if [ "$enabled" != 1 ]; then
-        firewall_rpc_error service_disabled \
+        rpc_error service_disabled \
             'Unable to regenerate CA while WLOC is disabled.' \
             'Enable WLOC before regenerating the CA.'
         return
@@ -575,46 +371,20 @@ if [ "${WLOC_RPC_SOURCE:-0}" -ne 1 ]; then
 case "$1" in
 list)
     json_init
-    for method in status configured_access_points restart regenerate_ca firewall_read firewall_validate firewall_save firewall_apply; do
+    for method in status configured_access_points regenerate_ca; do
         json_add_object "$method"
-        case "$method" in
-            firewall_validate|firewall_apply) json_add_string config '';;
-            firewall_save) json_add_string expected_applied_hash '';;
-        esac
         json_close_object
     done
     json_dump
     ;;
 call)
     case "$2" in
-    status) emit_status;;
-    configured_access_points) emit_configured_access_points;;
-    restart)
-        if "$INIT" restart >/dev/null 2>&1; then
-            json_init; json_add_boolean ok 1; json_add_string state restarting; json_dump
-        else
-            json_init; json_add_boolean ok 0; json_add_string error 'Unable to restart the WLOC service.'; json_dump
-        fi
-        ;;
-    regenerate_ca)
-        rpc_regenerate_ca
-        ;;
-    firewall_read) firewall_response;;
-    firewall_validate)
-        firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
-        emit_firewall_validate
-        ;;
-    firewall_save)
-        firewall_request_save || { firewall_rpc_error invalid_request 'An applied firewall revision is required before saving.'; exit 0; }
-        emit_firewall_save "$expected_applied_hash"
-        ;;
-    firewall_apply)
-        firewall_request_config || { echo '{"ok":false,"valid":false,"error":"invalid request","error_code":"invalid_request"}'; exit 0; }
-        emit_firewall_apply
-        ;;
-    *) echo '{"error":"unknown method"}'; exit 1;;
-esac
-;;
+        status) emit_status;;
+        configured_access_points) emit_configured_access_points;;
+        regenerate_ca) rpc_regenerate_ca;;
+        *) echo '{"error":"unknown method"}'; exit 1;;
+    esac
+    ;;
 *) exit 1;;
 esac
 fi

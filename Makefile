@@ -65,9 +65,7 @@ chmod 0644 "$${version_cache}" 2>/dev/null || true
 		/usr/libexec/rpcd/luci.wloc.firewall \
 		/usr/libexec/wloc/update.sh \
 		/usr/libexec/wloc/firewall.sh \
-		/usr/libexec/wloc/firewall-core.sh \
-		/usr/libexec/wloc/migrate-legacy.sh 2>/dev/null || true
-	/usr/libexec/wloc/migrate-legacy.sh >/dev/null 2>&1 || logger -t wloc 'legacy GeoIP configuration migration failed'
+		/usr/libexec/wloc/firewall-core.sh 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
