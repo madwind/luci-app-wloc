@@ -1,11 +1,20 @@
 #!/bin/sh
 
 UPDATER=/usr/libexec/wloc/update.sh
+AUTO=/usr/libexec/wloc/update-auto.sh
+
+read_request() {
+    . /usr/share/libubox/jshn.sh
+    local raw
+    raw="$(cat)"
+    [ -n "$raw" ] || raw='{}'
+    json_load "$raw" 2>/dev/null || json_init
+}
 
 case "$1" in
 list)
     cat <<'JSON'
-{"status":{},"check":{},"install":{},"stop":{}}
+{"status":{},"check":{},"install":{},"stop":{},"settings":{},"set_check":{"enabled":0},"set_auto":{"enabled":0}}
 JSON
     ;;
 call)
@@ -14,6 +23,17 @@ call)
         check) exec "$UPDATER" check;;
         install) exec "$UPDATER" install;;
         stop) exec "$UPDATER" stop;;
+        settings) exec "$AUTO" status;;
+        set_check)
+            read_request
+            json_get_var enabled enabled
+            exec "$AUTO" set-check "$enabled"
+            ;;
+        set_auto)
+            read_request
+            json_get_var enabled enabled
+            exec "$AUTO" set-auto "$enabled"
+            ;;
         *) printf '%s\n' '{"ok":false,"error":"unknown method"}'; exit 1;;
     esac
     ;;
