@@ -249,10 +249,14 @@ routing_rule_present() {
     output="$(ip -"$family" rule show 2>/dev/null)" || return 1
     printf '%s\n' "$output" | awk -v priority="${priority}:" -v mark="$mark" -v mask="$mask" -v table_id="$table_id" '
         $1 == priority {
-            normal = "fwmark " mark "/" mask
-            fullmask = "fwmark " mark
-            table = "lookup " table_id
-            if (index($0, table) && (index($0, normal) || (mask == "0xffffffff" && index($0, fullmask)))) { found = 1; exit }
+            line = $0
+            sub(/^[^:]+:[[:space:]]*/, "", line)
+            gsub(/[[:space:]]+/, " ", line)
+            sub(/^ /, "", line)
+            sub(/ $/, "", line)
+            normal = "from all fwmark " mark "/" mask " lookup " table_id
+            fullmask = "from all fwmark " mark " lookup " table_id
+            if (line == normal || (mask == "0xffffffff" && line == fullmask)) { found = 1; exit }
         }
         END { exit !found }
     '
@@ -269,87 +273,138 @@ routing_route_present() {
     '
 }
 
-routing_remove_family() {
-    local family="$1" prefix="$2" table_id="$3" priority="$4" mark="$5" mask="$6"
+routing_remove_rule_family() {
+    local family="$1" table_id="$2" priority="$3" mark="$4" mask="$5" count=0
     while routing_rule_present "$family" "$priority" "$mark" "$mask" "$table_id"; do
-        ip -"$family" rule del priority "$priority" fwmark "$mark/$mask" lookup "$table_id" >/dev/null 2>&1 || break
+        [ "$count" -lt 64 ] || {
+            routing_set_error "too many matching IPv${family} TPROXY policy rules to remove"
+            return 1
+        }
+        ip -"$family" rule del priority "$priority" fwmark "$mark/$mask" lookup "$table_id" >/dev/null 2>&1 || {
+            routing_set_error "unable to remove the IPv${family} TPROXY policy rule"
+            return 1
+        }
+        count=$((count + 1))
     done
-    ip -"$family" route del local "$prefix" dev lo table "$table_id" >/dev/null 2>&1 || true
 }
 
-routing_apply_family() {
-    local family="$1" prefix="$2" table_id="$3" priority="$4" mark="$5" mask="$6"
+routing_remove_route_family() {
+    local family="$1" prefix="$2" table_id="$3"
+    routing_route_present "$family" "$prefix" "$table_id" || return 0
+    ip -"$family" route del local "$prefix" dev lo table "$table_id" >/dev/null 2>&1 || {
+        routing_set_error "unable to remove the IPv${family} TPROXY local route"
+        return 1
+    }
+}
+
+routing_apply_route_family() {
+    local family="$1" prefix="$2" table_id="$3"
     command -v ip >/dev/null 2>&1 || { routing_set_error 'ip-full is required for transparent proxy routing'; return 1; }
     ip -"$family" route replace local "$prefix" dev lo table "$table_id" >/dev/null 2>&1 || {
         routing_set_error "unable to install the IPv${family} TPROXY local route"
         return 1
     }
+    routing_route_present "$family" "$prefix" "$table_id" || {
+        routing_set_error "IPv${family} TPROXY local route verification failed"
+        return 1
+    }
+}
+
+routing_apply_rule_family() {
+    local family="$1" table_id="$2" priority="$3" mark="$4" mask="$5"
     if ! routing_rule_present "$family" "$priority" "$mark" "$mask" "$table_id"; then
         ip -"$family" rule add priority "$priority" fwmark "$mark/$mask" lookup "$table_id" >/dev/null 2>&1 || {
-            ip -"$family" route del local "$prefix" dev lo table "$table_id" >/dev/null 2>&1 || true
             routing_set_error "unable to install the IPv${family} TPROXY policy rule"
             return 1
         }
     fi
-    routing_route_present "$family" "$prefix" "$table_id" && routing_rule_present "$family" "$priority" "$mark" "$mask" "$table_id" || {
-        routing_remove_family "$family" "$prefix" "$table_id" "$priority" "$mark" "$mask"
-        routing_set_error "IPv${family} TPROXY policy routing verification failed"
+    routing_rule_present "$family" "$priority" "$mark" "$mask" "$table_id" || {
+        routing_set_error "IPv${family} TPROXY policy rule verification failed"
         return 1
     }
 }
 
 routing_apply_current() {
-    routing_apply_family 4 "$ROUTING_V4_PREFIX" "$ROUTING_V4_TABLE" "$ROUTING_V4_PRIORITY" "$ROUTING_V4_MARK" "$ROUTING_V4_MASK" || return 1
+    routing_apply_route_family 4 "$ROUTING_V4_PREFIX" "$ROUTING_V4_TABLE" || return 1
     if [ "$ROUTING_IPV6_ENABLED" -eq 1 ]; then
-        routing_apply_family 6 "$ROUTING_V6_PREFIX" "$ROUTING_V6_TABLE" "$ROUTING_V6_PRIORITY" "$ROUTING_V6_MARK" "$ROUTING_V6_MASK" || {
-            local error="$routing_error"
-            routing_remove_family 4 "$ROUTING_V4_PREFIX" "$ROUTING_V4_TABLE" "$ROUTING_V4_PRIORITY" "$ROUTING_V4_MARK" "$ROUTING_V4_MASK"
-            routing_error="$error"
-            return 1
-        }
+        routing_apply_route_family 6 "$ROUTING_V6_PREFIX" "$ROUTING_V6_TABLE" || return 1
+    fi
+    routing_apply_rule_family 4 "$ROUTING_V4_TABLE" "$ROUTING_V4_PRIORITY" "$ROUTING_V4_MARK" "$ROUTING_V4_MASK" || return 1
+    if [ "$ROUTING_IPV6_ENABLED" -eq 1 ]; then
+        routing_apply_rule_family 6 "$ROUTING_V6_TABLE" "$ROUTING_V6_PRIORITY" "$ROUTING_V6_MARK" "$ROUTING_V6_MASK" || return 1
     fi
 }
 
 routing_remove_current() {
-    [ "$ROUTING_IPV6_ENABLED" -eq 1 ] && routing_remove_family 6 "$ROUTING_V6_PREFIX" "$ROUTING_V6_TABLE" "$ROUTING_V6_PRIORITY" "$ROUTING_V6_MARK" "$ROUTING_V6_MASK"
-    routing_remove_family 4 "$ROUTING_V4_PREFIX" "$ROUTING_V4_TABLE" "$ROUTING_V4_PRIORITY" "$ROUTING_V4_MARK" "$ROUTING_V4_MASK"
+    command -v ip >/dev/null 2>&1 || { routing_set_error 'ip-full is required for transparent proxy routing'; return 1; }
+    routing_remove_rule_family 4 "$ROUTING_V4_TABLE" "$ROUTING_V4_PRIORITY" "$ROUTING_V4_MARK" "$ROUTING_V4_MASK" || return 1
+    if [ "$ROUTING_IPV6_ENABLED" -eq 1 ]; then
+        routing_remove_rule_family 6 "$ROUTING_V6_TABLE" "$ROUTING_V6_PRIORITY" "$ROUTING_V6_MARK" "$ROUTING_V6_MASK" || return 1
+    fi
+    routing_remove_route_family 4 "$ROUTING_V4_PREFIX" "$ROUTING_V4_TABLE" || return 1
+    if [ "$ROUTING_IPV6_ENABLED" -eq 1 ]; then
+        routing_remove_route_family 6 "$ROUTING_V6_PREFIX" "$ROUTING_V6_TABLE" || return 1
+    fi
+}
+
+routing_restore_snapshot() {
+    local snapshot="$1" rollback_file
+    [ -n "$snapshot" ] || return 0
+    rollback_file="${ROUTING_RUNTIME}.rollback.$$"
+    routing_write_atomic "$snapshot" "$rollback_file" || return 1
+    if routing_parse_file "$rollback_file" && routing_apply_current; then
+        rm -f "$rollback_file"
+        return 0
+    fi
+    rm -f "$rollback_file"
+    return 1
 }
 
 routing_apply_file() {
-    local source="$1" locked_here=0 rc=1 old_snapshot='' new_snapshot='' rollback_file
-    local old_valid=0 changed=1 apply_error='' rollback_error=''
+    local source="$1" locked_here=0 rc=1 old_snapshot='' new_snapshot=''
+    local old_valid=0 changed=1 apply_error='' rollback_error='' new_attempted=0
     if [ "${ROUTING_LOCK_HELD:-0}" -ne 1 ]; then routing_lock_acquire || return 1; locked_here=1; fi
     if routing_parse_file "$source"; then
         new_snapshot="$ROUTING_NORMALIZED"
         if routing_write_atomic "$new_snapshot" "$ROUTING_RUNTIME_NEXT"; then
-            if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then
-                old_valid=1
-                old_snapshot="$ROUTING_NORMALIZED"
-                [ "$old_snapshot" = "$new_snapshot" ] && changed=0
-            fi
-            if [ "$old_valid" -eq 1 ] && [ "$changed" -eq 1 ]; then
-                routing_remove_current
-            fi
-            if routing_parse_file "$ROUTING_RUNTIME_NEXT" && routing_apply_current; then
-                if mv -f "$ROUTING_RUNTIME_NEXT" "$ROUTING_RUNTIME"; then
-                    routing_error=''
-                    rc=0
+            if [ -r "$ROUTING_RUNTIME" ]; then
+                if routing_parse_file "$ROUTING_RUNTIME"; then
+                    old_valid=1
+                    old_snapshot="$ROUTING_NORMALIZED"
+                    [ "$old_snapshot" = "$new_snapshot" ] && changed=0
                 else
-                    apply_error='unable to promote the applied routing snapshot'
+                    apply_error="invalid applied routing snapshot: $routing_error"
                 fi
-            else
-                apply_error="$routing_error"
             fi
-            if [ "$rc" -ne 0 ] && [ "$changed" -eq 1 ]; then
+            if [ -z "$apply_error" ] && [ "$old_valid" -eq 1 ] && [ "$changed" -eq 1 ]; then
+                if ! routing_remove_current; then
+                    apply_error="$routing_error"
+                    routing_restore_snapshot "$old_snapshot" || rollback_error="$routing_error"
+                fi
+            fi
+            if [ -z "$apply_error" ]; then
                 if routing_parse_file "$ROUTING_RUNTIME_NEXT"; then
-                    routing_remove_current
+                    new_attempted=1
+                    if routing_apply_current; then
+                        if mv -f "$ROUTING_RUNTIME_NEXT" "$ROUTING_RUNTIME"; then
+                            routing_error=''
+                            rc=0
+                        else
+                            apply_error='unable to promote the applied routing snapshot'
+                        fi
+                    else
+                        apply_error="$routing_error"
+                    fi
+                else
+                    apply_error="$routing_error"
+                fi
+            fi
+            if [ "$rc" -ne 0 ] && [ "$changed" -eq 1 ] && [ "$new_attempted" -eq 1 ]; then
+                if routing_parse_file "$ROUTING_RUNTIME_NEXT"; then
+                    routing_remove_current || rollback_error="${rollback_error:+$rollback_error; }$routing_error"
                 fi
                 if [ "$old_valid" -eq 1 ]; then
-                    rollback_file="${ROUTING_RUNTIME}.rollback.$$"
-                    if routing_write_atomic "$old_snapshot" "$rollback_file" && routing_parse_file "$rollback_file"; then
-                        routing_apply_current || rollback_error="$routing_error"
-                    fi
-                    rm -f "$rollback_file"
+                    routing_restore_snapshot "$old_snapshot" || rollback_error="${rollback_error:+$rollback_error; }$routing_error"
                 fi
             fi
             if [ "$rc" -ne 0 ]; then
@@ -375,27 +430,40 @@ routing_save_file() {
 }
 
 routing_ensure_current() {
-    local locked_here=0 rc=1 source_is_runtime=0 normalized
+    local locked_here=0 rc=1 source_is_runtime=0 normalized cleanup_error write_error
     if [ "${ROUTING_LOCK_HELD:-0}" -ne 1 ]; then routing_lock_acquire || return 1; locked_here=1; fi
-    if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then
+    if [ -r "$ROUTING_RUNTIME" ]; then
+        routing_parse_file "$ROUTING_RUNTIME" || { [ "$locked_here" -eq 0 ] || routing_lock_release; return 1; }
         source_is_runtime=1
     else
-        rm -f "$ROUTING_RUNTIME" >/dev/null 2>&1 || true
         routing_parse_file "$ROUTING_PERSISTENT" || { [ "$locked_here" -eq 0 ] || routing_lock_release; return 1; }
     fi
     normalized="$ROUTING_NORMALIZED"
     if routing_apply_current; then
-        if [ "$source_is_runtime" -eq 1 ] || routing_write_atomic "$normalized" "$ROUTING_RUNTIME"; then routing_error=''; rc=0; else routing_remove_current; fi
+        if [ "$source_is_runtime" -eq 1 ]; then
+            routing_error=''
+            rc=0
+        elif routing_write_atomic "$normalized" "$ROUTING_RUNTIME"; then
+            routing_error=''
+            rc=0
+        else
+            write_error="$routing_error"
+            if ! routing_remove_current; then cleanup_error="$routing_error"; fi
+            routing_error="$write_error"
+            [ -z "$cleanup_error" ] || routing_error="$routing_error; cleanup failed: $cleanup_error"
+        fi
     fi
     [ "$locked_here" -eq 0 ] || routing_lock_release
     return "$rc"
 }
 
 routing_deactivate_locked() {
-    if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then :
-    elif routing_parse_file "$ROUTING_PERSISTENT"; then :
-    else return 1; fi
-    routing_remove_current
+    if [ -r "$ROUTING_RUNTIME" ]; then
+        routing_parse_file "$ROUTING_RUNTIME" || return 1
+    else
+        routing_parse_file "$ROUTING_PERSISTENT" || return 1
+    fi
+    routing_remove_current || return 1
     routing_error=''
 }
 
@@ -410,8 +478,12 @@ routing_deactivate() {
 routing_reset() {
     local locked_here=0 rc=0
     if [ "${ROUTING_LOCK_HELD:-0}" -ne 1 ]; then routing_lock_acquire || return 1; locked_here=1; fi
-    routing_deactivate_locked || rc=1
-    rm -f "$ROUTING_RUNTIME" "$ROUTING_RUNTIME_NEXT" || rc=1
+    if routing_deactivate_locked; then
+        rm -f "$ROUTING_RUNTIME" "$ROUTING_RUNTIME_NEXT" || rc=1
+    else
+        rc=1
+        rm -f "$ROUTING_RUNTIME_NEXT" >/dev/null 2>&1 || true
+    fi
     [ "$locked_here" -eq 0 ] || routing_lock_release
     return "$rc"
 }
@@ -421,9 +493,11 @@ routing_collect_active() {
     ROUTING_ACTIVE=0
     ROUTING_ACTIVE_TEXT=''
     if [ "${ROUTING_LOCK_HELD:-0}" -ne 1 ]; then routing_lock_acquire || return 1; locked_here=1; fi
-    if [ -r "$ROUTING_RUNTIME" ] && routing_parse_file "$ROUTING_RUNTIME"; then :
-    elif routing_parse_file "$ROUTING_PERSISTENT"; then :
-    else [ "$locked_here" -eq 0 ] || routing_lock_release; return 1; fi
+    if [ -r "$ROUTING_RUNTIME" ]; then
+        routing_parse_file "$ROUTING_RUNTIME" || { [ "$locked_here" -eq 0 ] || routing_lock_release; return 1; }
+    else
+        routing_parse_file "$ROUTING_PERSISTENT" || { [ "$locked_here" -eq 0 ] || routing_lock_release; return 1; }
+    fi
     v4_rules="$(ip -4 rule show 2>&1)" || v4_rules='unable to read IPv4 policy rules'
     v4_routes="$(ip -4 route show table "$ROUTING_V4_TABLE" 2>&1)" || v4_routes='unable to read the configured IPv4 routing table'
     ROUTING_ACTIVE_TEXT="# ip -4 rule show
