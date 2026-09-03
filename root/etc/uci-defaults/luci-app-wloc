@@ -4,5 +4,7 @@ uci -q get wloc.main >/dev/null || uci -q set wloc.main=wloc
 uci -q get wloc.main.enabled >/dev/null || uci -q set wloc.main.enabled='0'
 uci -q get wloc.main.listen_port >/dev/null || uci -q set wloc.main.listen_port='61520'
 uci -q get wloc.main.debug >/dev/null || uci -q set wloc.main.debug='0'
+uci -q get wloc.main.update_check_enabled >/dev/null || uci -q set wloc.main.update_check_enabled='0'
+uci -q get wloc.main.wloc_auto_update >/dev/null || uci -q set wloc.main.wloc_auto_update='0'
 uci -q commit wloc
 exit 0
