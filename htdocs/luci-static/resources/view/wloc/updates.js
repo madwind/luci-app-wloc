@@ -44,6 +44,7 @@ function valueRow(label, field) {
 function activeStatus(status) { return [ 'starting', 'running', 'stopping' ].indexOf(status) >= 0; }
 function phaseText(operation) {
     var phase = operation && (operation.phase || operation.status) || '';
+    if (phase === 'starting') return _('Starting update...');
     if (phase === 'downloading') return _('Downloading...');
     if (phase === 'verifying') return _('Verifying...');
     if (phase === 'installing') return _('Installing...');
@@ -74,13 +75,26 @@ return view.extend({
         var status = E('span', { 'aria-live': 'polite' }, _('Loading'));
         var history = E('div', { 'class': 'cbi-section-descr' });
         var checkEnabled = E('input', { 'type': 'checkbox', 'disabled': '' });
+        var scheduleText = E('span', {}, _('Weekly'));
         var autoUpdate = E('input', { 'type': 'checkbox', 'disabled': '' });
         var checkButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Check updates'));
         var updateButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button', 'disabled': '' }, _('Update'));
         var stopButton = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'type': 'button', 'disabled': '' }, _('Stop'));
-        var state = { installed: '', latest: '', available: null, checked: 0, lastUpdate: 0, locked: false, checking: false };
+        var state = { installed: '', latest: '', available: null, checked: 0, lastUpdate: 0, locked: false, checking: false, starting: false };
 
         function setMessage(kind, text) { wlocUi.setState(message, kind, text || ''); }
+        function renderSchedule(result) {
+            var enabled = result && (result.check_enabled === true || result.check_enabled === 1);
+            var scheduled = result && (result.scheduled === true || result.scheduled === 1);
+            var next;
+
+            if (!enabled) next = _('Disabled');
+            else if (!scheduled) next = _('Not scheduled');
+            else if (result.next_check) next = String(result.next_check) + (result.timezone ? ' ' + result.timezone : '');
+            else next = _('Unknown');
+
+            wlocUi.setText(scheduleText, _('Weekly · Next: %s').format(next));
+        }
         function renderVersion() {
             version.replaceChildren(E('code', {}, state.installed || _('Unknown')));
             if (state.latest && state.latest !== state.installed) {
@@ -102,9 +116,9 @@ return view.extend({
         }
         function updateButtons(operation) {
             var active = activeStatus(operation && operation.status);
-            updateButton.disabled = active || state.checking || state.available !== true;
-            stopButton.disabled = !active || operation.phase === 'installing' || operation.status === 'stopping';
-            checkButton.disabled = active || state.checking;
+            updateButton.disabled = state.starting || active || state.checking || state.available !== true;
+            stopButton.disabled = state.starting || !active || operation.phase === 'installing' || operation.status === 'stopping';
+            checkButton.disabled = state.starting || active || state.checking;
         }
         function applyStatus(result) {
             if (!result || result.ok !== true) throw new Error(wlocUi.errorMessage(result, _('Unable to read software update status.')));
@@ -118,6 +132,7 @@ return view.extend({
             state.locked = activeStatus(operation.status);
             renderVersion(); renderHistory();
             if (state.checking) wlocUi.setState(status, 'notice', _('Checking for updates...'));
+            else if (state.starting) wlocUi.setState(status, 'notice', _('Starting update...'));
             else if (activeStatus(operation.status)) wlocUi.setState(status, 'notice', phaseText(operation));
             else if (operation.status === 'failed') wlocUi.setState(status, 'error', operation.error || _('Update failed'));
             else if (operation.status === 'stopped') wlocUi.setState(status, 'notice', _('Stopped'));
@@ -134,6 +149,7 @@ return view.extend({
             autoUpdate.checked = result.wloc === true || result.wloc === 1;
             checkEnabled.disabled = false;
             autoUpdate.disabled = false;
+            renderSchedule(result);
             return result;
         }
         function refresh() {
@@ -142,6 +158,10 @@ return view.extend({
                 if (!state.locked) wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to read software update status.')));
                 return false;
             });
+        }
+        function refreshSettings() {
+            if (!pageVisible) return Promise.resolve();
+            return callSettings().then(applySettings).catch(function() { return false; });
         }
         function runCheck() {
             state.checking = true;
@@ -161,13 +181,18 @@ return view.extend({
             });
         }
         function runUpdate() {
-            if (state.available !== true) return Promise.resolve();
-            updateButton.disabled = true; checkButton.disabled = true;
+            if (state.starting || state.available !== true) return Promise.resolve();
+            state.starting = true;
+            updateButton.disabled = true; checkButton.disabled = true; stopButton.disabled = true;
+            wlocUi.setState(status, 'notice', _('Starting update...'));
+
             return callInstall().then(function(result) {
+                state.starting = false;
                 applyStatus(wlocUi.requireOk(result, _('Unable to start WLOC update.')));
                 setMessage('notice', _('WLOC update started.'));
                 return result;
             }).catch(function(error) {
+                state.starting = false;
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to start WLOC update.')));
                 return refresh();
             });
@@ -216,7 +241,11 @@ return view.extend({
         else setMessage('error', wlocUi.errorMessage(initialSettings, _('Unable to read update settings.')));
 
         poll.add(refresh, 2);
-        window.setInterval(function() { if (pageVisible) renderHistory(); }, 60000);
+        window.setInterval(function() {
+            if (!pageVisible) return;
+            renderHistory();
+            refreshSettings();
+        }, 60000);
         window.addEventListener('pagehide', function() { pageVisible = false; poll.remove(refresh); }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [
@@ -224,7 +253,7 @@ return view.extend({
             E('div', { 'class': 'cbi-map-descr' }, _('Check WLOC on demand or weekly. Automatic update only installs a version already found by a check.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Update checks')),
-                valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', _('Weekly') ])),
+                valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', scheduleText ])),
                 valueRow(_('Actions'), checkButton),
                 message
             ]),
