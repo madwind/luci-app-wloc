@@ -13,9 +13,7 @@ API_URL="https://api.github.com/repos/$REPO/releases/latest"
 UCLIENT_FETCH=/bin/uclient-fetch
 UPDATER=/usr/libexec/wloc/update.sh
 
-trim() {
-    printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-}
+trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 
 cached_installed_version() {
     local version
@@ -29,9 +27,7 @@ installed_version() {
     local line token
     line="$(apk list -I "$PACKAGE" 2>/dev/null | head -n 1)"
     token="${line%% *}"
-    case "$token" in
-        "$PACKAGE"-*) printf '%s\n' "${token#"$PACKAGE"-}";;
-    esac
+    case "$token" in "$PACKAGE"-*) printf '%s\n' "${token#"$PACKAGE"-}";; esac
 }
 
 board_target() {
@@ -50,9 +46,7 @@ asset_suffix() {
     printf '%s\n' "$(printf '%s' "$target" | tr '/' '-')"
 }
 
-version_relation() {
-    apk version -t "$1" "$2" 2>/dev/null | tr -d '\r\n'
-}
+version_relation() { apk version -t "$1" "$2" 2>/dev/null | tr -d '\r\n'; }
 
 fetch_to() {
     local url="$1" path="$2"
@@ -62,22 +56,10 @@ fetch_to() {
 }
 
 state_defaults() {
-    st_status=idle
-    st_phase=''
-    st_pid=0
-    st_started=0
-    st_finished=0
-    st_installed=''
-    st_latest=''
-    st_available=''
-    st_checked=0
-    st_check_ok=''
-    st_last_check_error=''
-    st_last_update=0
-    st_updated=0
-    st_post_check_error=''
-    st_error=''
-    st_message=''
+    st_status=idle; st_phase=''; st_pid=0; st_started=0; st_finished=0
+    st_installed=''; st_latest=''; st_available=''; st_checked=0; st_check_ok=''
+    st_last_check_error=''; st_last_update=0; st_updated=0; st_post_check_error=''
+    st_error=''; st_message=''; st_release_tag=''; st_asset=''
 }
 
 load_state() {
@@ -100,15 +82,13 @@ load_state() {
         json_get_var st_post_check_error post_check_error
         json_get_var st_error error
         json_get_var st_message message
+        json_get_var st_release_tag release_tag
+        json_get_var st_asset asset
     fi
     [ -n "$st_status" ] || st_status=idle
-
     cached="$(cached_installed_version 2>/dev/null || true)"
     if [ -n "$cached" ]; then
-        case "$st_status" in
-            starting|running|stopping) [ -n "$st_installed" ] || st_installed="$cached";;
-            *) st_installed="$cached";;
-        esac
+        case "$st_status" in starting|running|stopping) [ -n "$st_installed" ] || st_installed="$cached";; *) st_installed="$cached";; esac
     fi
 }
 
@@ -138,30 +118,20 @@ save_state() {
     [ -z "$st_post_check_error" ] || json_add_string post_check_error "$st_post_check_error"
     [ -z "$st_error" ] || json_add_string error "$st_error"
     [ -z "$st_message" ] || json_add_string message "$st_message"
+    [ -z "$st_release_tag" ] || json_add_string release_tag "$st_release_tag"
+    [ -z "$st_asset" ] || json_add_string asset "$st_asset"
     write_json_state
 }
 
-process_alive() {
-    case "$1" in ''|*[!0-9]*) return 1;; esac
-    [ "$1" -gt 1 ] || return 1
-    kill -0 "$1" >/dev/null 2>&1
-}
-
-operation_active() {
-    case "$st_status" in starting|running|stopping) process_alive "$st_pid";; *) return 1;; esac
-}
+process_alive() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -gt 1 ] && kill -0 "$1" >/dev/null 2>&1; }
+operation_active() { case "$st_status" in starting|running|stopping) process_alive "$st_pid";; *) return 1;; esac; }
 
 normalize_stale_worker() {
     case "$st_status" in
         starting|running|stopping)
-            case "$st_pid" in ''|*[!0-9]*|0|1) return 0;; esac
             if ! process_alive "$st_pid"; then
-                st_status=failed
-                st_phase=failed
-                st_finished="$(date +%s)"
-                st_error='The WLOC update worker exited unexpectedly.'
-                st_message='Update failed'
-                st_pid=0
+                st_status=failed; st_phase=failed; st_finished="$(date +%s)"; st_pid=0
+                st_error='The WLOC update worker exited unexpectedly.'; st_message='Update failed'
                 save_state || true
             fi
             ;;
@@ -169,9 +139,7 @@ normalize_stale_worker() {
 }
 
 emit_status() {
-    load_state
-    normalize_stale_worker
-
+    load_state; normalize_stale_worker
     json_init
     json_add_boolean ok 1
     [ -z "$st_installed" ] || json_add_string installed_version "$st_installed"
@@ -195,364 +163,155 @@ emit_status() {
     json_dump
 }
 
-emit_error() {
-    json_init
-    json_add_boolean ok 0
-    json_add_string error "$1"
-    json_dump
-}
+emit_error() { json_init; json_add_boolean ok 0; json_add_string error "$1"; json_dump; }
 
 probe_release() {
     local release_json sha_file relation
-    PROBE_OK=0
-    PROBE_ERROR=''
-    PROBE_INSTALLED="$(cached_installed_version 2>/dev/null || true)"
+    PROBE_OK=0; PROBE_ERROR=''; PROBE_INSTALLED="$(cached_installed_version 2>/dev/null || true)"
     [ -n "$PROBE_INSTALLED" ] || PROBE_INSTALLED="$(installed_version)"
-    PROBE_LATEST=''
-    PROBE_AVAILABLE=''
-    PROBE_TAG=''
-    PROBE_SUFFIX=''
-    PROBE_ASSET=''
-
-    [ -n "$PROBE_INSTALLED" ] || {
-        PROBE_ERROR='Unable to determine installed WLOC version.'
-        return 1
-    }
-    PROBE_SUFFIX="$(asset_suffix)" || {
-        PROBE_ERROR='Unable to determine OpenWrt target.'
-        return 1
-    }
-
-    mkdir -p "$STATE_DIR" || {
-        PROBE_ERROR='Unable to create the WLOC update directory.'
-        return 1
-    }
+    PROBE_LATEST=''; PROBE_AVAILABLE=''; PROBE_TAG=''; PROBE_SUFFIX=''; PROBE_ASSET=''
+    [ -n "$PROBE_INSTALLED" ] || { PROBE_ERROR='Unable to determine installed WLOC version.'; return 1; }
+    PROBE_SUFFIX="$(asset_suffix)" || { PROBE_ERROR='Unable to determine OpenWrt target.'; return 1; }
+    mkdir -p "$STATE_DIR" || { PROBE_ERROR='Unable to create the WLOC update directory.'; return 1; }
     release_json="$STATE_DIR/release.json.$$"
-    if ! fetch_to "$API_URL" "$release_json"; then
-        rm -f "$release_json"
-        PROBE_ERROR='Unable to fetch the latest WLOC release metadata.'
-        return 1
-    fi
-    json_load_file "$release_json" 2>/dev/null || {
-        rm -f "$release_json"
-        PROBE_ERROR='The latest WLOC release metadata is invalid.'
-        return 1
-    }
+    if ! fetch_to "$API_URL" "$release_json"; then rm -f "$release_json"; PROBE_ERROR='Unable to fetch the latest WLOC release metadata.'; return 1; fi
+    json_load_file "$release_json" 2>/dev/null || { rm -f "$release_json"; PROBE_ERROR='The latest WLOC release metadata is invalid.'; return 1; }
     rm -f "$release_json"
     json_get_var PROBE_TAG tag_name
-    case "$PROBE_TAG" in
-        v*) PROBE_LATEST="${PROBE_TAG#v}";;
-        *) PROBE_ERROR='The latest WLOC release tag is invalid.'; return 1;;
-    esac
-
+    case "$PROBE_TAG" in v*) PROBE_LATEST="${PROBE_TAG#v}";; *) PROBE_ERROR='The latest WLOC release tag is invalid.'; return 1;; esac
     PROBE_ASSET="$PACKAGE-$PROBE_LATEST-$PROBE_SUFFIX.apk"
     sha_file="$STATE_DIR/check.sha256.$$"
     if ! fetch_to "https://github.com/$REPO/releases/download/$PROBE_TAG/$PROBE_ASSET.sha256" "$sha_file"; then
-        rm -f "$sha_file"
-        PROBE_ERROR="The latest release does not provide a package for target $PROBE_SUFFIX."
-        return 1
+        rm -f "$sha_file"; PROBE_ERROR="The latest release does not provide a package for target $PROBE_SUFFIX."; return 1
     fi
     rm -f "$sha_file"
-
     relation="$(version_relation "$PROBE_LATEST" "$PROBE_INSTALLED")"
-    case "$relation" in
-        '>') PROBE_AVAILABLE=1;;
-        '='|'<') PROBE_AVAILABLE=0;;
-        *) PROBE_ERROR='Unable to compare WLOC package versions.'; return 1;;
-    esac
+    case "$relation" in '>') PROBE_AVAILABLE=1;; '='|'<') PROBE_AVAILABLE=0;; *) PROBE_ERROR='Unable to compare WLOC package versions.'; return 1;; esac
     PROBE_OK=1
-    return 0
 }
 
 apply_probe() {
-    st_checked="$(date +%s)"
-    st_installed="$PROBE_INSTALLED"
+    st_checked="$(date +%s)"; st_installed="$PROBE_INSTALLED"
     if [ "$PROBE_OK" -eq 1 ]; then
-        st_check_ok=1
-        st_latest="$PROBE_LATEST"
-        st_available="$PROBE_AVAILABLE"
-        st_last_check_error=''
+        st_check_ok=1; st_latest="$PROBE_LATEST"; st_available="$PROBE_AVAILABLE"
+        st_release_tag="$PROBE_TAG"; st_asset="$PROBE_ASSET"; st_last_check_error=''
     else
-        st_check_ok=0
-        st_last_check_error="$PROBE_ERROR"
+        st_check_ok=0; st_last_check_error="$PROBE_ERROR"
     fi
 }
 
 check_update() {
     load_state
-    if operation_active; then
-        emit_error 'A WLOC update is already in progress.'
-        return 1
-    fi
-    st_status=idle
-    st_phase=''
-    st_error=''
-    st_message=''
-    st_updated=0
-    st_finished=0
-    if probe_release; then
-        apply_probe
-        save_state || true
-        emit_status
-        return 0
-    fi
-    apply_probe
-    save_state || true
-    emit_error "$PROBE_ERROR"
-    return 1
+    if operation_active; then emit_error 'A WLOC update is already in progress.'; return 1; fi
+    st_status=idle; st_phase=''; st_error=''; st_message=''; st_updated=0; st_finished=0
+    if probe_release; then apply_probe; save_state || true; emit_status; return 0; fi
+    apply_probe; save_state || true; emit_error "$PROBE_ERROR"; return 1
 }
 
-set_phase() {
-    st_status=running
-    st_phase="$1"
-    st_pid=$$
-    st_message="$2"
-    st_error=''
-    save_state || return 1
-}
+set_phase() { st_status=running; st_phase="$1"; st_pid=$$; st_message="$2"; st_error=''; save_state; }
 
 worker_fail() {
-    st_status=failed
-    st_phase=failed
-    st_finished="$(date +%s)"
-    st_error="$1"
-    st_message='Update failed'
-    st_pid=0
-    st_updated=0
-    save_state || true
-    rmdir "$LOCK" 2>/dev/null || true
-    return 1
+    st_status=failed; st_phase=failed; st_finished="$(date +%s)"; st_error="$1"; st_message='Update failed'
+    st_pid=0; st_updated=0; save_state || true; rmdir "$LOCK" 2>/dev/null || true; return 1
 }
 
 worker_done() {
     local updated="$1"
-    st_status=done
-    st_phase=done
-    st_finished="$(date +%s)"
-    st_pid=0
-    st_updated="$updated"
-    st_error=''
-    st_message="$2"
-    st_installed="$(cached_installed_version 2>/dev/null || true)"
-    [ -n "$st_installed" ] || st_installed="$(installed_version)"
+    st_status=done; st_phase=done; st_finished="$(date +%s)"; st_pid=0; st_updated="$updated"; st_error=''; st_message="$2"
+    st_installed="$(cached_installed_version 2>/dev/null || true)"; [ -n "$st_installed" ] || st_installed="$(installed_version)"
     if [ -n "$st_installed" ] && [ -n "$st_latest" ]; then
-        case "$(version_relation "$st_latest" "$st_installed")" in
-            '>') st_available=1;;
-            '='|'<') st_available=0;;
-        esac
+        case "$(version_relation "$st_latest" "$st_installed")" in '>') st_available=1;; '='|'<') st_available=0;; esac
     fi
     [ "$updated" -eq 1 ] && st_last_update="$st_finished"
-    save_state || true
-    rmdir "$LOCK" 2>/dev/null || true
-    return 0
+    save_state || true; rmdir "$LOCK" 2>/dev/null || true
 }
 
 worker_update() {
     local apk sha_file expected actual install_log detail
     trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
-    load_state
-    st_pid=$$
-
-    set_phase checking 'Checking WLOC release' || return 1
-    if ! probe_release; then
-        apply_probe
-        worker_fail "$PROBE_ERROR"
-        return 1
-    fi
-    apply_probe
-    save_state || true
-    if [ "$PROBE_AVAILABLE" -ne 1 ]; then
-        worker_done 0 'WLOC is already up to date'
-        return 0
-    fi
-
-    apk="$STATE_DIR/$PROBE_ASSET.tmp.$$"
-    sha_file="$apk.sha256"
+    load_state; st_pid=$$
+    [ "$st_check_ok" = 1 ] && [ "$st_available" = 1 ] && [ -n "$st_release_tag" ] && [ -n "$st_asset" ] || {
+        worker_fail 'No checked WLOC update is available. Run Check updates first.'; return 1;
+    }
+    apk="$STATE_DIR/$st_asset.tmp.$$"; sha_file="$apk.sha256"
     set_phase downloading 'Downloading WLOC package' || return 1
-    if ! fetch_to "https://github.com/$REPO/releases/download/$PROBE_TAG/$PROBE_ASSET" "$apk" || \
-       ! fetch_to "https://github.com/$REPO/releases/download/$PROBE_TAG/$PROBE_ASSET.sha256" "$sha_file"; then
-        rm -f "$apk" "$sha_file"
-        worker_fail 'Unable to download the WLOC update package.'
-        return 1
+    if ! fetch_to "https://github.com/$REPO/releases/download/$st_release_tag/$st_asset" "$apk" || \
+       ! fetch_to "https://github.com/$REPO/releases/download/$st_release_tag/$st_asset.sha256" "$sha_file"; then
+        rm -f "$apk" "$sha_file"; worker_fail 'Unable to download the WLOC update package.'; return 1
     fi
-
     set_phase verifying 'Verifying WLOC package' || return 1
     expected="$(awk '{print $1; exit}' "$sha_file" | tr 'A-F' 'a-f')"
     actual="$(sha256sum "$apk" 2>/dev/null | awk '{print $1}' | tr 'A-F' 'a-f')"
     if [ -z "$expected" ] || [ -z "$actual" ] || [ "$expected" != "$actual" ]; then
-        rm -f "$apk" "$sha_file"
-        worker_fail 'WLOC update SHA256 verification failed.'
-        return 1
+        rm -f "$apk" "$sha_file"; worker_fail 'WLOC update SHA256 verification failed.'; return 1
     fi
-
     set_phase installing 'Installing WLOC package' || return 1
     install_log="$STATE_DIR/apk-install.log.$$"
     if ! apk add --allow-untrusted --upgrade "$apk" >"$install_log" 2>&1; then
         detail="$(tail -n 6 "$install_log" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')"
-        rm -f "$apk" "$sha_file" "$install_log"
-        worker_fail "APK install failed: $(trim "$detail")"
-        return 1
+        rm -f "$apk" "$sha_file" "$install_log"; worker_fail "APK install failed: $(trim "$detail")"; return 1
     fi
     rm -f "$apk" "$sha_file" "$install_log"
-
     /etc/init.d/wloc restart >/dev/null 2>&1 || true
-    st_installed="$(cached_installed_version 2>/dev/null || true)"
-    [ -n "$st_installed" ] || st_installed="$(installed_version)"
+    st_installed="$(cached_installed_version 2>/dev/null || true)"; [ -n "$st_installed" ] || st_installed="$(installed_version)"
     st_post_check_error=''
-    if [ -z "$st_installed" ]; then
-        st_post_check_error='Unable to verify the installed WLOC version after update.'
-    elif [ -n "$st_latest" ] && [ "$(version_relation "$st_installed" "$st_latest")" = '<' ]; then
-        st_post_check_error='The installed WLOC version is still older than the release version.'
-    fi
+    if [ -z "$st_installed" ]; then st_post_check_error='Unable to verify the installed WLOC version after update.'
+    elif [ -n "$st_latest" ] && [ "$(version_relation "$st_installed" "$st_latest")" = '<' ]; then st_post_check_error='The installed WLOC version is still older than the checked release version.'; fi
     worker_done 1 'WLOC updated successfully'
 }
 
 start_update() {
     local pid
-    mkdir -p "$STATE_DIR" || {
-        emit_error 'Unable to create the WLOC update directory.'
-        return 1
-    }
+    mkdir -p "$STATE_DIR" || { emit_error 'Unable to create the WLOC update directory.'; return 1; }
     load_state
-    if operation_active; then
-        emit_status
-        return 0
-    fi
+    if operation_active; then emit_status; return 0; fi
+    [ "$st_check_ok" = 1 ] && [ "$st_available" = 1 ] && [ -n "$st_release_tag" ] && [ -n "$st_asset" ] || {
+        emit_error 'No checked WLOC update is available. Run Check updates first.'; return 1;
+    }
     rmdir "$LOCK" 2>/dev/null || true
-    if ! mkdir "$LOCK" 2>/dev/null; then
-        emit_error 'Another WLOC update is starting.'
-        return 1
-    fi
-
-    st_status=starting
-    st_phase=starting
-    st_started="$(date +%s)"
-    st_finished=0
-    st_pid=0
-    st_installed="$(cached_installed_version 2>/dev/null || true)"
-    st_updated=0
-    st_post_check_error=''
-    st_error=''
-    st_message='Update started'
-    save_state || {
-        rmdir "$LOCK" 2>/dev/null || true
-        emit_error 'Unable to save WLOC update state.'
-        return 1
-    }
-
-    "$UPDATER" worker </dev/null >>"$LOG" 2>&1 &
-    pid=$!
-    case "$pid" in ''|*[!0-9]*|0|1)
-        rmdir "$LOCK" 2>/dev/null || true
-        st_status=failed
-        st_phase=failed
-        st_error='Unable to start the WLOC update worker.'
-        save_state || true
-        emit_error "$st_error"
-        return 1
-        ;;
-    esac
-
+    mkdir "$LOCK" 2>/dev/null || { emit_error 'Another WLOC update is starting.'; return 1; }
+    st_status=starting; st_phase=starting; st_started="$(date +%s)"; st_finished=0; st_pid=0; st_updated=0
+    st_post_check_error=''; st_error=''; st_message='Update started'
+    save_state || { rmdir "$LOCK" 2>/dev/null || true; emit_error 'Unable to save WLOC update state.'; return 1; }
+    "$UPDATER" worker </dev/null >>"$LOG" 2>&1 & pid=$!
+    case "$pid" in ''|*[!0-9]*|0|1) rmdir "$LOCK" 2>/dev/null || true; st_status=failed; st_phase=failed; st_error='Unable to start the WLOC update worker.'; save_state || true; emit_error "$st_error"; return 1;; esac
     load_state
-    if [ "$st_status" = starting ] && [ "$st_pid" -le 1 ] 2>/dev/null; then
-        st_pid="$pid"
-        save_state || true
-    fi
+    if [ "$st_status" = starting ] && [ "$st_pid" -le 1 ] 2>/dev/null; then st_pid="$pid"; save_state || true; fi
     emit_status
 }
 
 worker_matches() {
     local command
     command="$(tr '\000' ' ' <"/proc/$1/cmdline" 2>/dev/null || true)"
-    printf '%s' "$command" | grep -Fq "$UPDATER" || return 1
-    printf '%s' "$command" | grep -Fq 'worker'
+    printf '%s' "$command" | grep -Fq "$UPDATER" && printf '%s' "$command" | grep -Fq 'worker'
 }
 
-collect_children() {
-    local parent child
-    parent="$1"
-    for child in $(cat "/proc/$parent/task/$parent/children" 2>/dev/null); do
-        collect_children "$child"
-        printf '%s\n' "$child"
-    done
-}
-
-any_alive() {
-    local pid child
-    pid="$1"
-    shift
-    process_alive "$pid" && return 0
-    for child in "$@"; do
-        process_alive "$child" && return 0
-    done
-    return 1
-}
+collect_children() { local parent="$1" child; for child in $(cat "/proc/$parent/task/$parent/children" 2>/dev/null); do collect_children "$child"; printf '%s\n' "$child"; done; }
+any_alive() { local pid="$1" child; shift; process_alive "$pid" && return 0; for child in "$@"; do process_alive "$child" && return 0; done; return 1; }
 
 terminate_tree() {
-    local pid children child attempt
-    pid="$1"
+    local pid="$1" children child attempt=0
     children="$(collect_children "$pid")"
     for child in $children; do kill -TERM "$child" >/dev/null 2>&1 || true; done
     kill -TERM "$pid" >/dev/null 2>&1 || true
-    attempt=0
-    while [ "$attempt" -lt 3 ]; do
-        set -- $children
-        any_alive "$pid" "$@" || return 0
-        sleep 1
-        attempt=$((attempt + 1))
-    done
+    while [ "$attempt" -lt 3 ]; do set -- $children; any_alive "$pid" "$@" || return 0; sleep 1; attempt=$((attempt + 1)); done
     for child in $children; do process_alive "$child" && kill -KILL "$child" >/dev/null 2>&1 || true; done
     process_alive "$pid" && kill -KILL "$pid" >/dev/null 2>&1 || true
-    set -- $children
-    ! any_alive "$pid" "$@"
+    set -- $children; ! any_alive "$pid" "$@"
 }
 
 stop_update() {
     local pid
     load_state
     case "$st_status" in starting|running|stopping) ;; *) emit_error 'No active WLOC update to stop.'; return 1;; esac
-    pid="$st_pid"
-    process_alive "$pid" || {
-        emit_error 'No active WLOC update to stop.'
-        return 1
-    }
-    if [ "$st_phase" = installing ]; then
-        emit_error 'WLOC package installation cannot be stopped safely.'
-        return 1
-    fi
-    worker_matches "$pid" || {
-        emit_error 'Refusing to stop an unexpected process.'
-        return 1
-    }
-
-    st_status=stopping
-    st_phase=stopping
-    st_message='Stopping update'
-    st_error=''
-    save_state || true
-
-    if ! terminate_tree "$pid"; then
-        st_status=failed
-        st_phase=failed
-        st_finished="$(date +%s)"
-        st_error='Unable to stop the WLOC update worker.'
-        st_message='Update failed'
-        save_state || true
-        emit_error "$st_error"
-        return 1
-    fi
-
+    pid="$st_pid"; process_alive "$pid" || { emit_error 'No active WLOC update to stop.'; return 1; }
+    [ "$st_phase" != installing ] || { emit_error 'WLOC package installation cannot be stopped safely.'; return 1; }
+    worker_matches "$pid" || { emit_error 'Refusing to stop an unexpected process.'; return 1; }
+    st_status=stopping; st_phase=stopping; st_message='Stopping update'; st_error=''; save_state || true
+    if ! terminate_tree "$pid"; then st_status=failed; st_phase=failed; st_finished="$(date +%s)"; st_error='Unable to stop the WLOC update worker.'; st_message='Update failed'; save_state || true; emit_error "$st_error"; return 1; fi
     rm -f "$STATE_DIR"/*.tmp."$pid".* "$STATE_DIR"/apk-install.log."$pid" 2>/dev/null || true
     rmdir "$LOCK" 2>/dev/null || true
-    st_status=stopped
-    st_phase=stopped
-    st_finished="$(date +%s)"
-    st_pid=0
-    st_updated=0
-    st_error=''
-    st_message='Update stopped'
-    save_state || true
-    emit_status
+    st_status=stopped; st_phase=stopped; st_finished="$(date +%s)"; st_pid=0; st_updated=0; st_error=''; st_message='Update stopped'; save_state || true; emit_status
 }
 
 case "$1" in
