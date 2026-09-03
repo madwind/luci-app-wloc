@@ -100,7 +100,9 @@ emit_status() {
     [ -f "$CRONTAB" ] && grep -Fq "# $TAG" "$CRONTAB" && scheduled=1
     if [ "$scheduled" = 1 ]; then
         next_check="$(next_check_local 2>/dev/null || true)"
-        timezone="$(date +%Z 2>/dev/null || true)"
+        if [ -n "$next_check" ]; then
+            timezone="$(date -d "$next_check:00" +%Z 2>/dev/null || date +%Z 2>/dev/null || true)"
+        fi
     fi
     json_init
     json_add_boolean ok 1
