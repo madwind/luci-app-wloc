@@ -279,20 +279,38 @@ worker_update() {
     if [ -z "$expected" ] || [ -z "$actual" ] || [ "$expected" != "$actual" ]; then
         rm -f "$apk" "$sha_file"; worker_fail 'WLOC update SHA256 verification failed.'; return 1
     fi
+    if ! apk --network=no add --allow-untrusted --simulate --upgrade "$apk" >/dev/null 2>&1; then
+        rm -f "$apk" "$sha_file"; worker_fail 'WLOC update dependencies cannot be satisfied without network access after download.'; return 1
+    fi
 
     wloc_daemon_running && was_running=1
+    if [ "$was_running" -eq 1 ]; then
+        set_phase stopping 'Stopping WLOC before package installation' || return 1
+        if ! /etc/init.d/wloc stop >/dev/null 2>&1; then
+            rm -f "$apk" "$sha_file"; worker_fail 'Unable to stop WLOC before package installation.'; return 1
+        fi
+    fi
+
     set_phase installing 'Installing WLOC package' || return 1
     install_log="$STATE_DIR/apk-install.log.$$"
-    if ! apk add --allow-untrusted --upgrade "$apk" >"$install_log" 2>&1; then
+    if ! apk --network=no add --allow-untrusted --upgrade "$apk" >"$install_log" 2>&1; then
         detail="$(tail -n 6 "$install_log" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g')"
-        rm -f "$apk" "$sha_file" "$install_log"; worker_fail "APK install failed: $(trim "$detail")"; return 1
+        rm -f "$apk" "$sha_file" "$install_log"
+        if [ "$was_running" -eq 1 ]; then
+            /etc/init.d/wloc start >/dev/null 2>&1 || true
+            if ! wait_wloc_daemon; then
+                /etc/init.d/wloc stop >/dev/null 2>&1 || true
+                detail="$(trim "$detail") WLOC did not recover after the failed package install."
+            fi
+        fi
+        worker_fail "APK install failed: $(trim "$detail")"; return 1
     fi
     rm -f "$apk" "$sha_file" "$install_log"
 
     st_post_check_error=''
     if [ "$was_running" -eq 1 ]; then
-        set_phase restarting 'Restarting WLOC once after package update' || return 1
-        /etc/init.d/wloc restart >/dev/null 2>&1 || true
+        set_phase restarting 'Starting WLOC after package update' || return 1
+        /etc/init.d/wloc start >/dev/null 2>&1 || true
         if ! wait_wloc_daemon; then
             /etc/init.d/wloc stop >/dev/null 2>&1 || true
             append_post_error 'WLOC daemon did not remain running after update; service was stopped to prevent a respawn loop.'
