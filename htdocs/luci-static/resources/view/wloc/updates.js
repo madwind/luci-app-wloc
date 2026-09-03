@@ -111,7 +111,8 @@ return view.extend({
             var operation = result.operation || {};
             if (result.installed_version) state.installed = String(result.installed_version);
             if (result.latest_version) state.latest = String(result.latest_version);
-            if (result.update_available !== undefined && result.update_available !== null) state.available = result.update_available === true;
+            if (result.check_ok === false) state.available = null;
+            else if (result.update_available !== undefined && result.update_available !== null) state.available = result.update_available === true;
             if (result.checked != null) state.checked = Number(result.checked) || 0;
             if (result.last_update != null) state.lastUpdate = Number(result.last_update) || 0;
             state.locked = activeStatus(operation.status);
@@ -154,6 +155,7 @@ return view.extend({
                 return result;
             }).catch(function(error) {
                 state.checking = false;
+                state.available = null;
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
                 return refresh();
             });
