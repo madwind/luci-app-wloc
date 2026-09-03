@@ -129,6 +129,8 @@ return view.extend({
             else if (result.update_available !== undefined && result.update_available !== null) state.available = result.update_available === true;
             if (result.checked != null) state.checked = Number(result.checked) || 0;
             if (result.last_update != null) state.lastUpdate = Number(result.last_update) || 0;
+            if (state.starting && (activeStatus(operation.status) || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0))
+                state.starting = false;
             state.locked = activeStatus(operation.status);
             renderVersion(); renderHistory();
             if (state.checking) wlocUi.setState(status, 'notice', _('Checking for updates...'));
@@ -187,8 +189,9 @@ return view.extend({
             wlocUi.setState(status, 'notice', _('Starting update...'));
 
             return callInstall().then(function(result) {
-                state.starting = false;
-                applyStatus(wlocUi.requireOk(result, _('Unable to start WLOC update.')));
+                result = wlocUi.requireOk(result, _('Unable to start WLOC update.'));
+                var operation = result.operation || {};
+                wlocUi.setState(status, 'notice', activeStatus(operation.status) ? phaseText(operation) : _('Starting update...'));
                 setMessage('notice', _('WLOC update started.'));
                 return result;
             }).catch(function(error) {
