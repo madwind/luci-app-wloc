@@ -55,6 +55,32 @@ fetch_to() {
     "$UCLIENT_FETCH" -T 20 -O "$path" "$url" >/dev/null 2>&1
 }
 
+wloc_daemon_running() {
+    local raw running
+    raw="$(ubus -S call service list '{"name":"wloc"}' 2>/dev/null)" || return 1
+    json_load "$raw" 2>/dev/null || return 1
+    json_select wloc 2>/dev/null || return 1
+    json_select instances 2>/dev/null || return 1
+    json_select daemon 2>/dev/null || return 1
+    json_get_var running running
+    [ "$running" = 1 ]
+}
+
+wait_wloc_daemon() {
+    local stable=0 count=0
+    while [ "$count" -lt 6 ]; do
+        if wloc_daemon_running; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 3 ] && return 0
+        else
+            stable=0
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+    return 1
+}
+
 state_defaults() {
     st_status=idle; st_phase=''; st_pid=0; st_started=0; st_finished=0
     st_installed=''; st_latest=''; st_available=''; st_checked=0; st_check_ok=''
@@ -226,8 +252,16 @@ worker_done() {
     save_state || true; rmdir "$LOCK" 2>/dev/null || true
 }
 
+append_post_error() {
+    if [ -n "$st_post_check_error" ]; then
+        st_post_check_error="$st_post_check_error $1"
+    else
+        st_post_check_error="$1"
+    fi
+}
+
 worker_update() {
-    local apk sha_file expected actual install_log detail
+    local apk sha_file expected actual install_log detail was_running=0
     trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
     load_state; st_pid=$$
     [ "$st_check_ok" = 1 ] && [ "$st_available" = 1 ] && [ -n "$st_release_tag" ] && [ -n "$st_asset" ] || {
@@ -245,6 +279,8 @@ worker_update() {
     if [ -z "$expected" ] || [ -z "$actual" ] || [ "$expected" != "$actual" ]; then
         rm -f "$apk" "$sha_file"; worker_fail 'WLOC update SHA256 verification failed.'; return 1
     fi
+
+    wloc_daemon_running && was_running=1
     set_phase installing 'Installing WLOC package' || return 1
     install_log="$STATE_DIR/apk-install.log.$$"
     if ! apk add --allow-untrusted --upgrade "$apk" >"$install_log" 2>&1; then
@@ -252,11 +288,20 @@ worker_update() {
         rm -f "$apk" "$sha_file" "$install_log"; worker_fail "APK install failed: $(trim "$detail")"; return 1
     fi
     rm -f "$apk" "$sha_file" "$install_log"
-    /etc/init.d/wloc restart >/dev/null 2>&1 || true
-    st_installed="$(cached_installed_version 2>/dev/null || true)"; [ -n "$st_installed" ] || st_installed="$(installed_version)"
+
     st_post_check_error=''
-    if [ -z "$st_installed" ]; then st_post_check_error='Unable to verify the installed WLOC version after update.'
-    elif [ -n "$st_latest" ] && [ "$(version_relation "$st_installed" "$st_latest")" = '<' ]; then st_post_check_error='The installed WLOC version is still older than the checked release version.'; fi
+    if [ "$was_running" -eq 1 ]; then
+        set_phase restarting 'Restarting WLOC once after package update' || return 1
+        /etc/init.d/wloc restart >/dev/null 2>&1 || true
+        if ! wait_wloc_daemon; then
+            /etc/init.d/wloc stop >/dev/null 2>&1 || true
+            append_post_error 'WLOC daemon did not remain running after update; service was stopped to prevent a respawn loop.'
+        fi
+    fi
+
+    st_installed="$(cached_installed_version 2>/dev/null || true)"; [ -n "$st_installed" ] || st_installed="$(installed_version)"
+    if [ -z "$st_installed" ]; then append_post_error 'Unable to verify the installed WLOC version after update.'
+    elif [ -n "$st_latest" ] && [ "$(version_relation "$st_installed" "$st_latest")" = '<' ]; then append_post_error 'The installed WLOC version is still older than the checked release version.'; fi
     worker_done 1 'WLOC updated successfully'
 }
 
