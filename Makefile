@@ -64,11 +64,13 @@ chmod 0644 "$${version_cache}" 2>/dev/null || true
 		/usr/libexec/rpcd/luci.wloc.defaults \
 		/usr/libexec/rpcd/luci.wloc.firewall \
 		/usr/libexec/wloc/update.sh \
+		/usr/libexec/wloc/update-auto.sh \
 		/usr/libexec/wloc/firewall.sh \
 		/usr/libexec/wloc/firewall-core.sh 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
+	/usr/libexec/wloc/update-auto.sh sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
 	exit 0
 }
 exit 0
@@ -79,7 +81,10 @@ define Package/luci-app-wloc/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	case "$${1:-remove}" in
 		upgrade) ;;
-		*) rm -f /usr/share/wloc/installed-version;;
+		*)
+			[ -x /usr/libexec/wloc/update-auto.sh ] && /usr/libexec/wloc/update-auto.sh remove >/dev/null 2>&1 || true
+			rm -f /usr/share/wloc/installed-version
+			;;
 	esac
 	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
 }
