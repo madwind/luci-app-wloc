@@ -118,7 +118,7 @@ return baseclass.extend({
                 section: section,
                 iface: iface,
                 disabled: truthy(source && source.disabled),
-                active: truthy(source && (source.active || source.up)),
+                active: truthy(source && source.active),
                 missing: truthy(source && source.missing)
             });
         }
