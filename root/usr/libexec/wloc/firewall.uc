@@ -176,7 +176,7 @@ function mask(raw) {
 }
 function ownership(raw) {
     let stream = replace(mask(raw), /[;}]/g, '\n');
-    let table_count = 0;
+    let tables = { bridge: false, inet: false };
     let forbidden = { add: true, create: true, flush: true, include: true, delete: true, destroy: true, reset: true, insert: true, replace: true, rename: true };
     for (let line in split(stream, '\n')) {
         line = trim(line || '');
@@ -185,12 +185,25 @@ function ownership(raw) {
         if (forbidden[first])
             return { ok: false, error_code: 'unsupported_firewall_command', error: 'Only declarative definitions of table bridge wloc and table inet wloc are supported.' };
         if (first != 'table') continue;
-        table_count++;
         let family = fields[1] || '', name = fields[2] || '';
         if ((family != 'bridge' && family != 'inet') || name != 'wloc')
             return { ok: false, error_code: 'unsupported_firewall_command', error: 'WLOC owns only table bridge wloc and table inet wloc.' };
+        if (tables[family])
+            return { ok: false, error_code: 'unsupported_firewall_command', error: `Firewall configuration declares table ${family} wloc more than once.` };
+        tables[family] = true;
     }
-    if (!table_count) return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration does not declare a WLOC table.' };
+    if (!tables.bridge || !tables.inet)
+        return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration must declare both table bridge wloc and table inet wloc.' };
+    return { ok: true };
+}
+function required_objects(raw) {
+    let visible = replace(mask(raw), /[[:space:]]+/g, ' ');
+    if (!match(visible, /set[[:space:]]+target_ingress_interfaces[[:space:]]*\{/))
+        return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration must declare set target_ingress_interfaces.' };
+    if (!match(visible, /chain[[:space:]]+transparent_prerouting[[:space:]]*\{/))
+        return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration must declare chain transparent_prerouting.' };
+    if (!match(visible, /chain[[:space:]]+clear_ingress_mark[[:space:]]*\{/))
+        return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration must declare chain clear_ingress_mark.' };
     return { ok: true };
 }
 function table_deletes() {
@@ -241,6 +254,8 @@ function prepare(raw) {
     if (length(runtime.source) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 1 MiB.' };
     let owned = ownership(runtime.source);
     if (!owned.ok) return { ok: false, valid: false, error_code: owned.error_code, error: owned.error };
+    let required = required_objects(runtime.source);
+    if (!required.ok) return { ok: false, valid: false, error_code: required.error_code, error: required.error };
     if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Unable to create WLOC runtime directory.' };
     let check = temporary(`${RUNTIME}/firewall-check`);
     let tx = table_deletes() + runtime.compiled;
