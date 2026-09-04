@@ -53,6 +53,7 @@ define Package/luci-app-wloc/postinst
 #!/bin/sh
 postinst_root="$${IPKG_INSTROOT}"
 version_cache="$${postinst_root}/usr/share/wloc/installed-version"
+upgrade_running='/tmp/wloc-upgrade.running'
 
 mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
 printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
@@ -75,12 +76,13 @@ chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null ||
 	/usr/bin/ucode /usr/libexec/wloc/update.uc auto-sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
 	if [ "$$(uci -q get wloc.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/wloc enable >/dev/null 2>&1 || true
-		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ]; then
+		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ] && [ -f "$${upgrade_running}" ]; then
 			/etc/init.d/wloc start >/dev/null 2>&1 || logger -t wloc "service restart after package upgrade failed"
 		fi
 	else
 		/etc/init.d/wloc disable >/dev/null 2>&1 || true
 	fi
+	rm -f "$${upgrade_running}"
 	exit 0
 }
 exit 0
@@ -91,12 +93,14 @@ define Package/luci-app-wloc/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	case "$${1:-remove}" in
 		upgrade)
+			rm -f /tmp/wloc-upgrade.running
+			pidof wlocd >/dev/null 2>&1 && : > /tmp/wloc-upgrade.running
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
 			;;
 		*)
 			[ -f /usr/libexec/wloc/update.uc ] && /usr/bin/ucode /usr/libexec/wloc/update.uc auto-remove >/dev/null 2>&1 || true
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
-			rm -f /usr/share/wloc/installed-version
+			rm -f /usr/share/wloc/installed-version /tmp/wloc-upgrade.running
 			;;
 	esac
 	[ -f /usr/libexec/wloc/firewall.uc ] && /usr/bin/ucode /usr/libexec/wloc/firewall.uc remove-runtime >/dev/null 2>&1 || true
