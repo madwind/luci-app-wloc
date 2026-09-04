@@ -31,7 +31,6 @@ function pid() {
     return value;
 }
 function temporary(prefix) { sequence++; return `${prefix}.${pid()}.${time()}.${sequence}`; }
-function fields(value) { return split(trim(`${value ?? ''}`), /[[:space:]]+/); }
 function atomic_write(path, value) {
     let parent = fs.dirname(path) || '.';
     if (!mkdirp(parent)) return { ok: false, error: `cannot create ${parent}` };
@@ -47,51 +46,12 @@ function number(value) {
     if (value == null) return null;
     let text = `${value}`;
     if (match(text, /^0[xX][0-9A-Fa-f]+$/)) return int(substr(text, 2), 16);
-    if (!match(text, /^[0-9]+$/)) return null;
-    return int(text);
-}
-function hex(value) { return sprintf('0x%x', value); }
-function valid_ipv4_prefix(value) {
-    let found = match(`${value ?? ''}`, /^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)\/([0-9]+)$/);
-    if (!found) return false;
-    for (let i = 1; i <= 4; i++) {
-        let octet = int(found[i]);
-        if (octet < 0 || octet > 255) return false;
-    }
-    let prefix = int(found[5]);
-    return prefix >= 0 && prefix <= 32;
-}
-function valid_ipv6_prefix(value) {
-    let found = match(`${value ?? ''}`, /^([0-9A-Fa-f:]+)\/([0-9]+)$/);
-    if (!found || index(found[1], ':') < 0) return false;
-    let prefix = int(found[2]);
-    return prefix >= 0 && prefix <= 128;
+    let value_number = +text;
+    return value_number == value_number ? value_number : null;
 }
 function normalized_prefix(family, prefix) {
     if (prefix == 'default') return family == '4' ? '0.0.0.0/0' : '::/0';
     return prefix;
-}
-function parse_route(parts) {
-    if (length(parts) != 10 || parts[0] != 'ip' || (parts[1] != '-4' && parts[1] != '-6') ||
-        parts[2] != 'route' || parts[3] != 'replace' || parts[4] != 'local' ||
-        parts[6] != 'dev' || parts[7] != 'lo' || parts[8] != 'table') return null;
-    let family = substr(parts[1], 1), table = number(parts[9]), prefix = parts[5];
-    if (table == null || table < 1 || table > 4294967295) return { error: `IPv${family} routing table is outside 1..4294967295` };
-    if (family == '4' ? !valid_ipv4_prefix(prefix) : !valid_ipv6_prefix(prefix)) return { error: `invalid IPv${family} local route prefix` };
-    return { family, table, prefix };
-}
-function parse_rule(parts) {
-    if (length(parts) != 10 || parts[0] != 'ip' || (parts[1] != '-4' && parts[1] != '-6') ||
-        parts[2] != 'rule' || parts[3] != 'add' || parts[4] != 'priority' || parts[6] != 'fwmark' || parts[8] != 'lookup') return null;
-    let family = substr(parts[1], 1), priority = number(parts[5]), table = number(parts[9]);
-    let markmask = split(parts[7], '/');
-    if (length(markmask) != 2) return { error: `IPv${family} fwmark must include a hexadecimal mask` };
-    let mark = number(markmask[0]), mask = number(markmask[1]);
-    if (priority == null || priority < 1 || priority > 4294967295) return { error: `IPv${family} routing rule priority is outside 1..4294967295` };
-    if (table == null || table < 1 || table > 4294967295) return { error: `IPv${family} routing table is outside 1..4294967295` };
-    if (mark == null || mark < 1 || mark > 0xffffffff) return { error: `IPv${family} fwmark must be a non-zero hexadecimal value up to 32 bits` };
-    if (mask == null || mask < 1 || mask > 0xffffffff) return { error: `IPv${family} fwmark mask must be a non-zero hexadecimal value up to 32 bits` };
-    return { family, priority, mark, mask, table };
 }
 function parse_config(raw) {
     raw = `${raw ?? ''}`;
@@ -99,48 +59,51 @@ function parse_config(raw) {
     if (index(raw, '\0') >= 0) return { ok: false, error: 'routing file contains a NUL byte' };
     raw = replace(replace(raw, /\r\n/g, '\n'), /\r/g, '\n');
 
-    let routes = {}, rules = {};
+    let routes = {}, rules = {}, lines = [];
     for (let source_line in split(raw, '\n')) {
         let line = trim(source_line || '');
         if (!line || substr(line, 0, 1) == '#') continue;
-        let parts = fields(line), route = parse_route(parts);
+
+        let route = match(line, /^ip\s+-([46])\s+route\s+replace\s+local\s+(\S+)\s+dev\s+lo\s+table\s+(\d+)$/);
         if (route) {
-            if (route.error) return { ok: false, error: route.error };
-            if (routes[route.family]) return { ok: false, error: `routing file declares more than one IPv${route.family} local route command` };
-            routes[route.family] = route;
+            let family = route[1];
+            if (routes[family]) return { ok: false, error: `duplicate IPv${family} route` };
+            routes[family] = { family, prefix: route[2], table: int(route[3]), route: line };
+            push(lines, line);
             continue;
         }
-        let rule = parse_rule(parts);
+
+        let rule = match(line, /^ip\s+-([46])\s+rule\s+add\s+fwmark\s+([^\/\s]+)\/([^\s]+)\s+lookup\s+(\d+)$/);
         if (!rule) return { ok: false, error: `unsupported routing command: ${line}` };
-        if (rule.error) return { ok: false, error: rule.error };
-        if (rules[rule.family]) return { ok: false, error: `routing file declares more than one IPv${rule.family} fwmark rule command` };
-        rules[rule.family] = rule;
+        let family = rule[1];
+        if (rules[family]) return { ok: false, error: `duplicate IPv${family} rule` };
+        let mark = number(rule[2]), mask = number(rule[3]), table = int(rule[4]);
+        if (mark == null || mask == null || mark < 1 || mask < 1 || mark > 0xffffffff || mask > 0xffffffff)
+            return { ok: false, error: 'invalid firewall mark or mask' };
+        rules[family] = { family, mark, mask, table, rule: line };
+        push(lines, line);
     }
 
-    if (!routes['4'] || !rules['4']) return { ok: false, error: 'routing file must declare one IPv4 local route and one IPv4 fwmark rule' };
-    if (!!routes['6'] != !!rules['6']) return { ok: false, error: 'routing file must declare both IPv6 route and rule commands' };
+    if (!routes['4'] || !rules['4']) return { ok: false, error: 'routing file must declare IPv4 route and rule' };
+    if (!!routes['6'] != !!rules['6']) return { ok: false, error: 'routing file must declare both IPv6 route and rule' };
 
-    let state = { commands: [], route_commands: [], rule_commands: [], ipv6_enabled: !!routes['6'] };
+    let state = { normalized: join('\n', lines) + '\n', commands: lines, route_commands: [], rule_commands: [], ipv6_enabled: !!routes['6'] };
     for (let family in [ '4', '6' ]) {
         if (!routes[family]) continue;
-        if (routes[family].table != rules[family].table) return { ok: false, error: `IPv${family} route and rule must use the same routing table` };
+        if (routes[family].table != rules[family].table) return { ok: false, error: `IPv${family} route and rule must use the same table` };
         let spec = {
             family,
             prefix: routes[family].prefix,
             table: routes[family].table,
-            priority: rules[family].priority,
             mark: rules[family].mark,
-            mask: rules[family].mask
+            mask: rules[family].mask,
+            route: routes[family].route,
+            rule: rules[family].rule
         };
-        spec.route = `ip -${family} route replace local ${spec.prefix} dev lo table ${spec.table}`;
-        spec.rule = `ip -${family} rule add priority ${spec.priority} fwmark ${hex(spec.mark)}/${hex(spec.mask)} lookup ${spec.table}`;
         state[`ipv${family}`] = spec;
         push(state.route_commands, spec.route);
         push(state.rule_commands, spec.rule);
-        push(state.commands, spec.route);
-        push(state.commands, spec.rule);
     }
-    state.normalized = join('\n', state.commands) + '\n';
     state.mark = state.ipv4.mark;
     state.mask = state.ipv4.mask;
     state.table = state.ipv4.table;
@@ -149,15 +112,13 @@ function parse_config(raw) {
 function rule_present(spec) {
     let result = capture(`ip -${spec.family} rule show`);
     if (!result.ok) return false;
-    for (let line in split(result.output || '', '\n')) {
-        let parts = fields(line);
-        if (length(parts) < 7) continue;
-        let priority_text = parts[0] || '';
-        if (substr(priority_text, -1) == ':') priority_text = substr(priority_text, 0, length(priority_text) - 1);
-        if (number(priority_text) != spec.priority || parts[1] != 'from' || parts[2] != 'all' || parts[3] != 'fwmark') continue;
-        let markmask = split(parts[4] || '', '/');
+    for (let source_line in split(result.output || '', '\n')) {
+        let body = trim(replace(source_line, /^\s*\d+:\s*/, ''));
+        let found = match(body, /^from\s+all\s+fwmark\s+(\S+)\s+[Ll]ookup\s+(\S+)$/);
+        if (!found) continue;
+        let markmask = split(found[1], '/');
         let mark = number(markmask[0]), mask = number(length(markmask) > 1 ? markmask[1] : '0xffffffff');
-        if (parts[5] == 'lookup' && mark == spec.mark && mask == spec.mask && number(parts[6]) == spec.table) return true;
+        if (mark == spec.mark && mask == spec.mask && number(found[2]) == spec.table) return true;
     }
     return false;
 }
@@ -167,11 +128,9 @@ function route_state(spec) {
     let expected = normalized_prefix(spec.family, spec.prefix);
     let exact = false, conflict = false;
     for (let line in split(result.output || '', '\n')) {
-        let parts = fields(line);
-        if (length(parts) < 2 || normalized_prefix(spec.family, parts[1]) != expected) continue;
-        let local = parts[0] == 'local', loopback = false;
-        for (let i = 2; i + 1 < length(parts); i++) if (parts[i] == 'dev' && parts[i + 1] == 'lo') loopback = true;
-        if (local && loopback) exact = true;
+        let fields = split(trim(line), /\s+/);
+        if (length(fields) < 2 || normalized_prefix(spec.family, fields[1]) != expected) continue;
+        if (fields[0] == 'local' && match(line, /\sdev\s+lo(\s|$)/)) exact = true;
         else conflict = true;
     }
     return { exact, conflict };
@@ -183,7 +142,7 @@ function same_route_spec(a, b) {
 function delete_rules(spec) {
     let count = 0;
     while (rule_present(spec)) {
-        if (count++ >= 64 || !quiet(`ip -${spec.family} rule del priority ${spec.priority} fwmark ${hex(spec.mark)}/${hex(spec.mask)} lookup ${spec.table}`)) return false;
+        if (count++ >= 64 || !quiet(`ip -${spec.family} rule del fwmark ${spec.mark}/${spec.mask} lookup ${spec.table}`)) return false;
     }
     return true;
 }
@@ -227,7 +186,7 @@ function remove_state(state, keep_routes) {
     if (!state) return { ok: true };
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
-        if (spec && !delete_rules(spec)) return { ok: false, error: `unable to remove the IPv${family} TPROXY policy rule` };
+        if (spec && rule_present(spec) && !delete_rules(spec)) return { ok: false, error: `unable to remove the IPv${family} TPROXY policy rule` };
     }
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
@@ -278,7 +237,7 @@ function validate(raw) {
     return {
         ok: true, valid: true, config: state.normalized, bytes: length(state.normalized), commands: state.commands,
         route_commands: state.route_commands, rule_commands: state.rule_commands, ipv6_enabled: state.ipv6_enabled,
-        firewall_mark: hex(state.mark), routing_table: state.table
+        firewall_mark: state.mark, routing_table: state.table
     };
 }
 function read_current() {
@@ -286,16 +245,27 @@ function read_current() {
     if (!effective) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}`, path: SOURCE };
     let parsed = parse_config(effective.raw);
     if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
-    let state = parsed.state;
-    let applied_raw = read_text(APPLIED);
-    let applied = applied_raw ? parse_config(applied_raw) : null;
-    let runtime_state = applied && applied.ok ? applied.state : state;
-    let status = state_status(runtime_state);
+    let state = parsed.state, applied_raw = read_text(APPLIED);
     return {
         ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized), using_default: effective.using_default,
-        active: runtime_text(runtime_state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
-        ipv6_enabled: state.ipv6_enabled, firewall_mark: hex(state.mark), routing_table: state.table,
+        ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
+        commands: state.commands, route_commands: state.route_commands, rule_commands: state.rule_commands,
         applied_config: applied_raw || '', applied_path: APPLIED
+    };
+}
+function runtime_current() {
+    let raw = read_text(APPLIED);
+    if (!raw) {
+        let effective = effective_raw();
+        raw = effective ? effective.raw : null;
+    }
+    if (!raw) return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
+    let parsed = parse_config(raw);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    let state = parsed.state, status = state_status(state);
+    return {
+        ok: true, active: runtime_text(state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
+        ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table
     };
 }
 function save(raw) {
@@ -342,11 +312,10 @@ function apply(raw, stage) {
         return saved;
     }
     if (stage) fs.unlink(CANDIDATE);
-    let status = state_status(state);
     return {
         ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
-        active: runtime_text(state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
-        ipv6_enabled: state.ipv6_enabled, commands: state.commands, firewall_mark: hex(state.mark), routing_table: state.table
+        ipv6_enabled: state.ipv6_enabled, commands: state.commands, route_commands: state.route_commands,
+        rule_commands: state.rule_commands, firewall_mark: state.mark, routing_table: state.table
     };
 }
 function apply_effective() {
@@ -355,9 +324,7 @@ function apply_effective() {
         let parsed = parse_config(applied_raw);
         if (!parsed.ok) return { ok: false, error: `invalid applied routing snapshot: ${parsed.error}` };
         let installed = install_state(parsed.state);
-        if (!installed.ok) return installed;
-        let status = state_status(parsed.state);
-        return { ok: status.active, active: status.active, text: runtime_text(parsed.state) };
+        return installed.ok ? { ok: true, active: true } : installed;
     }
     let effective = effective_raw();
     if (!effective) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}` };
@@ -386,9 +353,9 @@ function file_input(path) {
 }
 function dispatch(command, args) {
     if (command == 'read') return read_current();
-    if (command == 'active') return read_current();
+    if (command == 'active') return runtime_current();
     if (command == 'ready') {
-        let current = read_current();
+        let current = runtime_current();
         return current.ok ? { ok: current.route_active === true, active: current.route_active === true } : current;
     }
     if (command == 'apply-effective') return apply_effective();
