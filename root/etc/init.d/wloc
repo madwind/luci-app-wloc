@@ -93,7 +93,14 @@ start_service() {
     firewall_source="$FIREWALL"
     [ -r "$firewall_source" ] || firewall_source="$FIREWALL_DEFAULT"
     if ! firewall_apply_detail="$("$UCODE" "$FIREWALL_CTL" apply-file "$firewall_source" 2>&1)"; then
-        startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}"
+        cleanup_detail=''
+        if cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
+            startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}; stale WLOC runtime was removed"
+        else
+            [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
+            startup_failure "firewall apply failed: ${firewall_apply_detail:-unknown error}; fail-open cleanup failed: $cleanup_detail"
+            return 1
+        fi
     fi
     config_load wloc
 
