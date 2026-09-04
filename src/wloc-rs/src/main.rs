@@ -24,6 +24,7 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     for selector in selectors {
         command.arg(selector);
     }
+    command.stdout(std::process::Stdio::null());
     let mut child = command
         .spawn()
         .map_err(|e| format!("rules helper: {}", e.kind()))?;
