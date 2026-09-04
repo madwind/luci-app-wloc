@@ -333,19 +333,6 @@ function runtimeLogSection() {
     ]);
 }
 
-function removeEmbeddedCaSection(node) {
-    if (!node || !node.querySelectorAll)
-        return;
-
-    Array.prototype.forEach.call(node.querySelectorAll('.cbi-section-title'), function(title) {
-        if (String(title.textContent || '').trim() !== _('Root CA'))
-            return;
-        var section = title.closest ? title.closest('.cbi-section') : title.parentNode;
-        if (section && section.parentNode)
-            section.parentNode.removeChild(section);
-    });
-}
-
 return view.extend({
     load: function() {
         return Promise.all([
@@ -373,7 +360,7 @@ return view.extend({
         var actionInProgress = false;
         var actionDeadline = 0;
         var lastStatus = null;
-        var overviewController = wlocOverview.create(data && data[1] || {}, initial, refreshStatus);
+        var overviewController = wlocOverview.create(data && data[1] || {}, initial);
 
         function setMessage(state, value) {
             if (!value) {
@@ -586,8 +573,6 @@ return view.extend({
         }, { once: true });
 
         return overviewController.render().then(function(overviewForm) {
-            removeEmbeddedCaSection(overviewForm);
-
             regenerateButton = E('button', {
                 'class': 'btn cbi-button cbi-button-negative',
                 'type': 'button'
