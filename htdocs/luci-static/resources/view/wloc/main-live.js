@@ -7,6 +7,7 @@
 'require wloc.overview as wlocOverview';
 
 var callStatus = rpc.declare({ object: 'luci.wloc', method: 'status', expect: {} });
+var callReady = rpc.declare({ object: 'luci.wloc.firewall', method: 'ready', expect: {} });
 var callRouting = rpc.declare({ object: 'luci.wloc.routing', method: 'read', expect: {} });
 var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expect: {} });
 var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: {} });
@@ -603,6 +604,8 @@ return view.extend({
         function refreshStatus() {
             if (!pageVisible || statusRequest)
                 return statusRequest || Promise.resolve();
+            if (actionInProgress && startupBusy())
+                return Promise.resolve(lastStatus);
 
             statusRequest = callStatus().then(function(result) {
                 if (startupBusy(result))
@@ -621,14 +624,20 @@ return view.extend({
         }
 
         function waitForLifecycle(action) {
-            return callStatus().then(function(result) {
-                result = result || {};
-                applyStatus(result, lastRoutingStatus);
-                var running = truthy(result.running);
-                var complete = action === 'stop' ? !running : running;
+            return callReady().then(function(state) {
+                state = state || {};
+                if (state.ok === false)
+                    throw new Error(state.error || _('Unable to read WLOC startup state.'));
 
-                if (complete)
-                    return result;
+                var running = truthy(state.running);
+                var ready = truthy(state.ready);
+                var complete = action === 'stop' ? !running : ready;
+
+                if (complete) {
+                    return callStatus().then(function(result) {
+                        return applyStatus(result, lastRoutingStatus);
+                    });
+                }
                 if (Date.now() >= actionDeadline)
                     throw new Error(_('WLOC did not reach the requested state within 20 seconds.'));
 
