@@ -169,19 +169,17 @@ return view.extend({
         function runCheck() {
             state.checking = true;
             checkButton.disabled = true; updateButton.disabled = true; stopButton.disabled = true;
-            setMessage('notice', _('Checking WLOC for updates...'));
             wlocUi.setState(status, 'notice', _('Checking for updates...'));
             return callCheck().then(function(result) {
                 state.checking = false;
                 applyStatus(wlocUi.requireOk(result, _('Unable to check WLOC updates.')));
-                setMessage('ok', _('Update check completed.'));
                 return result;
             }).catch(function(error) {
                 state.checking = false;
                 state.available = null;
                 updateButtons({});
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
-                return refresh();
+                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
+                return false;
             });
         }
         function installUpdate() {
@@ -194,13 +192,12 @@ return view.extend({
                 result = wlocUi.requireOk(result, _('Unable to start WLOC update.'));
                 var operation = result.operation || {};
                 wlocUi.setState(status, 'notice', activeStatus(operation.status) ? phaseText(operation) : _('Starting update...'));
-                setMessage('notice', _('WLOC update started.'));
                 return result;
             }).catch(function(error) {
                 state.starting = false;
                 updateButtons({});
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to start WLOC update.')));
-                return refresh();
+                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to start WLOC update.')));
+                return false;
             });
         }
         function runUpdate() {
@@ -209,20 +206,17 @@ return view.extend({
 
             state.checking = true;
             updateButtons({});
-            setMessage('notice', _('Checking WLOC before updating...'));
             wlocUi.setState(status, 'notice', _('Checking for updates...'));
             return callCheck().then(function(result) {
                 state.checking = false;
                 applyStatus(wlocUi.requireOk(result, _('Unable to check WLOC updates.')));
                 if (state.available === true) return installUpdate();
-                setMessage('ok', _('WLOC is already up to date.'));
                 return false;
             }).catch(function(error) {
                 state.checking = false;
                 state.available = null;
                 updateButtons({});
-                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Check failed')));
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
+                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
                 return false;
             });
         }
@@ -232,8 +226,8 @@ return view.extend({
                 applyStatus(wlocUi.requireOk(result, _('Unable to stop WLOC update.')));
                 return result;
             }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to stop WLOC update.')));
-                return refresh();
+                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to stop WLOC update.')));
+                return false;
             });
         }
         function setCheckSetting() {
