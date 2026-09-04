@@ -8,7 +8,6 @@ import { connect } from 'ubus';
 
 const STATE_DIR = '/tmp/wloc-update';
 const STATE_PATH = `${STATE_DIR}/wloc.json`;
-const LOCK = `${STATE_DIR}/wloc.lock`;
 const LOG = `${STATE_DIR}/wloc.log`;
 const VERSION_CACHE = '/usr/share/wloc/installed-version';
 const STATUS_PATH = '/var/run/wloc/status.json';
@@ -23,7 +22,6 @@ const SCHEDULE = '17 4 * * 0';
 const SCHEDULE_MINUTE = 17;
 const SCHEDULE_HOUR = 4;
 const SCHEDULE_DOW = 0;
-const LOCK_STALE_SECONDS = 30;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -150,28 +148,11 @@ function save_state(state) {
 function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
 function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
 function operation_active(state) { return active_status(state) && process_alive(state.pid); }
-function operation_claimed(state) {
-    if (!active_status(state)) return false;
-    if (process_alive(state.pid)) return true;
-    let started = int(state.started || 0);
-    return state.status == 'starting' && started > 0 && now() - started < LOCK_STALE_SECONDS;
-}
-function lock_recent() {
-    let stat = fs.stat(LOCK);
-    return type(stat) == 'object' && now() - int(stat.mtime || 0) < LOCK_STALE_SECONDS;
-}
-function acquire_update_lock(state) {
-    if (quiet(`mkdir ${q(LOCK)}`)) return true;
-    if (operation_claimed(state) || lock_recent()) return false;
-    quiet(`rmdir ${q(LOCK)}`);
-    return quiet(`mkdir ${q(LOCK)}`);
-}
 function normalize_state(state) {
-    let stale_start = state.status == 'starting' && !state.pid && int(state.started || 0) > 0 && now() - int(state.started || 0) >= LOCK_STALE_SECONDS;
-    if ((active_status(state) && state.pid && !process_alive(state.pid)) || stale_start) {
+    if (active_status(state) && state.pid && !process_alive(state.pid)) {
         state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.pid = null; state.updated = false;
         state.error = 'The WLOC update worker exited unexpectedly.'; state.message = 'Update failed';
-        save_state(state); quiet(`rmdir ${q(LOCK)}`);
+        save_state(state);
     }
     return state;
 }
@@ -218,7 +199,7 @@ function probe_release() {
 }
 function check_update() {
     let state = normalize_state(read_state());
-    if (operation_claimed(state) || lock_recent()) return { ok: false, error: 'A WLOC update is already in progress.' };
+    if (operation_active(state)) return { ok: false, error: 'A WLOC update is already in progress.' };
     state.status = 'idle'; state.phase = null; state.error = null; state.message = null; state.updated = false; state.finished = null;
     let probe = probe_release();
     state.checked = now(); state.check_ok = probe.ok === true; state.installed_version = probe.installed_version || installed_version() || state.installed_version;
@@ -235,7 +216,7 @@ function set_phase(state, phase, message) {
 }
 function fail_worker(state, message) {
     state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.error = message; state.message = 'Update failed'; state.pid = null; state.updated = false;
-    save_state(state); quiet(`rmdir ${q(LOCK)}`); return state;
+    save_state(state); return state;
 }
 function append_post_error(state, message) { state.post_check_error = state.post_check_error ? `${state.post_check_error} ${message}` : message; }
 function done_worker(state, message) {
@@ -245,7 +226,7 @@ function done_worker(state, message) {
         let relation = version_relation(state.latest_version, state.installed_version);
         if (relation) state.update_available = relation == '>';
     }
-    state.last_update = state.finished; save_state(state); quiet(`rmdir ${q(LOCK)}`); return state;
+    state.last_update = state.finished; save_state(state); return state;
 }
 function worker_update() {
     let state = read_state(); state.pid = pid();
@@ -312,16 +293,15 @@ function spawn_worker() {
 function start_update() {
     if (!mkdirp(STATE_DIR)) return { ok: false, error: 'Unable to create the WLOC update directory.' };
     let state = normalize_state(read_state());
-    if (operation_claimed(state)) return status_result();
+    if (operation_active(state)) return status_result();
     if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
         return { ok: false, error: 'No checked WLOC update is available. Run Check updates first.' };
-    if (!acquire_update_lock(state)) return { ok: false, error: 'Another WLOC update is starting.' };
     state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
     state.post_check_error = null; state.error = null; state.message = 'Update started';
     let saved = save_state(state);
-    if (!saved.ok) { quiet(`rmdir ${q(LOCK)}`); return saved; }
+    if (!saved.ok) return saved;
     let worker_pid = spawn_worker();
-    if (worker_pid <= 1) { quiet(`rmdir ${q(LOCK)}`); state.status = 'failed'; state.phase = 'failed'; state.error = 'Unable to start the WLOC update worker.'; save_state(state); return { ok: false, error: state.error }; }
+    if (worker_pid <= 1) { state.status = 'failed'; state.phase = 'failed'; state.error = 'Unable to start the WLOC update worker.'; save_state(state); return { ok: false, error: state.error }; }
     state = read_state();
     if (state.status == 'starting' && int(state.pid || 0) <= 1) { state.pid = worker_pid; save_state(state); }
     return status_result();
@@ -366,7 +346,6 @@ function stop_update() {
         save_state(state); return { ok: false, error: state.error };
     }
     quiet(`rm -f ${q(STATE_DIR)}/*.tmp.${process_pid}.* ${q(STATE_DIR)}/apk-install.log.${process_pid}`);
-    quiet(`rmdir ${q(LOCK)}`);
     state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = 'Update stopped'; save_state(state);
     return status_result();
 }
