@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require rpc';
+'require uci';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 'require wloc.nftformat as wlocNftFormat';
@@ -18,12 +19,17 @@ function firewallError(result, fallback) {
 
 return view.extend({
     load: function() {
-        return L.resolveDefault(callRead(), { ok: false, error: _('Unable to read nftables rules.') });
+        return Promise.all([
+            L.resolveDefault(callRead(), { ok: false, error: _('Unable to read nftables rules.') }),
+            L.resolveDefault(uci.load('wloc'), null)
+        ]);
     },
 
-    render: function(result) {
+    render: function(data) {
         document.title = 'OpenWrt | ' + _('Firewall');
 
+        var result = data && data[0] || {};
+        var port = String(uci.get('wloc', 'main', 'listen_port') || '61520');
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
@@ -207,7 +213,7 @@ return view.extend({
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
             E('div', {}, _('Available variables:')),
-            E('div', {}, [ E('code', {}, '%port%'), ' — ', _('WLOC listen port.') ])
+            E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port) ])
         ]);
 
         return E('div', { 'class': 'cbi-map' }, [
