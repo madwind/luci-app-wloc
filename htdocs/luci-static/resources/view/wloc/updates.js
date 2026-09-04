@@ -42,6 +42,10 @@ function valueRow(label, field) {
 }
 
 function activeStatus(status) { return [ 'starting', 'running', 'stopping' ].indexOf(status) >= 0; }
+function cancelablePhase(operation) {
+    var phase = operation && (operation.phase || operation.status) || '';
+    return [ 'starting', 'downloading', 'verifying' ].indexOf(phase) >= 0;
+}
 function phaseText(operation) {
     var phase = operation && (operation.phase || operation.status) || '';
     if (phase === 'starting') return _('Starting update...');
@@ -118,7 +122,7 @@ return view.extend({
         function updateButtons(operation) {
             var active = activeStatus(operation && operation.status);
             updateButton.disabled = state.starting || active || state.checking;
-            stopButton.disabled = state.starting || !active || operation.phase === 'installing' || operation.status === 'stopping';
+            stopButton.disabled = state.starting || !active || !cancelablePhase(operation);
             checkButton.disabled = state.starting || active || state.checking;
         }
         function applyStatus(result) {
