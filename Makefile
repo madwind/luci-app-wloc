@@ -18,10 +18,10 @@ LUCI_DEPENDS:=@(aarch64||x86_64)
 # without pulling the whole target dependency tree into this SDK build.
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
-	rpcd-mod-file (>=0), \
 	nftables (>=0), \
+	kmod-nft-bridge (>=0), \
+	kmod-nft-fib (>=0), \
 	kmod-nft-tproxy (>=0), \
-	ip-full (>=0), \
 	uclient-fetch (>=0)
 
 LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native ucode runtime and rpcd controllers, and LuCI.
