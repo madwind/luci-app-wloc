@@ -249,7 +249,7 @@ function worker_update() {
     }
 
     set_phase(state, 'installing', 'Installing WLOC package');
-    let installed = capture(`apk --network=no add --allow-untrusted --upgrade ${q(apk)}`);
+    let installed = capture(`WLOC_DEFER_RESTART=1 apk --network=no add --allow-untrusted --upgrade ${q(apk)}`);
     fs.unlink(apk); fs.unlink(sha);
     if (!installed.ok) {
         let detail = compact_error(installed.output || '');
