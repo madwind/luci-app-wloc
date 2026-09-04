@@ -24,7 +24,7 @@ LUCI_EXTRA_DEPENDS:= \
 	jshn (>=0), \
 	uclient-fetch (>=0)
 
-LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, rpcd and LuCI.
+LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native rpcd ucode handlers and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
@@ -59,14 +59,11 @@ chmod 0644 "$${version_cache}" 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 0755 \
-		/usr/libexec/rpcd/luci.wloc.service \
-		/usr/libexec/rpcd/luci.wloc.update \
-		/usr/libexec/rpcd/luci.wloc.defaults \
-		/usr/libexec/rpcd/luci.wloc.firewall \
 		/usr/libexec/wloc/update.sh \
 		/usr/libexec/wloc/update-auto.sh \
 		/usr/libexec/wloc/firewall.sh \
 		/usr/libexec/wloc/firewall-core.sh 2>/dev/null || true
+	chmod 0644 /usr/share/rpcd/ucode/luci.wloc*.uc 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
