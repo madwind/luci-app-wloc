@@ -222,6 +222,13 @@ function regenerate_ca() {
             error_code: 'service_disabled',
             detail: 'Enable WLOC before regenerating the CA.'
         };
+    if (!daemon_running())
+        return {
+            ok: false,
+            error: 'Unable to regenerate CA while WLOC is stopped.',
+            error_code: 'service_stopped',
+            detail: 'Start WLOC before regenerating the CA.'
+        };
 
     let cleanup = run_ucode(RULES, [ 'cleanup' ]);
     if (!cleanup.ok)
