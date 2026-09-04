@@ -10,6 +10,10 @@ let ubus = require('ubus').connect();
 
 const HELPER = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
+const SOURCE = '/etc/wloc/firewall.nft';
+const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
+const APPLIED = `${RUNTIME}/firewall.applied.nft`;
+const STATUS = `${RUNTIME}/status.json`;
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -43,6 +47,65 @@ function exec_result(code, reply, label) {
     if (result.ok === false && stderr && !result.detail)
         result.detail = stderr;
     return result;
+}
+
+function read_text(path) {
+    let file = open(path, 'r');
+    if (!file) return null;
+    let value = file.read('all') || '';
+    file.close();
+    return value;
+}
+
+function read_json(path) {
+    let raw = read_text(path);
+    if (raw == null || !trim(raw)) return null;
+    try {
+        let value = json(raw);
+        return type(value) == 'object' ? value : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function service_running() {
+    if (!ubus) return false;
+    try {
+        let result = ubus.call('service', 'list', { name: 'wloc' });
+        let service = result && result.wloc;
+        let instance = service && service.instances && service.instances.daemon;
+        return type(instance) == 'object' && (instance.running === true || instance.running === 1);
+    } catch (e) {
+        return false;
+    }
+}
+
+function firewall_ready() {
+    let state = read_json(STATUS) || {};
+    let running = service_running();
+    let ready = running && (state.armed === true || state.armed === 1 || state.armed == '1' || state.armed == 'true');
+    return { ok: true, running, ready, busy: running && !ready };
+}
+
+function firewall_read_effective() {
+    let config = read_text(SOURCE), using_default = false;
+    if (config == null) {
+        config = read_text(DEFAULT_SOURCE);
+        using_default = true;
+    }
+    if (config == null)
+        return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
+
+    let applied = read_text(APPLIED);
+    return {
+        ok: true,
+        path: SOURCE,
+        config,
+        bytes: length(config),
+        using_default,
+        applied_config: applied || '',
+        applied_path: APPLIED
+    };
 }
 
 function remove_payload(payload) {
@@ -126,7 +189,15 @@ function args(request) {
 const methods = {
     read: {
         args: {},
-        call: request => defer_helper(request, [ 'read' ], 'Firewall read')
+        call: () => firewall_read_effective()
+    },
+    ready: {
+        args: {},
+        call: () => firewall_ready()
+    },
+    runtime: {
+        args: {},
+        call: request => defer_helper(request, [ 'active' ], 'Firewall runtime read')
     },
     validate: {
         args: { config: '' },
