@@ -22,6 +22,7 @@ LUCI_EXTRA_DEPENDS:= \
 	kmod-nft-bridge (>=0), \
 	kmod-nft-fib (>=0), \
 	kmod-nft-tproxy (>=0), \
+	ip (>=0), \
 	uclient-fetch (>=0)
 
 LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native ucode runtime and rpcd controllers, and LuCI.
@@ -72,6 +73,14 @@ chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null ||
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
 	/usr/bin/ucode /usr/libexec/wloc/update.uc auto-sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
+	if [ "$$(uci -q get wloc.main.enabled 2>/dev/null)" = "1" ]; then
+		/etc/init.d/wloc enable >/dev/null 2>&1 || true
+		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ]; then
+			/etc/init.d/wloc start >/dev/null 2>&1 || logger -t wloc "service restart after package upgrade failed"
+		fi
+	else
+		/etc/init.d/wloc disable >/dev/null 2>&1 || true
+	fi
 	exit 0
 }
 exit 0
@@ -81,9 +90,12 @@ define Package/luci-app-wloc/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
 	case "$${1:-remove}" in
-		upgrade) ;;
+		upgrade)
+			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
+			;;
 		*)
 			[ -f /usr/libexec/wloc/update.uc ] && /usr/bin/ucode /usr/libexec/wloc/update.uc auto-remove >/dev/null 2>&1 || true
+			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
 			rm -f /usr/share/wloc/installed-version
 			;;
 	esac
