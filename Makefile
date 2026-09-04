@@ -18,6 +18,7 @@ LUCI_DEPENDS:=@(aarch64||x86_64)
 # without pulling the whole target dependency tree into this SDK build.
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
+	rpcd-mod-file (>=0), \
 	nftables (>=0), \
 	kmod-nft-tproxy (>=0), \
 	ip-full (>=0), \
@@ -60,6 +61,7 @@ chmod 0755 \
 	"$${postinst_root}/usr/libexec/wloc/ap.uc" \
 	"$${postinst_root}/usr/libexec/wloc/firewall.uc" \
 	"$${postinst_root}/usr/libexec/wloc/routing.uc" \
+	"$${postinst_root}/usr/libexec/wloc/rpc.uc" \
 	"$${postinst_root}/usr/libexec/wloc/rules.uc" \
 	"$${postinst_root}/usr/libexec/wloc/update.uc" \
 	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" 2>/dev/null || true
