@@ -35,13 +35,13 @@ table inet wloc {
         ct direction reply return
         meta mark & 0x00010000 != 0 return
 
-        meta l4proto { tcp, udp } th dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc dns"
+        meta l4proto { tcp, udp } th dport 53 ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :%port% accept comment "wloc dns"
 
         fib daddr type local return
         meta nfproto ipv4 ip daddr @bypass_v4 return
         meta nfproto ipv6 ip6 daddr @bypass_v6 return
 
-        meta l4proto { tcp, udp } ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :61520 accept comment "wloc traffic"
+        meta l4proto { tcp, udp } ct mark set ct mark | 0x00010000 meta mark set meta mark | 0x40010000 counter tproxy to :%port% accept comment "wloc traffic"
     }
 
     chain clear_ingress_mark {
