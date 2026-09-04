@@ -10,7 +10,6 @@ import { open, popen, unlink } from 'fs';
 
 const INIT = '/etc/init.d/wloc';
 const RULES = '/usr/libexec/wloc/rules.uc';
-const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const STATE = '/var/run/wloc/status.json';
 const START_ERROR = '/var/run/wloc/start-error';
 const CAINFO = '/etc/wloc/ca.info.json';
@@ -107,11 +106,10 @@ function package_version() {
 }
 
 function firewall_status() {
-    let present = read_file(FIREWALL_RUNTIME) != null || read_file(FIREWALL_CONFIG) != null;
-    let result = run_ucode(FIREWALL, [ 'active' ]);
+    let applied = read_file(FIREWALL_RUNTIME) != null;
     return {
-        present,
-        active: !!(result && result.ok === true && result.active_found === true)
+        present: applied || read_file(FIREWALL_CONFIG) != null,
+        active: applied
     };
 }
 
