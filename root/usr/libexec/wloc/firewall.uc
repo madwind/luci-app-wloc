@@ -221,20 +221,40 @@ function active() {
         inet_active: inet
     };
 }
-function validate(raw) {
+function listen_port() {
+    try {
+        let ctx = cursor();
+        return `${ctx.get('wloc', 'main', 'listen_port') || '61520'}`;
+    } catch (e) { return '61520'; }
+}
+function compile_runtime(raw) {
     raw = normalize(raw);
-    if (length(raw) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 1 MiB.' };
-    let owned = ownership(raw);
+    let port_text = listen_port();
+    if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
+    let port = int(port_text);
+    if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
+    return { ok: true, source: raw, compiled: replace(raw, /%port%/g, `${port}`) };
+}
+function prepare(raw) {
+    let runtime = compile_runtime(raw);
+    if (!runtime.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: runtime.error };
+    if (length(runtime.source) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 1 MiB.' };
+    let owned = ownership(runtime.source);
     if (!owned.ok) return { ok: false, valid: false, error_code: owned.error_code, error: owned.error };
     if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Unable to create WLOC runtime directory.' };
     let check = temporary(`${RUNTIME}/firewall-check`);
-    let tx = table_deletes() + raw;
+    let tx = table_deletes() + runtime.compiled;
     let written = atomic_write(check, tx, 0o600);
     if (!written.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: written.error };
     let result = capture(`nft --check --file ${q(check)}`);
     fs.unlink(check);
     if (!result.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'nftables syntax check failed', detail: trim(result.output || '') || 'validation failed' };
-    return { ok: true, valid: true, config: raw, bytes: length(raw) };
+    return { ok: true, valid: true, config: runtime.source, compiled: runtime.compiled, bytes: length(runtime.source) };
+}
+function validate(raw) {
+    let checked = prepare(raw);
+    if (type(checked) == 'object') delete checked.compiled;
+    return checked;
 }
 function remove_tables() {
     let errors = [];
@@ -253,23 +273,16 @@ function daemon_ready() {
     let st = fs.stat(STATUS);
     return quiet('pidof wlocd') && type(st) == 'object' && int(st.size || 0) > 0;
 }
-function listen_port() {
-    try {
-        let ctx = cursor();
-        return `${ctx.get('wloc', 'main', 'listen_port') || ''}`;
-    } catch (e) { return ''; }
-}
 function apply(raw) {
-    raw = normalize(raw);
+    let checked = prepare(raw);
+    if (!checked.ok) return checked;
     if (!mkdirp(RUNTIME)) return { ok: false, error_code: 'nft_apply_failed', error: 'Unable to create WLOC runtime directory.' };
     fs.unlink(NEXT);
-    let staged = atomic_write(NEXT, raw, 0o600);
+    let staged = atomic_write(NEXT, checked.config, 0o600);
     if (!staged.ok) return { ok: false, error_code: 'snapshot_stage_failed', error: staged.error };
-    let checked = validate(raw);
-    if (!checked.ok) { fs.unlink(NEXT); return checked; }
 
     let transaction = temporary(`${RUNTIME}/firewall-apply`);
-    let tx = table_deletes() + raw;
+    let tx = table_deletes() + checked.compiled;
     let written = atomic_write(transaction, tx, 0o600);
     if (!written.ok) { fs.unlink(NEXT); return { ok: false, error_code: 'nft_apply_failed', error: written.error }; }
     let applied = capture(`nft --file ${q(transaction)}`);
@@ -311,16 +324,15 @@ function apply(raw) {
 
     let runtime = active();
     return {
-        ok: true, valid: true, applied: true, path: SOURCE, config: raw, bytes: length(raw),
+        ok: true, valid: true, applied: true, path: SOURCE, config: checked.config, bytes: length(checked.config),
         active: runtime.active, active_found: runtime.active_found, recovering, warning,
-        applied_config: raw, applied_path: APPLIED
+        applied_config: checked.config, applied_path: APPLIED
     };
 }
 function save(raw) {
-    raw = normalize(raw);
-    let checked = validate(raw);
+    let checked = prepare(raw);
     if (!checked.ok) return { ok: false, valid: false, error: 'The Firewall file could not be saved.', detail: checked.detail || checked.error };
-    let saved = atomic_write(SOURCE, raw, 0o600);
+    let saved = atomic_write(SOURCE, checked.config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: 'The Firewall file could not be saved.', detail: saved.error };
     return read_current();
 }
