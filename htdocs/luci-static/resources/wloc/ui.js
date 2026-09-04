@@ -63,6 +63,9 @@ function setState(node, state, value) {
 
     node.classList.remove('success', 'warning', 'error', 'notice');
     node.hidden = value === undefined || value === null || String(value) === '';
+    node.style.maxWidth = '100%';
+    node.style.whiteSpace = 'normal';
+    node.style.overflowWrap = 'anywhere';
     setText(node, value);
 
     if (!node.hidden) {
