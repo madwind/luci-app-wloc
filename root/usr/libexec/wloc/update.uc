@@ -218,7 +218,7 @@ function probe_release() {
 }
 function check_update() {
     let state = normalize_state(read_state());
-    if (operation_claimed(state)) return { ok: false, error: 'A WLOC update is already in progress.' };
+    if (operation_claimed(state) || lock_recent()) return { ok: false, error: 'A WLOC update is already in progress.' };
     state.status = 'idle'; state.phase = null; state.error = null; state.message = null; state.updated = false; state.finished = null;
     let probe = probe_release();
     state.checked = now(); state.check_ok = probe.ok === true; state.installed_version = probe.installed_version || installed_version() || state.installed_version;
@@ -360,7 +360,11 @@ function stop_update() {
         return { ok: false, error: 'WLOC update cannot be stopped after the maintenance phase has started.' };
     if (!worker_matches(process_pid)) return { ok: false, error: 'Refusing to stop an unexpected process.' };
     state.status = 'stopping'; state.phase = 'stopping'; state.message = 'Stopping update'; state.error = null; save_state(state);
-    if (!terminate_tree(process_pid)) { state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.error = 'Unable to stop the WLOC update worker.'; state.message = 'Update failed'; save_state(state); return { ok: false, error: state.error }; }
+    if (!terminate_tree(process_pid)) {
+        state.status = 'running'; state.phase = 'stopping'; state.pid = process_pid;
+        state.error = 'Unable to stop the WLOC update worker.'; state.message = 'Unable to stop update';
+        save_state(state); return { ok: false, error: state.error };
+    }
     quiet(`rm -f ${q(STATE_DIR)}/*.tmp.${process_pid}.* ${q(STATE_DIR)}/apk-install.log.${process_pid}`);
     quiet(`rmdir ${q(LOCK)}`);
     state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = 'Update stopped'; save_state(state);
