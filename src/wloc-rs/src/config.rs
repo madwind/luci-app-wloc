@@ -7,7 +7,6 @@ use crate::DEFAULT_DOMAINS;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundProxy {
     Direct,
-    Http { host: String, port: u16 },
     Socks5 { host: String, port: u16 },
 }
 
@@ -47,7 +46,6 @@ impl OutboundProxy {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Direct => "direct",
-            Self::Http { .. } => "http",
             Self::Socks5 { .. } => "socks5",
         }
     }
@@ -55,7 +53,6 @@ impl OutboundProxy {
     pub fn pool_key(&self, destination: &str) -> String {
         match self {
             Self::Direct => format!("direct|{destination}"),
-            Self::Http { host, port } => format!("http|{host}:{port}|{destination}"),
             Self::Socks5 { host, port } => format!("socks5|{host}:{port}|{destination}"),
         }
     }
