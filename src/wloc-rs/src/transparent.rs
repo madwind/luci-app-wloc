@@ -3,6 +3,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,8 +31,17 @@ const DOH_ENDPOINTS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
 const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
 
+static DOH_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 type UdpReplySockets = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>;
-type DohPool = Arc<Mutex<HashMap<String, h2::client::SendRequest<Bytes>>>>;
+
+#[derive(Clone)]
+struct DohEntry {
+    generation: u64,
+    sender: h2::client::SendRequest<Bytes>,
+}
+
+type DohPool = Arc<Mutex<HashMap<String, DohEntry>>>;
 
 #[derive(Clone, Copy)]
 enum AddressFamily {
@@ -323,13 +333,16 @@ async fn doh_query_endpoint(
     endpoint: Ipv4Addr,
     query: &[u8],
 ) -> Result<Vec<u8>, String> {
-    tokio::time::timeout(DOH_TIMEOUT, async {
-        let key = outbound.pool_key(&format!("doh:{endpoint}"));
-        if let Some(sender) = pool.lock().await.get(&key).cloned() {
-            match doh_exchange(sender, endpoint, query).await {
+    let key = outbound.pool_key(&format!("doh:{endpoint}"));
+    let mut active_generation = None;
+    let result = tokio::time::timeout(DOH_TIMEOUT, async {
+        if let Some(entry) = pool.lock().await.get(&key).cloned() {
+            active_generation = Some(entry.generation);
+            match doh_exchange(entry.sender, endpoint, query).await {
                 Ok(response) => return Ok(response),
                 Err(_) => {
-                    pool.lock().await.remove(&key);
+                    remove_doh_generation(pool, &key, entry.generation).await;
+                    active_generation = None;
                 }
             }
         }
@@ -353,20 +366,57 @@ async fn doh_query_endpoint(
             .handshake::<_, Bytes>(tls)
             .await
             .map_err(|error| format!("DoH HTTP/2 handshake failed: {error}"))?;
+        let generation = DOH_GENERATION.fetch_add(1, Ordering::Relaxed);
         {
             let mut connections = pool.lock().await;
             if connections.len() >= DOH_POOL_MAX {
                 connections.clear();
             }
-            connections.insert(key, sender.clone());
+            connections.insert(
+                key.clone(),
+                DohEntry {
+                    generation,
+                    sender: sender.clone(),
+                },
+            );
         }
+        active_generation = Some(generation);
+        let driver_pool = Arc::clone(pool);
+        let driver_key = key.clone();
         tokio::spawn(async move {
             let _ = connection.await;
+            remove_doh_generation(&driver_pool, &driver_key, generation).await;
         });
-        doh_exchange(sender, endpoint, query).await
+        match doh_exchange(sender, endpoint, query).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                remove_doh_generation(pool, &key, generation).await;
+                active_generation = None;
+                Err(error)
+            }
+        }
     })
-    .await
-    .map_err(|_| "DoH request timed out".to_owned())?
+    .await;
+
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            if let Some(generation) = active_generation {
+                remove_doh_generation(pool, &key, generation).await;
+            }
+            Err("DoH request timed out".to_owned())
+        }
+    }
+}
+
+async fn remove_doh_generation(pool: &DohPool, key: &str, generation: u64) {
+    let mut connections = pool.lock().await;
+    if connections
+        .get(key)
+        .is_some_and(|entry| entry.generation == generation)
+    {
+        connections.remove(key);
+    }
 }
 
 async fn doh_exchange(
