@@ -185,6 +185,7 @@ service_stopped() {
 }
 
 reload_service() {
+    pidof wlocd >/dev/null 2>&1 || return 0
     stop
     start
 }
