@@ -47,7 +47,7 @@ struct DohEntry {
 }
 
 type DohPool = Arc<Mutex<HashMap<String, DohEntry>>>;
-type DohConnectGate = Arc<Mutex<()>>;
+type DohConnectGates = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 
 #[derive(Clone, Copy)]
 enum AddressFamily {
@@ -93,7 +93,7 @@ pub struct TransparentProxy {
     udp_reply_sockets: UdpReplySockets,
     udp_error_log: UdpErrorLog,
     doh_pool: DohPool,
-    doh_connect_gate: DohConnectGate,
+    doh_connect_gates: DohConnectGates,
 }
 
 impl TransparentProxy {
@@ -115,7 +115,7 @@ impl TransparentProxy {
             udp_reply_sockets: Arc::new(Mutex::new(HashMap::new())),
             udp_error_log: Arc::new(Mutex::new(log_start)),
             doh_pool: Arc::new(Mutex::new(HashMap::new())),
-            doh_connect_gate: Arc::new(Mutex::new(())),
+            doh_connect_gates: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -190,7 +190,7 @@ impl TransparentProxy {
                 &mut client,
                 &outbound,
                 &self.doh_pool,
-                &self.doh_connect_gate,
+                &self.doh_connect_gates,
             )
             .await;
         }
@@ -276,7 +276,7 @@ impl TransparentProxy {
         if destination.port() == 53 {
             let response = doh_query(
                 &self.doh_pool,
-                &self.doh_connect_gate,
+                &self.doh_connect_gates,
                 &outbound,
                 &payload,
             )
@@ -356,7 +356,7 @@ async fn handle_dns_tcp(
     client: &mut TcpStream,
     outbound: &OutboundProxy,
     pool: &DohPool,
-    connect_gate: &DohConnectGate,
+    connect_gates: &DohConnectGates,
 ) -> Result<(), String> {
     loop {
         let mut length = [0_u8; 2];
@@ -378,7 +378,7 @@ async fn handle_dns_tcp(
             .await
             .map_err(|_| "TCP DNS query timed out".to_owned())?
             .map_err(io_message)?;
-        let response = doh_query(pool, connect_gate, outbound, &query).await?;
+        let response = doh_query(pool, connect_gates, outbound, &query).await?;
         let response_len = u16::try_from(response.len())
             .map_err(|_| "DoH response exceeds TCP DNS framing limit".to_owned())?;
         tokio::time::timeout(
@@ -397,7 +397,7 @@ async fn handle_dns_tcp(
 
 async fn doh_query(
     pool: &DohPool,
-    connect_gate: &DohConnectGate,
+    connect_gates: &DohConnectGates,
     outbound: &OutboundProxy,
     query: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -413,7 +413,7 @@ async fn doh_query(
         let endpoint_timeout = remaining.min(DOH_ENDPOINT_TIMEOUT);
         match doh_query_endpoint(
             pool,
-            connect_gate,
+            connect_gates,
             outbound,
             endpoint,
             query,
@@ -438,9 +438,18 @@ async fn doh_query(
     }
 }
 
+async fn doh_connect_gate(connect_gates: &DohConnectGates, key: &str) -> Arc<Mutex<()>> {
+    let mut gates = connect_gates.lock().await;
+    Arc::clone(
+        gates
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
 async fn doh_query_endpoint(
     pool: &DohPool,
-    connect_gate: &DohConnectGate,
+    connect_gates: &DohConnectGates,
     outbound: &OutboundProxy,
     endpoint: Ipv4Addr,
     query: &[u8],
@@ -460,6 +469,7 @@ async fn doh_query_endpoint(
             }
         }
 
+        let connect_gate = doh_connect_gate(connect_gates, &key).await;
         let connect_guard = connect_gate.lock().await;
         if let Some(entry) = pool.lock().await.get(&key).cloned() {
             active_generation = Some(entry.generation);
