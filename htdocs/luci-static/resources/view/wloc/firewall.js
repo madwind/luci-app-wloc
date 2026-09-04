@@ -205,10 +205,15 @@ return view.extend({
             pageVisible = false;
         }, { once: true });
 
+        var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
+            E('div', {}, _('Available variables:')),
+            E('div', {}, [ E('code', {}, '%port%'), ' — ', _('WLOC listen port.') ])
+        ]);
+
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [ editor.root, message ]),
+            E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
                 runtimeToolbar,
