@@ -57,10 +57,13 @@ function defer_helper(request, args, label, cleanup) {
         return { ok: false, error: 'unable to connect to ubus' };
     }
 
+    let params = [ HELPER ];
+    for (let arg in args) push(params, `${arg}`);
+
     try {
         return ubus.defer('file', 'exec', {
             command: '/usr/bin/ucode',
-            params: [ HELPER, ...args ]
+            params
         }, function(code, reply) {
             let result;
             try {
