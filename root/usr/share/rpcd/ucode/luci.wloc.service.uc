@@ -17,12 +17,27 @@ function service_enabled() {
     return value === true || value === 1 || value === '1';
 }
 
+function service_running() {
+    if (!ubus) return false;
+    try {
+        let result = ubus.call('service', 'list', { name: 'wloc' });
+        let service = result && result.wloc;
+        let instance = service && service.instances && service.instances.daemon;
+        return type(instance) == 'object' && (instance.running === true || instance.running === 1);
+    } catch (e) {
+        return false;
+    }
+}
+
 function defer_action(request, action) {
     if (action !== 'start' && action !== 'stop' && action !== 'restart')
         return { ok: false, error: 'Unsupported WLOC service action.' };
 
     if ((action === 'start' || action === 'restart') && !service_enabled())
         return { ok: false, error: 'Enable service in Settings before starting WLOC.' };
+
+    if (action === 'restart' && !service_running())
+        return { ok: false, error: 'WLOC is stopped. Use Start to start the service.' };
 
     if (!ubus) return { ok: false, error: 'unable to connect to ubus' };
 
