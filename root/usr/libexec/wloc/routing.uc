@@ -31,6 +31,7 @@ function pid() {
     return value;
 }
 function temporary(prefix) { sequence++; return `${prefix}.${pid()}.${time()}.${sequence}`; }
+function fields(value) { return split(trim(`${value ?? ''}`), /[[:space:]]+/); }
 function atomic_write(path, value) {
     let parent = fs.dirname(path) || '.';
     if (!mkdirp(parent)) return { ok: false, error: `cannot create ${parent}` };
@@ -42,27 +43,55 @@ function atomic_write(path, value) {
     fs.chmod(path, 0o600);
     return { ok: true };
 }
-function num(value) {
+function number(value) {
     if (value == null) return null;
     let text = `${value}`;
     if (match(text, /^0[xX][0-9A-Fa-f]+$/)) return int(substr(text, 2), 16);
-    if (!match(text, /^\d+$/)) return null;
-    return +text;
+    if (!match(text, /^[0-9]+$/)) return null;
+    return int(text);
 }
 function hex(value) { return sprintf('0x%x', value); }
 function valid_ipv4_prefix(value) {
-    let found = match(`${value ?? ''}`, /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+    let found = match(`${value ?? ''}`, /^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)\/([0-9]+)$/);
     if (!found) return false;
-    for (let i = 1; i <= 4; i++) if (int(found[i]) < 0 || int(found[i]) > 255) return false;
-    return int(found[5]) >= 0 && int(found[5]) <= 32;
+    for (let i = 1; i <= 4; i++) {
+        let octet = int(found[i]);
+        if (octet < 0 || octet > 255) return false;
+    }
+    let prefix = int(found[5]);
+    return prefix >= 0 && prefix <= 32;
 }
 function valid_ipv6_prefix(value) {
-    let found = match(`${value ?? ''}`, /^([0-9A-Fa-f:]+)\/(\d+)$/);
-    return !!found && index(found[1], ':') >= 0 && int(found[2]) >= 0 && int(found[2]) <= 128;
+    let found = match(`${value ?? ''}`, /^([0-9A-Fa-f:]+)\/([0-9]+)$/);
+    if (!found || index(found[1], ':') < 0) return false;
+    let prefix = int(found[2]);
+    return prefix >= 0 && prefix <= 128;
 }
 function normalized_prefix(family, prefix) {
     if (prefix == 'default') return family == '4' ? '0.0.0.0/0' : '::/0';
     return prefix;
+}
+function parse_route(parts) {
+    if (length(parts) != 10 || parts[0] != 'ip' || (parts[1] != '-4' && parts[1] != '-6') ||
+        parts[2] != 'route' || parts[3] != 'replace' || parts[4] != 'local' ||
+        parts[6] != 'dev' || parts[7] != 'lo' || parts[8] != 'table') return null;
+    let family = substr(parts[1], 1), table = number(parts[9]), prefix = parts[5];
+    if (table == null || table < 1 || table > 4294967295) return { error: `IPv${family} routing table is outside 1..4294967295` };
+    if (family == '4' ? !valid_ipv4_prefix(prefix) : !valid_ipv6_prefix(prefix)) return { error: `invalid IPv${family} local route prefix` };
+    return { family, table, prefix };
+}
+function parse_rule(parts) {
+    if (length(parts) != 10 || parts[0] != 'ip' || (parts[1] != '-4' && parts[1] != '-6') ||
+        parts[2] != 'rule' || parts[3] != 'add' || parts[4] != 'priority' || parts[6] != 'fwmark' || parts[8] != 'lookup') return null;
+    let family = substr(parts[1], 1), priority = number(parts[5]), table = number(parts[9]);
+    let markmask = split(parts[7], '/');
+    if (length(markmask) != 2) return { error: `IPv${family} fwmark must include a hexadecimal mask` };
+    let mark = number(markmask[0]), mask = number(markmask[1]);
+    if (priority == null || priority < 1 || priority > 4294967295) return { error: `IPv${family} routing rule priority is outside 1..4294967295` };
+    if (table == null || table < 1 || table > 4294967295) return { error: `IPv${family} routing table is outside 1..4294967295` };
+    if (mark == null || mark < 1 || mark > 0xffffffff) return { error: `IPv${family} fwmark must be a non-zero hexadecimal value up to 32 bits` };
+    if (mask == null || mask < 1 || mask > 0xffffffff) return { error: `IPv${family} fwmark mask must be a non-zero hexadecimal value up to 32 bits` };
+    return { family, priority, mark, mask, table };
 }
 function parse_config(raw) {
     raw = `${raw ?? ''}`;
@@ -74,26 +103,18 @@ function parse_config(raw) {
     for (let source_line in split(raw, '\n')) {
         let line = trim(source_line || '');
         if (!line || substr(line, 0, 1) == '#') continue;
-
-        let route = match(line, /^ip\s+-([46])\s+route\s+replace\s+local\s+(\S+)\s+dev\s+lo\s+table\s+(\d+)$/);
+        let parts = fields(line), route = parse_route(parts);
         if (route) {
-            let family = route[1], table = num(route[3]);
-            if (routes[family]) return { ok: false, error: `routing file declares more than one IPv${family} local route command` };
-            if (table == null || table < 1 || table > 4294967295) return { ok: false, error: `IPv${family} routing table is outside 1..4294967295` };
-            if (family == '4' ? !valid_ipv4_prefix(route[2]) : !valid_ipv6_prefix(route[2])) return { ok: false, error: `invalid IPv${family} local route prefix` };
-            routes[family] = { family, prefix: route[2], table };
+            if (route.error) return { ok: false, error: route.error };
+            if (routes[route.family]) return { ok: false, error: `routing file declares more than one IPv${route.family} local route command` };
+            routes[route.family] = route;
             continue;
         }
-
-        let rule = match(line, /^ip\s+-([46])\s+rule\s+add\s+priority\s+(\d+)\s+fwmark\s+(0[xX][0-9A-Fa-f]{1,8})\/(0[xX][0-9A-Fa-f]{1,8})\s+lookup\s+(\d+)$/);
+        let rule = parse_rule(parts);
         if (!rule) return { ok: false, error: `unsupported routing command: ${line}` };
-        let family = rule[1], priority = num(rule[2]), mark = num(rule[3]), mask = num(rule[4]), table = num(rule[5]);
-        if (rules[family]) return { ok: false, error: `routing file declares more than one IPv${family} fwmark rule command` };
-        if (priority == null || priority < 1 || priority > 4294967295) return { ok: false, error: `IPv${family} routing rule priority is outside 1..4294967295` };
-        if (table == null || table < 1 || table > 4294967295) return { ok: false, error: `IPv${family} routing table is outside 1..4294967295` };
-        if (mark == null || mark < 1 || mark > 0xffffffff) return { ok: false, error: `IPv${family} fwmark must be a non-zero hexadecimal value up to 32 bits` };
-        if (mask == null || mask < 1 || mask > 0xffffffff) return { ok: false, error: `IPv${family} fwmark mask must be a non-zero hexadecimal value up to 32 bits` };
-        rules[family] = { family, priority, mark, mask, table };
+        if (rule.error) return { ok: false, error: rule.error };
+        if (rules[rule.family]) return { ok: false, error: `routing file declares more than one IPv${rule.family} fwmark rule command` };
+        rules[rule.family] = rule;
     }
 
     if (!routes['4'] || !rules['4']) return { ok: false, error: 'routing file must declare one IPv4 local route and one IPv4 fwmark rule' };
@@ -128,16 +149,15 @@ function parse_config(raw) {
 function rule_present(spec) {
     let result = capture(`ip -${spec.family} rule show`);
     if (!result.ok) return false;
-    for (let source_line in split(result.output || '', '\n')) {
-        let priority = match(source_line, /^\s*(\d+):/);
-        if (!priority || int(priority[1]) != spec.priority) continue;
-        let body = trim(replace(source_line, /^\s*\d+:\s*/, ''));
-        let found = match(body, /^from\s+all\s+fwmark\s+(\S+)\s+[Ll]ookup\s+(\S+)$/);
-        if (!found) continue;
-        let markmask = split(found[1], '/');
-        let mark = num(markmask[0]);
-        let mask = num(length(markmask) > 1 ? markmask[1] : '0xffffffff');
-        if (mark == spec.mark && mask == spec.mask && num(found[2]) == spec.table) return true;
+    for (let line in split(result.output || '', '\n')) {
+        let parts = fields(line);
+        if (length(parts) < 7) continue;
+        let priority_text = parts[0] || '';
+        if (substr(priority_text, -1) == ':') priority_text = substr(priority_text, 0, length(priority_text) - 1);
+        if (number(priority_text) != spec.priority || parts[1] != 'from' || parts[2] != 'all' || parts[3] != 'fwmark') continue;
+        let markmask = split(parts[4] || '', '/');
+        let mark = number(markmask[0]), mask = number(length(markmask) > 1 ? markmask[1] : '0xffffffff');
+        if (parts[5] == 'lookup' && mark == spec.mark && mask == spec.mask && number(parts[6]) == spec.table) return true;
     }
     return false;
 }
@@ -146,10 +166,9 @@ function route_present(spec) {
     if (!result.ok) return false;
     let expected = normalized_prefix(spec.family, spec.prefix);
     for (let line in split(result.output || '', '\n')) {
-        let fields = split(trim(line), /\s+/);
-        if (length(fields) < 2) continue;
-        if (fields[0] != 'local' || normalized_prefix(spec.family, fields[1]) != expected) continue;
-        if (match(line, /\sdev\s+lo(\s|$)/)) return true;
+        let parts = fields(line);
+        if (length(parts) < 2 || parts[0] != 'local' || normalized_prefix(spec.family, parts[1]) != expected) continue;
+        for (let i = 2; i + 1 < length(parts); i++) if (parts[i] == 'dev' && parts[i + 1] == 'lo') return true;
     }
     return false;
 }
@@ -320,7 +339,10 @@ function deactivate(reset) {
         let effective = effective_raw();
         raw = effective ? effective.raw : null;
     }
-    if (!raw) { if (reset) { fs.unlink(APPLIED); fs.unlink(CANDIDATE); } return { ok: true, route_active: false }; }
+    if (!raw) {
+        if (reset) { fs.unlink(APPLIED); fs.unlink(CANDIDATE); }
+        return { ok: true, route_active: false };
+    }
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
     let removed = remove_state(parsed.state);

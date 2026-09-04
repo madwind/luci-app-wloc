@@ -71,7 +71,7 @@ function installed_version() {
     if (!result.ok) return null;
     let prefix = `${PACKAGE}-`;
     for (let line in split(result.output || '', /\r?\n/)) {
-        let found = match(line, /^(\S+)/), token = found ? found[1] : '';
+        let parts = split(trim(line || ''), /[[:space:]]+/), token = length(parts) ? parts[0] : '';
         if (substr(token, 0, length(prefix)) == prefix) return substr(token, length(prefix));
     }
     return null;
@@ -301,7 +301,7 @@ function worker_matches(process_pid) {
 }
 function collect_children(parent, output) {
     let raw = trim(read_text(`/proc/${parent}/task/${parent}/children`) || '');
-    for (let value in split(raw, /\s+/)) {
+    for (let value in split(raw, /[[:space:]]+/)) {
         let child = int(value || 0);
         if (child <= 1) continue;
         collect_children(child, output); push(output, child);
@@ -352,7 +352,7 @@ function days_in_month(year, month) {
 }
 function next_check_local() {
     let result = capture("date '+%Y %m %d %w %H %M'");
-    let fields = result.ok ? split(trim(result.output || ''), /\s+/) : [];
+    let fields = result.ok ? split(trim(result.output || ''), /[[:space:]]+/) : [];
     if (length(fields) != 6) return '';
     let year = int(fields[0]), month = int(fields[1]), day = int(fields[2]), dow = int(fields[3]), hour = int(fields[4]), minute = int(fields[5]);
     let days = (SCHEDULE_DOW - dow + 7) % 7;

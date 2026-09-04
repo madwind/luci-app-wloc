@@ -18,7 +18,7 @@ function truthy(value) { return value === true || value === 1 || value == '1' ||
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function valid_device(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_-]+$/) != null; }
 function valid_country(value) { return match(`${value ?? ''}`, /^[A-Za-z]{2}$/) != null; }
-function valid_time(value) { return match(`${value ?? ''}`, /^(?:[01]\d|2[0-3]):[0-5]\d$/) != null; }
+function valid_time(value) { return match(`${value ?? ''}`, /^([01][0-9]|2[0-3]):[0-5][0-9]$/) != null; }
 function time_minutes(value) {
     if (!valid_time(value)) return null;
     let fields = split(`${value}`, ':');
@@ -136,7 +136,7 @@ function reconcile() {
 }
 function seconds_until_next_check() {
     let result = capture("date '+%M %S'");
-    let fields = result.ok ? split(trim(result.output || ''), /\s+/) : [];
+    let fields = result.ok ? split(trim(result.output || ''), /[[:space:]]+/) : [];
     if (length(fields) != 2) return 1800;
     let minute = int(fields[0]), second = int(fields[1]);
     let elapsed = (minute % 30) * 60 + second;

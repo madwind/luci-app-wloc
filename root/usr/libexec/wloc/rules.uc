@@ -41,7 +41,7 @@ function run_routing(command) {
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function valid_port(value) {
     let text = `${value ?? ''}`;
-    if (!match(text, /^\d+$/)) return false;
+    if (!match(text, /^[0-9]+$/)) return false;
     let port = int(text);
     return port >= 1 && port <= 65535;
 }

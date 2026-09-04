@@ -93,15 +93,17 @@ function mask(raw) {
 function ownership(raw) {
     let stream = replace(mask(raw), /[;}]/g, '\n');
     let table_count = 0;
+    let forbidden = { add: true, create: true, flush: true, include: true, delete: true, destroy: true, reset: true, insert: true, replace: true, rename: true };
     for (let line in split(stream, '\n')) {
         line = trim(line || '');
         if (!line) continue;
-        if (match(line, /^(add|create|flush|include|delete|destroy|reset|insert|replace|rename)(\s|$)/))
+        let fields = split(line, /[[:space:]]+/), first = fields[0] || '';
+        if (forbidden[first])
             return { ok: false, error_code: 'unsupported_firewall_command', error: 'Only declarative definitions of table bridge wloc and table inet wloc are supported.' };
-        let table = match(line, /^table\s+(\S+)\s+(\S+)(\s|$)/);
-        if (!table) continue;
+        if (first != 'table') continue;
         table_count++;
-        if ((table[1] != 'bridge' && table[1] != 'inet') || table[2] != 'wloc')
+        let family = fields[1] || '', name = fields[2] || '';
+        if ((family != 'bridge' && family != 'inet') || name != 'wloc')
             return { ok: false, error_code: 'unsupported_firewall_command', error: 'WLOC owns only table bridge wloc and table inet wloc.' };
     }
     if (!table_count) return { ok: false, error_code: 'unsupported_firewall_command', error: 'Firewall configuration does not declare a WLOC table.' };
