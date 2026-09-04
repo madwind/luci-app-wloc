@@ -37,15 +37,6 @@ function numberOrNull(value) {
     return isFinite(number) && number >= 0 ? number : null;
 }
 
-function startupStatus(status) {
-    if (!status || !truthy(status.running) || truthy(status.armed))
-        return false;
-
-    var startedAt = numberOrNull(status.session_started_at);
-    return startedAt !== null && startedAt > 0 &&
-        Date.now() / 1000 - startedAt < ACTION_TIMEOUT / 1000;
-}
-
 function tableRow(label, value) {
     return E('tr', { 'class': 'tr' }, [
         E('th', { 'class': 'th cbi-section-table-cell' }, label),
@@ -125,7 +116,7 @@ function runtimeLogSection(options) {
     }
 
     function logFilterExpression() {
-        var pattern = logFilter.value.trim();
+        var pattern = logFilter.value;
         if (!pattern) {
             logFilter.setCustomValidity('');
             logFilter.removeAttribute('aria-invalid');
@@ -411,8 +402,12 @@ function runtimeLogSection(options) {
     }
 
     function resumeLogs() {
-        if (logStopped || !pageVisible || startupBusy())
+        if (logStopped || !pageVisible)
             return;
+        if (startupBusy()) {
+            deferLogs();
+            return;
+        }
         logsDeferred = false;
         if (!streamController)
             startLogStream(true);
@@ -479,14 +474,23 @@ function runtimeLogSection(options) {
 
 return view.extend({
     load: function() {
-        return L.resolveDefault(callStatus(), {}).then(function(status) {
-            var routing = startupStatus(status)
-                ? Promise.resolve({})
-                : L.resolveDefault(callRouting(), {});
+        var deadline = Date.now() + ACTION_TIMEOUT;
+
+        function waitForStartup() {
+            return L.resolveDefault(callReady(), {}).then(function(state) {
+                if (!(state && state.ok === true && state.busy === true) || Date.now() >= deadline)
+                    return state;
+                return new Promise(function(resolve) {
+                    window.setTimeout(resolve, 750);
+                }).then(waitForStartup);
+            });
+        }
+
+        return waitForStartup().then(function() {
             return Promise.all([
-                Promise.resolve(status),
+                L.resolveDefault(callStatus(), {}),
                 wlocOverview.load(),
-                routing
+                L.resolveDefault(callRouting(), {})
             ]);
         });
     },
@@ -511,6 +515,7 @@ return view.extend({
         var actionDeadline = 0;
         var lastStatus = null;
         var lastRoutingStatus = initialRouting;
+        var transitionBusy = false;
         var runtimeLogController = null;
         var overviewController = wlocOverview.create(data && data[1] || {}, initial);
 
@@ -523,10 +528,10 @@ return view.extend({
             wlocUi.setState(message, state, value);
         }
 
-        function startupBusy(status) {
+        function startupBusy() {
             if (actionInProgress && (activeAction === 'start' || activeAction === 'restart' || activeAction === 'regenerate'))
                 return true;
-            return startupStatus(status || lastStatus);
+            return transitionBusy;
         }
 
         function notifyLogLifecycle() {
@@ -607,11 +612,16 @@ return view.extend({
             if (actionInProgress && startupBusy())
                 return Promise.resolve(lastStatus);
 
-            statusRequest = callStatus().then(function(result) {
-                if (startupBusy(result))
-                    return applyStatus(result, lastRoutingStatus);
-                return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
-                    return applyStatus(result, routingResult);
+            statusRequest = callReady().then(function(state) {
+                transitionBusy = !!(state && state.ok === true && state.busy === true);
+                notifyLogLifecycle();
+                if (transitionBusy)
+                    return lastStatus;
+
+                return callStatus().then(function(result) {
+                    return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
+                        return applyStatus(result, routingResult);
+                    });
                 });
             }).catch(function(error) {
                 showStatusUnavailable(error);
@@ -634,6 +644,7 @@ return view.extend({
                 var complete = action === 'stop' ? !running : ready;
 
                 if (complete) {
+                    transitionBusy = false;
                     return callStatus().then(function(result) {
                         return applyStatus(result, lastRoutingStatus);
                     });
@@ -672,6 +683,7 @@ return view.extend({
             }).then(function(result) {
                 actionInProgress = false;
                 activeAction = null;
+                transitionBusy = false;
                 updateActionButtons();
                 notifyLogLifecycle();
                 return result;
@@ -698,6 +710,7 @@ return view.extend({
             }).then(function(result) {
                 actionInProgress = false;
                 activeAction = null;
+                transitionBusy = false;
                 updateActionButtons();
                 notifyLogLifecycle();
                 return result;
@@ -758,7 +771,7 @@ return view.extend({
             }, _('Regenerate CA'));
             regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, confirmRegenerateCa));
 
-            runtimeLogController = runtimeLogSection({ isStartupBusy: function() { return startupBusy(lastStatus); } });
+            runtimeLogController = runtimeLogSection({ isStartupBusy: startupBusy });
 
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
