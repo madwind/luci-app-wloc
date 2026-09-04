@@ -128,6 +128,10 @@ const methods = {
         args: {},
         call: request => defer_helper(request, [ 'read' ], 'Routing read')
     },
+    runtime: {
+        args: {},
+        call: request => defer_helper(request, [ 'active' ], 'Routing runtime read')
+    },
     validate: {
         args: { config: '' },
         call: request => defer_payload(request, 'validate', args(request).config || '')

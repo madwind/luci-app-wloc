@@ -56,15 +56,20 @@ return view.extend({
             wlocUi.setState(message, state, value);
         }
 
+        function invalidateRuntime() {
+            activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+            wlocUi.setState(runtimeState, 'notice', _('Not loaded'));
+        }
+
         function updateRuntime(next) {
             activeEditor.markSaved(next && next.active ? next.active : _('# No WLOC nftables tables are active.\n'));
             wlocUi.setState(runtimeState, 'ok', _('Loaded'));
         }
 
-        function refreshRuntime(manual) {
+        function refreshRuntime() {
             if (!pageVisible || runtimeRequest)
                 return runtimeRequest || Promise.resolve();
-            if (manual) wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
+            wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
             runtimeRequest = callRuntime().then(function(next) {
                 if (!next || next.ok !== true)
@@ -81,7 +86,7 @@ return view.extend({
             return runtimeRequest;
         }
 
-        function refreshRuntimeWhenReady(manual) {
+        function refreshRuntimeWhenReady() {
             if (!pageVisible)
                 return Promise.resolve();
             if (runtimeReadyTimer !== null) {
@@ -96,11 +101,11 @@ return view.extend({
                     wlocUi.setState(runtimeState, 'notice', _('Waiting for service...'));
                     runtimeReadyTimer = window.setTimeout(function() {
                         runtimeReadyTimer = null;
-                        refreshRuntimeWhenReady(manual);
+                        refreshRuntimeWhenReady();
                     }, 1000);
                     return false;
                 }
-                return refreshRuntime(manual);
+                return refreshRuntime();
             }).catch(function(error) {
                 wlocUi.setState(runtimeState, 'warn', wlocUi.errorMessage(error, _('Runtime refresh failed.')));
                 return false;
@@ -170,7 +175,7 @@ return view.extend({
             return callApply(current.getValue()).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
-                updateRuntime(next);
+                invalidateRuntime();
                 setMessage(next.recovering === true ? 'warn' : 'ok', next.recovering === true
                     ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
                     : _('Applied to runtime; the saved file was not changed.'));
@@ -191,7 +196,7 @@ return view.extend({
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
                 applied = true;
-                updateRuntime(next);
+                invalidateRuntime();
                 return callSave(value);
             }).then(function(next) {
                 if (!next || next.ok !== true)
@@ -230,7 +235,7 @@ return view.extend({
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
         }, _('Refresh'));
-        refreshButton.addEventListener('click', function() { refreshRuntimeWhenReady(true); });
+        refreshButton.addEventListener('click', function() { refreshRuntimeWhenReady(); });
 
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
@@ -248,7 +253,7 @@ return view.extend({
             E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port) ])
         ]);
 
-        var root = E('div', { 'class': 'cbi-map' }, [
+        return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
@@ -258,12 +263,5 @@ return view.extend({
                 activeEditor.root
             ])
         ]);
-
-        window.setTimeout(function() {
-            if (pageVisible)
-                refreshRuntimeWhenReady(false);
-        }, 0);
-
-        return root;
     }
 });

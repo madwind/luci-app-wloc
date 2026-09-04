@@ -11,6 +11,20 @@ var callRead = rpc.declare({
     reject: true
 });
 
+var callRuntime = rpc.declare({
+    object: 'luci.wloc.routing',
+    method: 'runtime',
+    expect: { '': {} },
+    reject: true
+});
+
+var callReady = rpc.declare({
+    object: 'luci.wloc.firewall',
+    method: 'ready',
+    expect: { '': {} },
+    reject: true
+});
+
 var callValidate = rpc.declare({
     object: 'luci.wloc.routing',
     method: 'validate',
@@ -51,6 +65,10 @@ function validationDetail(result) {
     return routingMessage(result, _('Routing command was rejected.'));
 }
 
+function runtimeTransitionBusy(state) {
+    return state && state.ok === true && (state.state === 'starting' || state.state === 'stopping');
+}
+
 function formatRouting(source) {
     var input = String(source || '').replace(/\r\n?/g, '\n').split('\n');
     var output = [];
@@ -86,6 +104,7 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
+        var runtimeReadyTimer = null;
         var pageVisible = true;
         var editor;
         var activeEditor = wlocEditor.create({
@@ -95,6 +114,8 @@ return view.extend({
             rows: 18,
             readonly: true
         });
+
+        activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
 
         function setMessage(state, value) {
             wlocUi.setState(message, state, value);
@@ -106,6 +127,11 @@ return view.extend({
             return next;
         }
 
+        function invalidateRuntime() {
+            activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+            wlocUi.setState(runtimeState, 'notice', _('Not loaded'));
+        }
+
         function updateRuntime(next) {
             activeEditor.markSaved(next && next.active
                 ? next.active
@@ -114,14 +140,13 @@ return view.extend({
                 next && next.route_active === true ? _('Loaded') : _('Inactive'));
         }
 
-        function refreshRuntime(manual) {
+        function refreshRuntime() {
             if (!pageVisible || runtimeRequest)
                 return runtimeRequest || Promise.resolve();
 
-            if (manual)
-                wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
+            wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
-            runtimeRequest = callRead().then(function(next) {
+            runtimeRequest = callRuntime().then(function(next) {
                 return requireOk(next, _('Unable to read runtime Routing rules.'));
             }).then(function(next) {
                 updateRuntime(next);
@@ -137,6 +162,32 @@ return view.extend({
             return runtimeRequest;
         }
 
+        function refreshRuntimeWhenReady() {
+            if (!pageVisible)
+                return Promise.resolve();
+            if (runtimeReadyTimer !== null) {
+                window.clearTimeout(runtimeReadyTimer);
+                runtimeReadyTimer = null;
+            }
+
+            return callReady().then(function(state) {
+                if (!state || state.ok !== true)
+                    throw new Error(routingMessage(state, _('Runtime refresh failed.')));
+                if (runtimeTransitionBusy(state)) {
+                    wlocUi.setState(runtimeState, 'notice', _('Waiting for service...'));
+                    runtimeReadyTimer = window.setTimeout(function() {
+                        runtimeReadyTimer = null;
+                        refreshRuntimeWhenReady();
+                    }, 1000);
+                    return false;
+                }
+                return refreshRuntime();
+            }).catch(function(error) {
+                wlocUi.setState(runtimeState, 'warn', wlocUi.errorMessage(error, _('Runtime refresh failed.')));
+                return false;
+            });
+        }
+
         function reloadRouting(current) {
             setMessage('notice', _('Reloading the saved Routing file...'));
 
@@ -144,7 +195,6 @@ return view.extend({
                 return requireOk(next, _('Unable to read the Routing file.'));
             }).then(function(next) {
                 current.markSaved(next.config || '');
-                updateRuntime(next);
                 setMessage('ok', _('Saved Routing file reloaded.'));
                 return true;
             }).catch(function(error) {
@@ -208,8 +258,8 @@ return view.extend({
             setMessage('notice', _('Applying Routing commands to runtime...'));
             return callApply(current.getValue()).then(function(next) {
                 return requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function(next) {
-                updateRuntime(next);
+            }).then(function() {
+                invalidateRuntime();
                 setMessage('ok', _('Applied to runtime; the saved file was not changed.'));
                 return true;
             }).catch(function(error) {
@@ -228,9 +278,9 @@ return view.extend({
 
             return callApply(value).then(function(next) {
                 return requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function(next) {
+            }).then(function() {
                 applied = true;
-                updateRuntime(next);
+                invalidateRuntime();
                 return callSave(value);
             }).then(function(next) {
                 return requireOk(next, _('The Routing file could not be saved.'));
@@ -262,7 +312,6 @@ return view.extend({
 
         if (result && result.ok === true) {
             editor.markSaved(result.config || '');
-            updateRuntime(result);
         } else {
             setMessage('error', wlocUi.errorMessage(result, _('Unable to read the Routing file.')));
         }
@@ -272,7 +321,7 @@ return view.extend({
             'type': 'button'
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() {
-            refreshRuntime(true);
+            refreshRuntimeWhenReady();
         });
 
         var runtimeToolbar = E('div', {
@@ -282,6 +331,8 @@ return view.extend({
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            if (runtimeReadyTimer !== null)
+                window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [

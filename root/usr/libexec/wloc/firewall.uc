@@ -416,11 +416,8 @@ function apply(raw) {
             : 'WLOC listener is not ready and fail-open cleanup failed; WLOC will retry automatically.';
     }
 
-    let runtime = active_firewall(runtime_tables, true);
     return {
         ok: true, valid: true, applied: true, path: SOURCE, config: checked.config, bytes: length(checked.config),
-        active: runtime.active, active_found: runtime.active_found, missing_tables: runtime.missing_tables,
-        table_count: runtime.table_count, active_table_count: runtime.active_table_count,
         recovering, warning, applied_config: checked.config, applied_path: APPLIED
     };
 }
@@ -436,11 +433,8 @@ function read_current() {
     if (config == null) { config = read_text(DEFAULT_SOURCE); using_default = true; }
     if (config == null) return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
     config = normalize(config);
-    let runtime = active();
     return {
         ok: true, path: SOURCE, config, bytes: length(config), using_default,
-        active: runtime.active, active_found: runtime.active_found, missing_tables: runtime.missing_tables,
-        table_count: runtime.table_count, active_table_count: runtime.active_table_count,
         recovering: false, warning: '', applied_config: read_text(APPLIED) || '', applied_path: APPLIED
     };
 }
