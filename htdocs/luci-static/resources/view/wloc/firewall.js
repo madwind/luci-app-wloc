@@ -1,7 +1,6 @@
 'use strict';
 'require view';
 'require rpc';
-'require poll';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 'require wloc.nftformat as wlocNftFormat';
@@ -11,8 +10,6 @@ var callValidate = rpc.declare({ object: 'luci.wloc.firewall', method: 'validate
 var callSave = rpc.declare({ object: 'luci.wloc.firewall', method: 'save', params: [ 'config' ], expect: { '': {} } });
 var callApply = rpc.declare({ object: 'luci.wloc.firewall', method: 'apply', params: [ 'config' ], expect: { '': {} } });
 var callDefault = rpc.declare({ object: 'luci.wloc.defaults', method: 'firewall', expect: { '': {} } });
-
-var RUNTIME_REFRESH_INTERVAL = 10;
 
 function firewallError(result, fallback) {
     var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
@@ -28,7 +25,7 @@ return view.extend({
         document.title = 'OpenWrt | ' + _('Firewall');
 
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Auto refresh every 10 seconds'));
+        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var pageVisible = true;
         var editor;
@@ -48,8 +45,8 @@ return view.extend({
             activeEditor.markSaved(next && next.active ? next.active : _('# No WLOC nftables tables are active.\n'));
             wlocUi.setState(runtimeState, next && next.recovering === true ? 'warn' : 'ok',
                 next && next.recovering === true
-                    ? (next.warning || _('Recovering · auto refresh every 10 seconds'))
-                    : _('Live · auto refresh every 10 seconds'));
+                    ? (next.warning || _('Recovering'))
+                    : _('Loaded'));
         }
 
         function refreshRuntime(manual) {
@@ -204,10 +201,8 @@ return view.extend({
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
-        poll.add(refreshRuntime, RUNTIME_REFRESH_INTERVAL);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
-            poll.remove(refreshRuntime);
         }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [
