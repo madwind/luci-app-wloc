@@ -109,8 +109,12 @@ function runtimeLogSection() {
     function renderLogs() {
         var oldScrollTop = logOutput.scrollTop;
         var wasAtBottom = followLogs;
+
         logOutput.value = filteredLogLines().join('\n');
-        logOutput.scrollTop = wasAtBottom ? logOutput.scrollHeight : oldScrollTop;
+        if (wasAtBottom)
+            logOutput.scrollTop = logOutput.scrollHeight;
+        else
+            logOutput.scrollTop = oldScrollTop;
     }
 
     function appendRenderedLogLine(line) {
@@ -156,7 +160,11 @@ function runtimeLogSection() {
 
         var appendText = (logOutput.value ? '\n' : '') + line;
         logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
-        logOutput.scrollTop = wasAtBottom ? logOutput.scrollHeight : oldScrollTop;
+
+        if (wasAtBottom)
+            logOutput.scrollTop = logOutput.scrollHeight;
+        else
+            logOutput.scrollTop = oldScrollTop;
     }
 
     function isRelevantLogEntry(entry) {
@@ -317,8 +325,12 @@ function runtimeLogSection() {
         stopLogStream();
     }, { once: true });
 
-    loadInitialLogs();
-    startLogStream();
+    window.setTimeout(function() {
+        if (!pageVisible)
+            return;
+        loadInitialLogs();
+        startLogStream();
+    }, 0);
 
     return E('div', { 'class': 'cbi-section' }, [
         E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
