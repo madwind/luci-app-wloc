@@ -20,12 +20,16 @@ use wloc_rs::network_source::HostapdNetworkSource;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(5);
 const PEER_CACHE_MAX: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DNS_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const UDP_DISPATCH_LIMIT: usize = 64;
-const UDP_SESSION_MAX: usize = 256;
+const UDP_SESSION_MAX: usize = 128;
+const UDP_SESSION_QUEUE: usize = 32;
 const UDP_REPLY_SOCKET_MAX: usize = 64;
+const UDP_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const DOH_POOL_MAX: usize = 64;
-const DOH_TIMEOUT: Duration = Duration::from_secs(5);
+const DOH_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(3);
+const DOH_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_DNS_MESSAGE: usize = u16::MAX as usize;
 const DOH_ENDPOINTS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)];
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
@@ -34,6 +38,7 @@ const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
 static DOH_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 type UdpReplySockets = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>;
+type UdpErrorLog = Arc<Mutex<Instant>>;
 
 #[derive(Clone)]
 struct DohEntry {
@@ -42,11 +47,21 @@ struct DohEntry {
 }
 
 type DohPool = Arc<Mutex<HashMap<String, DohEntry>>>;
+type DohConnectGate = Arc<Mutex<()>>;
 
 #[derive(Clone, Copy)]
 enum AddressFamily {
     V4,
     V6,
+}
+
+impl AddressFamily {
+    fn label(self) -> &'static str {
+        match self {
+            Self::V4 => "ipv4",
+            Self::V6 => "ipv6",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -76,11 +91,15 @@ pub struct TransparentProxy {
     udp_sessions: Arc<Mutex<HashMap<UdpSessionKey, mpsc::Sender<UdpRequest>>>>,
     udp_dispatch: Arc<Semaphore>,
     udp_reply_sockets: UdpReplySockets,
+    udp_error_log: UdpErrorLog,
     doh_pool: DohPool,
+    doh_connect_gate: DohConnectGate,
 }
 
 impl TransparentProxy {
     pub fn new(rules: Vec<LocationRule>) -> Self {
+        let now = Instant::now();
+        let log_start = now.checked_sub(UDP_ERROR_LOG_INTERVAL).unwrap_or(now);
         Self {
             rules,
             arp_path: std::env::var_os("WLOC_ARP_PATH")
@@ -94,7 +113,9 @@ impl TransparentProxy {
             udp_sessions: Arc::new(Mutex::new(HashMap::new())),
             udp_dispatch: Arc::new(Semaphore::new(UDP_DISPATCH_LIMIT)),
             udp_reply_sockets: Arc::new(Mutex::new(HashMap::new())),
+            udp_error_log: Arc::new(Mutex::new(log_start)),
             doh_pool: Arc::new(Mutex::new(HashMap::new())),
+            doh_connect_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -150,14 +171,28 @@ impl TransparentProxy {
     pub async fn handle_tcp(&self, mut client: TcpStream) -> Result<(), String> {
         let peer = client.peer_addr().map_err(io_message)?;
         let destination = client.local_addr().map_err(io_message)?;
-        let rule = self.target_for(peer.ip()).await?;
+        let rule = match self.target_for(peer.ip()).await {
+            Ok(rule) => rule,
+            Err(error) => {
+                eprintln!(
+                    "wlocd: transparent_rule_lookup=failed client={peer} destination={destination} action=direct error={error}"
+                );
+                None
+            }
+        };
         let outbound = rule
             .as_ref()
             .map(|rule| rule.outbound.clone())
             .unwrap_or(OutboundProxy::Direct);
 
         if destination.port() == 53 {
-            return handle_dns_tcp(&mut client, &outbound, &self.doh_pool).await;
+            return handle_dns_tcp(
+                &mut client,
+                &outbound,
+                &self.doh_pool,
+                &self.doh_connect_gate,
+            )
+            .await;
         }
 
         let mut upstream = tokio::time::timeout(
@@ -184,8 +219,20 @@ impl TransparentProxy {
                 .acquire_owned()
                 .await
                 .map_err(|_| io::Error::other("UDP dispatch limiter closed"))?;
-            let (size, client, destination) =
-                recv_original_datagram(&socket, family, &mut buffer).await?;
+            let (size, client, destination) = match recv_original_datagram(&socket, family, &mut buffer).await {
+                Ok(packet) => packet,
+                Err(error) => {
+                    drop(permit);
+                    if error_log_allowed(&self.udp_error_log).await {
+                        eprintln!(
+                            "wlocd: udp_receive=failed family={} recovery=continue error={error}",
+                            family.label()
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
             let payload = buffer[..size].to_vec();
             let proxy = Arc::clone(&self);
             tokio::spawn(async move {
@@ -194,9 +241,11 @@ impl TransparentProxy {
                     .handle_udp_datagram(client, destination, payload)
                     .await
                 {
-                    eprintln!(
-                        "wlocd: udp=failed client={client} destination={destination} error={error}"
-                    );
+                    if error_log_allowed(&proxy.udp_error_log).await {
+                        eprintln!(
+                            "wlocd: udp=failed client={client} destination={destination} error={error}"
+                        );
+                    }
                 }
             });
         }
@@ -208,14 +257,30 @@ impl TransparentProxy {
         destination: SocketAddr,
         payload: Vec<u8>,
     ) -> Result<(), String> {
-        let rule = self.target_for(client.ip()).await?;
+        let rule = match self.target_for(client.ip()).await {
+            Ok(rule) => rule,
+            Err(error) => {
+                if error_log_allowed(&self.udp_error_log).await {
+                    eprintln!(
+                        "wlocd: transparent_rule_lookup=failed client={client} destination={destination} action=direct error={error}"
+                    );
+                }
+                None
+            }
+        };
         let (rule_id, outbound) = match rule {
             Some(rule) => (rule.id, rule.outbound),
             None => ("direct".to_owned(), OutboundProxy::Direct),
         };
 
         if destination.port() == 53 {
-            let response = doh_query(&self.doh_pool, &outbound, &payload).await?;
+            let response = doh_query(
+                &self.doh_pool,
+                &self.doh_connect_gate,
+                &outbound,
+                &payload,
+            )
+            .await?;
             send_spoofed_udp(&self.udp_reply_sockets, destination, client, &response)
                 .await
                 .map_err(io_message)?;
@@ -238,12 +303,13 @@ impl TransparentProxy {
                     if sessions.len() >= UDP_SESSION_MAX {
                         return Err("UDP session limit reached".into());
                     }
-                    let (sender, receiver) = mpsc::channel(128);
+                    let (sender, receiver) = mpsc::channel(UDP_SESSION_QUEUE);
                     sessions.insert(key.clone(), sender.clone());
                     let session_key = key.clone();
                     let sessions = Arc::clone(&self.udp_sessions);
                     let session_outbound = outbound.clone();
                     let reply_sockets = Arc::clone(&self.udp_reply_sockets);
+                    let error_log = Arc::clone(&self.udp_error_log);
                     tokio::spawn(async move {
                         let result = run_udp_session(
                             client,
@@ -255,9 +321,11 @@ impl TransparentProxy {
                         .await;
                         sessions.lock().await.remove(&session_key);
                         if let Err(error) = result {
-                            eprintln!(
-                                "wlocd: udp_session=failed client={client} destination={destination} error={error}"
-                            );
+                            if error_log_allowed(&error_log).await {
+                                eprintln!(
+                                    "wlocd: udp_session=failed client={client} destination={destination} error={error}"
+                                );
+                            }
                         }
                     });
                     sender
@@ -274,14 +342,28 @@ impl TransparentProxy {
     }
 }
 
+async fn error_log_allowed(last_log: &UdpErrorLog) -> bool {
+    let mut last = last_log.lock().await;
+    let now = Instant::now();
+    if now.duration_since(*last) < UDP_ERROR_LOG_INTERVAL {
+        return false;
+    }
+    *last = now;
+    true
+}
+
 async fn handle_dns_tcp(
     client: &mut TcpStream,
     outbound: &OutboundProxy,
     pool: &DohPool,
+    connect_gate: &DohConnectGate,
 ) -> Result<(), String> {
     loop {
         let mut length = [0_u8; 2];
-        if let Err(error) = client.read_exact(&mut length).await {
+        let length_read = tokio::time::timeout(DNS_TCP_IDLE_TIMEOUT, client.read_exact(&mut length))
+            .await
+            .map_err(|_| "TCP DNS idle timed out".to_owned())?;
+        if let Err(error) = length_read {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 return Ok(());
             }
@@ -292,28 +374,53 @@ async fn handle_dns_tcp(
             return Err("empty TCP DNS query".into());
         }
         let mut query = vec![0_u8; query_len];
-        client.read_exact(&mut query).await.map_err(io_message)?;
-        let response = doh_query(pool, outbound, &query).await?;
+        tokio::time::timeout(DNS_TCP_IDLE_TIMEOUT, client.read_exact(&mut query))
+            .await
+            .map_err(|_| "TCP DNS query timed out".to_owned())?
+            .map_err(io_message)?;
+        let response = doh_query(pool, connect_gate, outbound, &query).await?;
         let response_len = u16::try_from(response.len())
             .map_err(|_| "DoH response exceeds TCP DNS framing limit".to_owned())?;
-        client
-            .write_all(&response_len.to_be_bytes())
+        tokio::time::timeout(
+            DNS_TCP_IDLE_TIMEOUT,
+            client.write_all(&response_len.to_be_bytes()),
+        )
+        .await
+        .map_err(|_| "TCP DNS response timed out".to_owned())?
+        .map_err(io_message)?;
+        tokio::time::timeout(DNS_TCP_IDLE_TIMEOUT, client.write_all(&response))
             .await
+            .map_err(|_| "TCP DNS response timed out".to_owned())?
             .map_err(io_message)?;
-        client.write_all(&response).await.map_err(io_message)?;
     }
 }
 
 async fn doh_query(
     pool: &DohPool,
+    connect_gate: &DohConnectGate,
     outbound: &OutboundProxy,
     query: &[u8],
 ) -> Result<Vec<u8>, String> {
     validate_dns_message(query, "query")?;
+    let deadline = Instant::now() + DOH_QUERY_TIMEOUT;
     let mut last_error = String::new();
 
     for endpoint in DOH_ENDPOINTS {
-        match doh_query_endpoint(pool, outbound, endpoint, query).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let endpoint_timeout = remaining.min(DOH_ENDPOINT_TIMEOUT);
+        match doh_query_endpoint(
+            pool,
+            connect_gate,
+            outbound,
+            endpoint,
+            query,
+            endpoint_timeout,
+        )
+        .await
+        {
             Ok(response) if dns_servfail(&response) => {
                 last_error = format!("{endpoint} returned SERVFAIL");
             }
@@ -324,18 +431,24 @@ async fn doh_query(
         }
     }
 
-    Err(format!("DoH query failed: {last_error}"))
+    if last_error.is_empty() {
+        Err("DoH query timed out".to_owned())
+    } else {
+        Err(format!("DoH query failed: {last_error}"))
+    }
 }
 
 async fn doh_query_endpoint(
     pool: &DohPool,
+    connect_gate: &DohConnectGate,
     outbound: &OutboundProxy,
     endpoint: Ipv4Addr,
     query: &[u8],
+    timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let key = outbound.pool_key(&format!("doh:{endpoint}"));
     let mut active_generation = None;
-    let result = tokio::time::timeout(DOH_TIMEOUT, async {
+    let result = tokio::time::timeout(timeout, async {
         if let Some(entry) = pool.lock().await.get(&key).cloned() {
             active_generation = Some(entry.generation);
             match doh_exchange(entry.sender, endpoint, query).await {
@@ -343,6 +456,20 @@ async fn doh_query_endpoint(
                 Err(_) => {
                     remove_doh_generation(pool, &key, entry.generation).await;
                     active_generation = None;
+                }
+            }
+        }
+
+        let connect_guard = connect_gate.lock().await;
+        if let Some(entry) = pool.lock().await.get(&key).cloned() {
+            active_generation = Some(entry.generation);
+            drop(connect_guard);
+            match doh_exchange(entry.sender, endpoint, query).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    remove_doh_generation(pool, &key, entry.generation).await;
+                    active_generation = None;
+                    return Err(error);
                 }
             }
         }
@@ -369,8 +496,10 @@ async fn doh_query_endpoint(
         let generation = DOH_GENERATION.fetch_add(1, Ordering::Relaxed);
         {
             let mut connections = pool.lock().await;
-            if connections.len() >= DOH_POOL_MAX {
-                connections.clear();
+            if connections.len() >= DOH_POOL_MAX && !connections.contains_key(&key) {
+                if let Some(oldest) = connections.keys().next().cloned() {
+                    connections.remove(&oldest);
+                }
             }
             connections.insert(
                 key.clone(),
@@ -381,6 +510,7 @@ async fn doh_query_endpoint(
             );
         }
         active_generation = Some(generation);
+        drop(connect_guard);
         let driver_pool = Arc::clone(pool);
         let driver_key = key.clone();
         tokio::spawn(async move {
