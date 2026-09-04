@@ -11,6 +11,7 @@ const STATE_PATH = `${STATE_DIR}/wloc.json`;
 const LOCK = `${STATE_DIR}/wloc.lock`;
 const LOG = `${STATE_DIR}/wloc.log`;
 const VERSION_CACHE = '/usr/share/wloc/installed-version';
+const STATUS_PATH = '/var/run/wloc/status.json';
 const PACKAGE = 'luci-app-wloc';
 const REPO = 'madwind/luci-app-wloc';
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -108,10 +109,14 @@ function daemon_running() {
         return bool(value && value.wloc && value.wloc.instances && value.wloc.instances.daemon && value.wloc.instances.daemon.running);
     } catch (e) { return quiet('pidof wlocd'); }
 }
+function daemon_armed() {
+    let state = parse_json(read_text(STATUS_PATH) || '');
+    return type(state) == 'object' && bool(state.running) && bool(state.armed);
+}
 function wait_daemon() {
     let stable = 0;
-    for (let i = 0; i < 6; i++) {
-        if (daemon_running()) { stable++; if (stable >= 3) return true; }
+    for (let i = 0; i < 20; i++) {
+        if (daemon_running() && daemon_armed()) { stable++; if (stable >= 2) return true; }
         else stable = 0;
         system('sleep 1');
     }
@@ -255,7 +260,7 @@ function worker_update() {
         let detail = compact_error(installed.output || '');
         if (was_running) {
             quiet('/etc/init.d/wloc start');
-            if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); detail += ' WLOC did not recover after the failed package install.'; }
+            if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); detail += ' WLOC did not become healthy after the failed package install.'; }
         }
         return fail_worker(state, `APK install failed: ${trim(detail)}`);
     }
@@ -264,7 +269,7 @@ function worker_update() {
     if (was_running) {
         set_phase(state, 'restarting', 'Starting WLOC after package update');
         quiet('/etc/init.d/wloc start');
-        if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); append_post_error(state, 'WLOC daemon did not remain running after update; service was stopped to prevent a respawn loop.'); }
+        if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); append_post_error(state, 'WLOC did not become armed after update; service was stopped to prevent an unhealthy respawn loop.'); }
     }
     state.installed_version = installed_version() || state.installed_version;
     if (!state.installed_version) append_post_error(state, 'Unable to verify the installed WLOC version after update.');
