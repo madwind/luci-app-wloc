@@ -25,6 +25,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const GLOBAL_STREAM_LIMIT: usize = 2;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
+const PEER_CACHE_MAX: usize = 256;
 const UPSTREAM_TLS_ATTEMPTS: usize = 2;
 const UPSTREAM_REQUEST_ATTEMPTS: usize = 2;
 
@@ -224,10 +225,15 @@ impl Proxy {
     }
 
     async fn identity_for(&self, peer: IpAddr) -> Result<Option<PeerIdentity>, String> {
-        let cached = self.peer_cache.lock().await.get(&peer).cloned();
-        if let Some(entry) = cached.filter(|entry| entry.expires_at > Instant::now()) {
-            return Ok(Some(entry.identity));
+        let now = Instant::now();
+        {
+            let mut cache = self.peer_cache.lock().await;
+            cache.retain(|_, entry| entry.expires_at > now);
+            if let Some(entry) = cache.get(&peer).cloned() {
+                return Ok(Some(entry.identity));
+            }
         }
+
         let arp_path = self.arp_path.clone();
         let dhcp_leases_path = self.dhcp_leases_path.clone();
         let resolved = tokio::task::spawn_blocking(move || {
@@ -238,7 +244,15 @@ impl Proxy {
         let Some((identity, _lookup)) = resolved else {
             return Ok(None);
         };
-        self.peer_cache.lock().await.insert(
+
+        let mut cache = self.peer_cache.lock().await;
+        cache.retain(|_, entry| entry.expires_at > Instant::now());
+        if cache.len() >= PEER_CACHE_MAX {
+            if let Some(key) = cache.keys().next().copied() {
+                cache.remove(&key);
+            }
+        }
+        cache.insert(
             peer,
             PeerCacheEntry {
                 identity: identity.clone(),
@@ -885,7 +899,7 @@ fn upstream_peer_addresses(
     let peer_ip = stream.peer_addr().ok().map(|address| address.ip());
     match outbound {
         OutboundProxy::Direct => (peer_ip, None),
-        OutboundProxy::Http { .. } | OutboundProxy::Socks5 { .. } => (None, peer_ip),
+        OutboundProxy::Socks5 { .. } => (None, peer_ip),
     }
 }
 
@@ -898,16 +912,6 @@ async fn connect_outbound(
         OutboundProxy::Direct => TcpStream::connect((destination, port))
             .await
             .map_err(ProxyError::io),
-        OutboundProxy::Http {
-            host,
-            port: proxy_port,
-        } => {
-            let mut stream = TcpStream::connect((host.as_str(), *proxy_port))
-                .await
-                .map_err(ProxyError::io)?;
-            http_connect(&mut stream, destination, port).await?;
-            Ok(stream)
-        }
         OutboundProxy::Socks5 {
             host,
             port: proxy_port,
@@ -919,54 +923,6 @@ async fn connect_outbound(
             Ok(stream)
         }
     }
-}
-
-async fn http_connect(
-    stream: &mut TcpStream,
-    destination: &str,
-    port: u16,
-) -> Result<(), ProxyError> {
-    let authority = match destination.parse::<IpAddr>() {
-        Ok(IpAddr::V6(_)) => format!("[{destination}]:{port}"),
-        _ => format!("{destination}:{port}"),
-    };
-    let request = format!(
-        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n\r\n"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(ProxyError::io)?;
-    let mut response = Vec::with_capacity(256);
-    let mut byte = [0_u8; 1];
-    while response.len() < 8192 {
-        if stream.read(&mut byte).await.map_err(ProxyError::io)? == 0 {
-            return Err(ProxyError::Upstream(
-                "HTTP proxy closed during CONNECT".into(),
-            ));
-        }
-        response.push(byte[0]);
-        if response.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    if !response.ends_with(b"\r\n\r\n") {
-        return Err(ProxyError::Upstream(
-            "HTTP proxy CONNECT headers exceed bound".into(),
-        ));
-    }
-    let status = std::str::from_utf8(&response)
-        .ok()
-        .and_then(|text| text.lines().next())
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| ProxyError::Upstream("invalid HTTP proxy CONNECT response".into()))?;
-    if status != 200 {
-        return Err(ProxyError::Upstream(format!(
-            "HTTP proxy CONNECT status {status}"
-        )));
-    }
-    Ok(())
 }
 
 async fn socks5_connect(
