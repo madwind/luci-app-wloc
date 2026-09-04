@@ -18,13 +18,13 @@ you own or are authorized to test.
 
 Each interface can also be given a daily disable window in router local time.
 During the window, WLOC resolves the interface to its configured `wifi-iface`,
-applies a temporary runtime `disabled` override, and reloads WiFi; the
-original wireless UCI value is restored when the window ends and is never
-committed by WLOC.
-Equal start and end times mean all day, and an end time earlier than the start
-crosses midnight. If the fixed interface is missing or ambiguous, WLOC records
-a warning and leaves every other AP unchanged; it never falls back to another
-AP or the whole wireless configuration.
+sets its persistent wireless `disabled` state, commits wireless UCI, and reloads
+WiFi. Outside the window WLOC enables the interface, applies the configured
+radio country code when present, commits the resulting wireless state, and
+reloads WiFi when a change is required. Equal start and end times mean all day,
+and an end time earlier than the start crosses midnight. If the fixed interface
+is missing or ambiguous, WLOC records a warning and leaves every other AP
+unchanged; it never falls back to another AP or the whole wireless configuration.
 
 WLOC owns exactly two nftables tables:
 
