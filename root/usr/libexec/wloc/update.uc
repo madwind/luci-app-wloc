@@ -23,6 +23,7 @@ const SCHEDULE = '17 4 * * 0';
 const SCHEDULE_MINUTE = 17;
 const SCHEDULE_HOUR = 4;
 const SCHEDULE_DOW = 0;
+const LOCK_STALE_SECONDS = 30;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -113,10 +114,10 @@ function daemon_armed() {
     let state = parse_json(read_text(STATUS_PATH) || '');
     return type(state) == 'object' && bool(state.running) && bool(state.armed);
 }
-function wait_daemon() {
+function wait_daemon_running() {
     let stable = 0;
     for (let i = 0; i < 20; i++) {
-        if (daemon_running() && daemon_armed()) { stable++; if (stable >= 2) return true; }
+        if (daemon_running()) { stable++; if (stable >= 2) return true; }
         else stable = 0;
         system('sleep 1');
     }
@@ -147,9 +148,27 @@ function save_state(state) {
     return atomic_write(STATE_PATH, sprintf('%J\n', state), 0o600);
 }
 function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
-function operation_active(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping') && process_alive(state.pid); }
+function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
+function operation_active(state) { return active_status(state) && process_alive(state.pid); }
+function operation_claimed(state) {
+    if (!active_status(state)) return false;
+    if (process_alive(state.pid)) return true;
+    let started = int(state.started || 0);
+    return state.status == 'starting' && started > 0 && now() - started < LOCK_STALE_SECONDS;
+}
+function lock_recent() {
+    let stat = fs.stat(LOCK);
+    return type(stat) == 'object' && now() - int(stat.mtime || 0) < LOCK_STALE_SECONDS;
+}
+function acquire_update_lock(state) {
+    if (quiet(`mkdir ${q(LOCK)}`)) return true;
+    if (operation_claimed(state) || lock_recent()) return false;
+    quiet(`rmdir ${q(LOCK)}`);
+    return quiet(`mkdir ${q(LOCK)}`);
+}
 function normalize_state(state) {
-    if ((state.status == 'starting' || state.status == 'running' || state.status == 'stopping') && state.pid && !process_alive(state.pid)) {
+    let stale_start = state.status == 'starting' && !state.pid && int(state.started || 0) > 0 && now() - int(state.started || 0) >= LOCK_STALE_SECONDS;
+    if ((active_status(state) && state.pid && !process_alive(state.pid)) || stale_start) {
         state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.pid = null; state.updated = false;
         state.error = 'The WLOC update worker exited unexpectedly.'; state.message = 'Update failed';
         save_state(state); quiet(`rmdir ${q(LOCK)}`);
@@ -199,7 +218,7 @@ function probe_release() {
 }
 function check_update() {
     let state = normalize_state(read_state());
-    if (operation_active(state)) return { ok: false, error: 'A WLOC update is already in progress.' };
+    if (operation_claimed(state)) return { ok: false, error: 'A WLOC update is already in progress.' };
     state.status = 'idle'; state.phase = null; state.error = null; state.message = null; state.updated = false; state.finished = null;
     let probe = probe_release();
     state.checked = now(); state.check_ok = probe.ok === true; state.installed_version = probe.installed_version || installed_version() || state.installed_version;
@@ -259,8 +278,13 @@ function worker_update() {
     if (!installed.ok) {
         let detail = compact_error(installed.output || '');
         if (was_running) {
-            quiet('/etc/init.d/wloc start');
-            if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); detail += ' WLOC did not become healthy after the failed package install.'; }
+            set_phase(state, 'restarting', 'Restoring WLOC after failed package installation');
+            if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
+                quiet('/etc/init.d/wloc stop');
+                detail += ' WLOC did not remain running after the failed package install.';
+            } else if (!daemon_armed()) {
+                detail += ' WLOC restarted, but interception is not armed yet.';
+            }
         }
         return fail_worker(state, `APK install failed: ${trim(detail)}`);
     }
@@ -268,8 +292,12 @@ function worker_update() {
     state.post_check_error = null;
     if (was_running) {
         set_phase(state, 'restarting', 'Starting WLOC after package update');
-        quiet('/etc/init.d/wloc start');
-        if (!wait_daemon()) { quiet('/etc/init.d/wloc stop'); append_post_error(state, 'WLOC did not become armed after update; service was stopped to prevent an unhealthy respawn loop.'); }
+        if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
+            quiet('/etc/init.d/wloc stop');
+            append_post_error(state, 'WLOC did not remain running after update; the service was left stopped.');
+        } else if (!daemon_armed()) {
+            append_post_error(state, 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.');
+        }
     }
     state.installed_version = installed_version() || state.installed_version;
     if (!state.installed_version) append_post_error(state, 'Unable to verify the installed WLOC version after update.');
@@ -284,11 +312,10 @@ function spawn_worker() {
 function start_update() {
     if (!mkdirp(STATE_DIR)) return { ok: false, error: 'Unable to create the WLOC update directory.' };
     let state = normalize_state(read_state());
-    if (operation_active(state)) return status_result();
+    if (operation_claimed(state)) return status_result();
     if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
         return { ok: false, error: 'No checked WLOC update is available. Run Check updates first.' };
-    quiet(`rmdir ${q(LOCK)}`);
-    if (!quiet(`mkdir ${q(LOCK)}`)) return { ok: false, error: 'Another WLOC update is starting.' };
+    if (!acquire_update_lock(state)) return { ok: false, error: 'Another WLOC update is starting.' };
     state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
     state.post_check_error = null; state.error = null; state.message = 'Update started';
     let saved = save_state(state);
@@ -329,7 +356,8 @@ function terminate_tree(process_pid) {
 function stop_update() {
     let state = normalize_state(read_state()), process_pid = int(state.pid || 0);
     if (!operation_active(state)) return { ok: false, error: 'No active WLOC update to stop.' };
-    if (state.phase == 'installing') return { ok: false, error: 'WLOC package installation cannot be stopped safely.' };
+    if (state.phase != 'starting' && state.phase != 'downloading' && state.phase != 'verifying')
+        return { ok: false, error: 'WLOC update cannot be stopped after the maintenance phase has started.' };
     if (!worker_matches(process_pid)) return { ok: false, error: 'Refusing to stop an unexpected process.' };
     state.status = 'stopping'; state.phase = 'stopping'; state.message = 'Stopping update'; state.error = null; save_state(state);
     if (!terminate_tree(process_pid)) { state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.error = 'Unable to stop the WLOC update worker.'; state.message = 'Update failed'; save_state(state); return { ok: false, error: state.error }; }
