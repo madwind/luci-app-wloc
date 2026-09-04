@@ -91,7 +91,6 @@ function runtimeLogSection() {
         'role': 'log', 'aria-label': _('WLOC runtime log')
     });
     var logStopped = false;
-    var logSuspended = false;
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
@@ -211,18 +210,7 @@ function runtimeLogSection() {
         renderLogs();
     }
 
-    function resetLogState() {
-        logLines = [];
-        initialLogsLoaded = false;
-        pendingLiveEntries = [];
-        recentLogKeys = Object.create(null);
-        recentLogKeyOrder = [];
-    }
-
     function loadInitialLogs() {
-        if (logSuspended)
-            return Promise.resolve();
-
         return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
             mergeInitialLogs(entries);
         }).catch(function(error) {
@@ -270,7 +258,7 @@ function runtimeLogSection() {
     }
 
     function scheduleReconnect() {
-        if (logStopped || logSuspended || !pageVisible || reconnectTimer !== null) return;
+        if (logStopped || !pageVisible || reconnectTimer !== null) return;
         wlocUi.setState(logState, 'notice', _('Reconnecting'));
         reconnectTimer = window.setTimeout(function() {
             reconnectTimer = null;
@@ -279,7 +267,7 @@ function runtimeLogSection() {
     }
 
     function startLogStream() {
-        if (logStopped || logSuspended || !pageVisible || streamController) return Promise.resolve();
+        if (logStopped || !pageVisible || streamController) return Promise.resolve();
         if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
             wlocUi.setState(logState, 'warn', _('Unavailable'));
             return Promise.resolve();
@@ -306,35 +294,6 @@ function runtimeLogSection() {
         });
     }
 
-    function suspend() {
-        if (logStopped)
-            return false;
-
-        logSuspended = true;
-        stopLogStream();
-        wlocUi.setState(logState, 'notice', _('Waiting for service'));
-        return true;
-    }
-
-    function resume() {
-        if (logStopped)
-            return Promise.resolve();
-
-        logSuspended = false;
-        resetLogState();
-        return loadInitialLogs().then(function() {
-            return startLogStream();
-        });
-    }
-
-    function pauseAfterFailure() {
-        logSuspended = false;
-        logStopped = true;
-        stopLogStream();
-        logStreamButton.textContent = _('Start');
-        wlocUi.setState(logState, 'warn', _('Paused'));
-    }
-
     logOutput.addEventListener('scroll', function() {
         followLogs = logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight <= 4;
     });
@@ -345,16 +304,12 @@ function runtimeLogSection() {
         logStopped = !logStopped;
         logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
         if (logStopped) {
-            logSuspended = false;
             stopLogStream();
             wlocUi.setState(logState, 'notice', _('Stopped'));
             return Promise.resolve();
         }
-        logSuspended = false;
-        resetLogState();
-        return loadInitialLogs().then(function() {
-            return startLogStream();
-        });
+        startLogStream();
+        return Promise.resolve();
     }));
 
     window.addEventListener('pagehide', function() {
@@ -365,22 +320,17 @@ function runtimeLogSection() {
     loadInitialLogs();
     startLogStream();
 
-    return {
-        root: E('div', { 'class': 'cbi-section' }, [
-            E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
-            E('div', { 'class': 'cbi-section-descr', 'style': 'display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;' }, [
-                logState,
-                E('div', { 'style': 'display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: auto;' }, [
-                    E('label', { 'style': 'display: inline-flex; align-items: center; gap: .5rem;' }, [ _('Filter'), logFilter ]),
-                    logStreamButton
-                ])
-            ]),
-            logOutput
+    return E('div', { 'class': 'cbi-section' }, [
+        E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
+        E('div', { 'class': 'cbi-section-descr', 'style': 'display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;' }, [
+            logState,
+            E('div', { 'style': 'display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: auto;' }, [
+                E('label', { 'style': 'display: inline-flex; align-items: center; gap: .5rem;' }, [ _('Filter'), logFilter ]),
+                logStreamButton
+            ])
         ]),
-        pauseAfterFailure: pauseAfterFailure,
-        resume: resume,
-        suspend: suspend
-    };
+        logOutput
+    ]);
 }
 
 return view.extend({
@@ -411,7 +361,6 @@ return view.extend({
         var actionDeadline = 0;
         var lastStatus = null;
         var overviewController = wlocOverview.create(data && data[1] || {}, initial);
-        var runtimeLog = runtimeLogSection();
 
         function setMessage(state, value) {
             if (!value) {
@@ -509,17 +458,12 @@ return view.extend({
             return statusRequest;
         }
 
-        function waitForLifecycle(action, previousStartedAt) {
+        function waitForLifecycle(action) {
             return readRuntimeStatus().then(function(results) {
                 var result = results[0] || {};
                 applyStatus(result, results[1]);
                 var running = truthy(result.running);
-                var startedAt = Number(result.session_started_at || 0);
-                var complete = action === 'stop'
-                    ? !running
-                    : action === 'restart'
-                        ? running && startedAt > 0 && startedAt !== previousStartedAt
-                        : running;
+                var complete = action === 'stop' ? !running : running;
 
                 if (complete)
                     return result;
@@ -530,15 +474,13 @@ return view.extend({
                 return new Promise(function(resolve) {
                     window.setTimeout(resolve, 750);
                 }).then(function() {
-                    return waitForLifecycle(action, previousStartedAt);
+                    return waitForLifecycle(action);
                 });
             });
         }
 
         function serviceAction(action) {
             var request = action === 'start' ? callStart : action === 'stop' ? callStop : callRestart;
-            var previousStartedAt = Number(lastStatus && lastStatus.session_started_at || 0);
-            var logsPaused = action === 'start' || action === 'restart' ? runtimeLog.suspend() : false;
             actionInProgress = true;
             actionDeadline = Date.now() + ACTION_TIMEOUT;
             setMessage('notice', _('%s requested...').format(actionText(action)));
@@ -547,17 +489,11 @@ return view.extend({
             return request().then(function(result) {
                 if (result && result.ok === false)
                     throw new Error(result.error || _('Service action failed.'));
-                return waitForLifecycle(action, previousStartedAt);
-            }).then(function(result) {
-                if (logsPaused)
-                    return runtimeLog.resume().then(function() { return result; });
-                return result;
+                return waitForLifecycle(action);
             }).then(function(result) {
                 setMessage('ok', action === 'start' ? _('WLOC started.') : action === 'stop' ? _('WLOC stopped.') : _('WLOC restarted.'));
                 return result;
             }).catch(function(error) {
-                if (logsPaused)
-                    runtimeLog.pauseAfterFailure();
                 setMessage('error', wlocUi.errorMessage(error, _('Service action failed.')));
                 return false;
             }).then(function(result) {
@@ -674,7 +610,7 @@ return view.extend({
                     message
                 ]),
                 overviewForm,
-                runtimeLog.root
+                runtimeLogSection()
             ]);
 
             updateActionButtons();
