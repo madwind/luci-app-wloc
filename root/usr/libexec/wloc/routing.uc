@@ -161,18 +161,25 @@ function rule_present(spec) {
     }
     return false;
 }
-function route_present(spec) {
+function route_state(spec) {
     let result = capture(`ip -${spec.family} route show table ${spec.table}`);
-    if (!result.ok) return false;
+    if (!result.ok) return { exact: false, conflict: false };
     let expected = normalized_prefix(spec.family, spec.prefix);
+    let exact = false, conflict = false;
     for (let line in split(result.output || '', '\n')) {
         let parts = fields(line);
-        if (length(parts) < 2 || parts[0] != 'local' || normalized_prefix(spec.family, parts[1]) != expected) continue;
-        for (let i = 2; i + 1 < length(parts); i++) if (parts[i] == 'dev' && parts[i + 1] == 'lo') return true;
+        if (length(parts) < 2 || normalized_prefix(spec.family, parts[1]) != expected) continue;
+        let local = parts[0] == 'local', loopback = false;
+        for (let i = 2; i + 1 < length(parts); i++) if (parts[i] == 'dev' && parts[i + 1] == 'lo') loopback = true;
+        if (local && loopback) exact = true;
+        else conflict = true;
     }
-    return false;
+    return { exact, conflict };
 }
-function active(spec) { return route_present(spec) && rule_present(spec); }
+function active(spec) { return route_state(spec).exact && rule_present(spec); }
+function same_route_spec(a, b) {
+    return !!a && !!b && a.family == b.family && normalized_prefix(a.family, a.prefix) == normalized_prefix(b.family, b.prefix) && a.table == b.table;
+}
 function delete_rules(spec) {
     let count = 0;
     while (rule_present(spec)) {
@@ -181,25 +188,42 @@ function delete_rules(spec) {
     return true;
 }
 function delete_route(spec) {
-    if (!route_present(spec)) return true;
+    if (!route_state(spec).exact) return true;
     return quiet(`ip -${spec.family} route del local ${q(spec.prefix)} dev lo table ${spec.table}`);
+}
+function ensure_route(spec) {
+    let current = route_state(spec);
+    if (current.conflict) return { ok: false, error: `refusing to replace existing IPv${spec.family} route ${spec.prefix}` };
+    if (!current.exact && !quiet(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`))
+        return { ok: false, error: `unable to install the IPv${spec.family} TPROXY local route` };
+    if (!route_state(spec).exact) return { ok: false, error: `IPv${spec.family} TPROXY local route verification failed` };
+    return { ok: true };
+}
+function ensure_rule(spec) {
+    if (!rule_present(spec) && !quiet(spec.rule)) return { ok: false, error: `unable to install the IPv${spec.family} TPROXY policy rule` };
+    if (!rule_present(spec)) return { ok: false, error: `IPv${spec.family} TPROXY policy rule verification failed` };
+    return { ok: true };
 }
 function install_state(state) {
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
         if (!spec) continue;
-        if (!quiet(spec.route)) return { ok: false, error: `unable to install the IPv${family} TPROXY local route` };
-        if (!route_present(spec)) return { ok: false, error: `IPv${family} TPROXY local route verification failed` };
+        let result = ensure_route(spec);
+        if (!result.ok) return result;
     }
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
         if (!spec) continue;
-        if (!rule_present(spec) && !quiet(spec.rule)) return { ok: false, error: `unable to install the IPv${family} TPROXY policy rule` };
-        if (!rule_present(spec)) return { ok: false, error: `IPv${family} TPROXY policy rule verification failed` };
+        let result = ensure_rule(spec);
+        if (!result.ok) return result;
+    }
+    for (let family in [ '4', '6' ]) {
+        let spec = state[`ipv${family}`];
+        if (spec && !active(spec)) return { ok: false, error: `IPv${family} TPROXY policy route verification failed` };
     }
     return { ok: true };
 }
-function remove_state(state) {
+function remove_state(state, keep_routes) {
     if (!state) return { ok: true };
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
@@ -207,9 +231,21 @@ function remove_state(state) {
     }
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
-        if (spec && !delete_route(spec)) return { ok: false, error: `unable to remove the IPv${family} TPROXY local route` };
+        let keep = keep_routes ? keep_routes[`ipv${family}`] : null;
+        if (spec && !same_route_spec(spec, keep) && route_state(spec).exact && !delete_route(spec))
+            return { ok: false, error: `unable to remove the IPv${family} TPROXY local route` };
     }
     return { ok: true };
+}
+function rollback(previous, current) {
+    let errors = [];
+    let removed = remove_state(current, previous);
+    if (!removed.ok) push(errors, removed.error);
+    if (previous) {
+        let restored = install_state(previous);
+        if (!restored.ok) push(errors, restored.error);
+    }
+    return { ok: length(errors) == 0, error: join('; ', errors) };
 }
 function state_status(state) {
     let ipv4 = !!state && !!state.ipv4 && active(state.ipv4);
@@ -286,28 +322,22 @@ function apply(raw, stage) {
         previous = checked.state;
     }
     if (previous && previous.normalized != state.normalized) {
-        let removed = remove_state(previous);
+        let removed = remove_state(previous, state);
         if (!removed.ok) { if (stage) fs.unlink(CANDIDATE); return removed; }
     }
 
     let installed = install_state(state);
     if (!installed.ok) {
-        remove_state(state);
-        if (previous) {
-            let restored = install_state(previous);
-            if (!restored.ok) installed.error += `; rollback failed: ${restored.error}`;
-        }
+        let restored = rollback(previous, state);
+        if (!restored.ok) installed.error += `; rollback failed: ${restored.error}`;
         if (stage) fs.unlink(CANDIDATE);
         return installed;
     }
 
     let saved = atomic_write(APPLIED, state.normalized);
     if (!saved.ok) {
-        remove_state(state);
-        if (previous) {
-            let restored = install_state(previous);
-            if (!restored.ok) saved.error += `; rollback failed: ${restored.error}`;
-        }
+        let restored = rollback(previous, state);
+        if (!restored.ok) saved.error += `; rollback failed: ${restored.error}`;
         if (stage) fs.unlink(CANDIDATE);
         return saved;
     }
@@ -345,7 +375,7 @@ function deactivate(reset) {
     }
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
-    let removed = remove_state(parsed.state);
+    let removed = remove_state(parsed.state, null);
     if (!removed.ok) return removed;
     if (reset) { fs.unlink(APPLIED); fs.unlink(CANDIDATE); }
     return { ok: true, route_active: false };
