@@ -11,19 +11,27 @@ use http::{Method, Request, StatusCode, Uri};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio_rustls::TlsConnector;
 use wloc_rs::config::{LocationRule, MacAddress, OutboundProxy};
 use wloc_rs::network_source::HostapdNetworkSource;
 
 const PEER_CACHE_TTL: Duration = Duration::from_secs(5);
+const PEER_CACHE_MAX: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const UDP_DISPATCH_LIMIT: usize = 64;
+const UDP_SESSION_MAX: usize = 256;
+const UDP_REPLY_SOCKET_MAX: usize = 64;
+const DOH_POOL_MAX: usize = 64;
 const DOH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_DNS_MESSAGE: usize = u16::MAX as usize;
 const DOH_ENDPOINTS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)];
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
 const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
+
+type UdpReplySockets = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>;
+type DohPool = Arc<Mutex<HashMap<String, h2::client::SendRequest<Bytes>>>>;
 
 #[derive(Clone, Copy)]
 enum AddressFamily {
@@ -44,7 +52,6 @@ struct UdpSessionKey {
     rule_id: String,
 }
 
-#[derive(Clone)]
 struct UdpRequest {
     payload: Vec<u8>,
 }
@@ -54,9 +61,12 @@ pub struct TransparentProxy {
     rules: Vec<LocationRule>,
     arp_path: PathBuf,
     dhcp_leases_path: PathBuf,
-    peer_cache: Arc<tokio::sync::Mutex<HashMap<IpAddr, PeerCacheEntry>>>,
+    peer_cache: Arc<Mutex<HashMap<IpAddr, PeerCacheEntry>>>,
     network_source: HostapdNetworkSource,
-    udp_sessions: Arc<tokio::sync::Mutex<HashMap<UdpSessionKey, mpsc::Sender<UdpRequest>>>>,
+    udp_sessions: Arc<Mutex<HashMap<UdpSessionKey, mpsc::Sender<UdpRequest>>>>,
+    udp_dispatch: Arc<Semaphore>,
+    udp_reply_sockets: UdpReplySockets,
+    doh_pool: DohPool,
 }
 
 impl TransparentProxy {
@@ -69,22 +79,23 @@ impl TransparentProxy {
             dhcp_leases_path: std::env::var_os("WLOC_DHCP_LEASES_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/tmp/dhcp.leases")),
-            peer_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            peer_cache: Arc::new(Mutex::new(HashMap::new())),
             network_source: HostapdNetworkSource::new(),
-            udp_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            udp_sessions: Arc::new(Mutex::new(HashMap::new())),
+            udp_dispatch: Arc::new(Semaphore::new(UDP_DISPATCH_LIMIT)),
+            udp_reply_sockets: Arc::new(Mutex::new(HashMap::new())),
+            doh_pool: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
-        if let Some(entry) = self
-            .peer_cache
-            .lock()
-            .await
-            .get(&peer)
-            .cloned()
-            .filter(|entry| entry.expires_at > Instant::now())
+        let now = Instant::now();
         {
-            return Ok(entry.rule);
+            let mut cache = self.peer_cache.lock().await;
+            cache.retain(|_, entry| entry.expires_at > now);
+            if let Some(entry) = cache.get(&peer).cloned() {
+                return Ok(entry.rule);
+            }
         }
 
         let arp_path = self.arp_path.clone();
@@ -109,7 +120,14 @@ impl TransparentProxy {
             None
         };
 
-        self.peer_cache.lock().await.insert(
+        let mut cache = self.peer_cache.lock().await;
+        cache.retain(|_, entry| entry.expires_at > Instant::now());
+        if cache.len() >= PEER_CACHE_MAX {
+            if let Some(key) = cache.keys().next().copied() {
+                cache.remove(&key);
+            }
+        }
+        cache.insert(
             peer,
             PeerCacheEntry {
                 rule: rule.clone(),
@@ -129,7 +147,7 @@ impl TransparentProxy {
             .unwrap_or(OutboundProxy::Direct);
 
         if destination.port() == 53 {
-            return handle_dns_tcp(&mut client, &outbound).await;
+            return handle_dns_tcp(&mut client, &outbound, &self.doh_pool).await;
         }
 
         let mut upstream = tokio::time::timeout(
@@ -152,11 +170,16 @@ impl TransparentProxy {
         };
         let mut buffer = vec![0_u8; 65_535];
         loop {
+            let permit = Arc::clone(&self.udp_dispatch)
+                .acquire_owned()
+                .await
+                .map_err(|_| io::Error::other("UDP dispatch limiter closed"))?;
             let (size, client, destination) =
                 recv_original_datagram(&socket, family, &mut buffer).await?;
             let payload = buffer[..size].to_vec();
             let proxy = Arc::clone(&self);
             tokio::spawn(async move {
+                let _permit = permit;
                 if let Err(error) = proxy
                     .handle_udp_datagram(client, destination, payload)
                     .await
@@ -182,8 +205,8 @@ impl TransparentProxy {
         };
 
         if destination.port() == 53 {
-            let response = doh_query(&outbound, &payload).await?;
-            send_spoofed_udp(destination, client, &response)
+            let response = doh_query(&self.doh_pool, &outbound, &payload).await?;
+            send_spoofed_udp(&self.udp_reply_sockets, destination, client, &response)
                 .await
                 .map_err(io_message)?;
             return Ok(());
@@ -194,7 +217,7 @@ impl TransparentProxy {
             destination,
             rule_id,
         };
-        let request = UdpRequest { payload };
+        let mut request = UdpRequest { payload };
 
         for _ in 0..2 {
             let sender = {
@@ -202,16 +225,21 @@ impl TransparentProxy {
                 if let Some(sender) = sessions.get(&key) {
                     sender.clone()
                 } else {
+                    if sessions.len() >= UDP_SESSION_MAX {
+                        return Err("UDP session limit reached".into());
+                    }
                     let (sender, receiver) = mpsc::channel(128);
                     sessions.insert(key.clone(), sender.clone());
                     let session_key = key.clone();
                     let sessions = Arc::clone(&self.udp_sessions);
                     let session_outbound = outbound.clone();
+                    let reply_sockets = Arc::clone(&self.udp_reply_sockets);
                     tokio::spawn(async move {
                         let result = run_udp_session(
                             client,
                             destination,
                             session_outbound,
+                            reply_sockets,
                             receiver,
                         )
                         .await;
@@ -226,8 +254,9 @@ impl TransparentProxy {
                 }
             };
 
-            if sender.send(request.clone()).await.is_ok() {
-                return Ok(());
+            match sender.send(request).await {
+                Ok(()) => return Ok(()),
+                Err(error) => request = error.0,
             }
             self.udp_sessions.lock().await.remove(&key);
         }
@@ -235,7 +264,11 @@ impl TransparentProxy {
     }
 }
 
-async fn handle_dns_tcp(client: &mut TcpStream, outbound: &OutboundProxy) -> Result<(), String> {
+async fn handle_dns_tcp(
+    client: &mut TcpStream,
+    outbound: &OutboundProxy,
+    pool: &DohPool,
+) -> Result<(), String> {
     loop {
         let mut length = [0_u8; 2];
         if let Err(error) = client.read_exact(&mut length).await {
@@ -250,7 +283,7 @@ async fn handle_dns_tcp(client: &mut TcpStream, outbound: &OutboundProxy) -> Res
         }
         let mut query = vec![0_u8; query_len];
         client.read_exact(&mut query).await.map_err(io_message)?;
-        let response = doh_query(outbound, &query).await?;
+        let response = doh_query(pool, outbound, &query).await?;
         let response_len = u16::try_from(response.len())
             .map_err(|_| "DoH response exceeds TCP DNS framing limit".to_owned())?;
         client
@@ -261,12 +294,16 @@ async fn handle_dns_tcp(client: &mut TcpStream, outbound: &OutboundProxy) -> Res
     }
 }
 
-async fn doh_query(outbound: &OutboundProxy, query: &[u8]) -> Result<Vec<u8>, String> {
+async fn doh_query(
+    pool: &DohPool,
+    outbound: &OutboundProxy,
+    query: &[u8],
+) -> Result<Vec<u8>, String> {
     validate_dns_message(query, "query")?;
     let mut last_error = String::new();
 
     for endpoint in DOH_ENDPOINTS {
-        match doh_query_endpoint(outbound, endpoint, query).await {
+        match doh_query_endpoint(pool, outbound, endpoint, query).await {
             Ok(response) if dns_servfail(&response) => {
                 last_error = format!("{endpoint} returned SERVFAIL");
             }
@@ -281,11 +318,22 @@ async fn doh_query(outbound: &OutboundProxy, query: &[u8]) -> Result<Vec<u8>, St
 }
 
 async fn doh_query_endpoint(
+    pool: &DohPool,
     outbound: &OutboundProxy,
     endpoint: Ipv4Addr,
     query: &[u8],
 ) -> Result<Vec<u8>, String> {
     tokio::time::timeout(DOH_TIMEOUT, async {
+        let key = outbound.pool_key(&format!("doh:{endpoint}"));
+        if let Some(sender) = pool.lock().await.get(&key).cloned() {
+            match doh_exchange(sender, endpoint, query).await {
+                Ok(response) => return Ok(response),
+                Err(_) => {
+                    pool.lock().await.remove(&key);
+                }
+            }
+        }
+
         let destination = SocketAddr::V4(SocketAddrV4::new(endpoint, 443));
         let tcp = connect_tcp_outbound(outbound, destination).await?;
         let server_name = rustls::pki_types::ServerName::try_from(endpoint.to_string())
@@ -305,67 +353,81 @@ async fn doh_query_endpoint(
             .handshake::<_, Bytes>(tls)
             .await
             .map_err(|error| format!("DoH HTTP/2 handshake failed: {error}"))?;
+        {
+            let mut connections = pool.lock().await;
+            if connections.len() >= DOH_POOL_MAX {
+                connections.clear();
+            }
+            connections.insert(key, sender.clone());
+        }
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        let mut sender = sender
-            .ready()
-            .await
-            .map_err(|error| format!("DoH HTTP/2 connection failed: {error}"))?;
-
-        let uri = format!("https://{endpoint}/dns-query")
-            .parse::<Uri>()
-            .map_err(|error| format!("invalid DoH URI: {error}"))?;
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(uri)
-            .header(http::header::CONTENT_TYPE, "application/dns-message")
-            .header(http::header::ACCEPT, "application/dns-message")
-            .body(())
-            .map_err(|error| format!("invalid DoH HTTP/2 request: {error}"))?;
-        let (response, mut send) = sender
-            .send_request(request, false)
-            .map_err(|error| format!("DoH HTTP/2 request failed: {error}"))?;
-        send_doh_h2_data(&mut send, query).await?;
-
-        let mut response = response
-            .await
-            .map_err(|error| format!("DoH HTTP/2 response failed: {error}"))?;
-        if response.status() != StatusCode::OK {
-            return Err(format!("DoH HTTP status {}", response.status().as_u16()));
-        }
-        let content_type = response
-            .headers()
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .map(str::trim)
-            .unwrap_or("");
-        if !content_type.eq_ignore_ascii_case("application/dns-message") {
-            return Err(format!("DoH response content type is {content_type:?}"));
-        }
-
-        let mut body = Vec::new();
-        while let Some(chunk) = response.body_mut().data().await {
-            let chunk = chunk.map_err(|error| format!("DoH HTTP/2 body failed: {error}"))?;
-            if body.len().saturating_add(chunk.len()) > MAX_DNS_MESSAGE {
-                return Err("DNS response exceeds 65535 bytes".into());
-            }
-            body.extend_from_slice(&chunk);
-            response
-                .body_mut()
-                .flow_control()
-                .release_capacity(chunk.len())
-                .map_err(|error| format!("DoH HTTP/2 flow control failed: {error}"))?;
-        }
-        validate_dns_message(&body, "response")?;
-        if body[..2] != query[..2] {
-            return Err("DoH response transaction ID mismatch".into());
-        }
-        Ok(body)
+        doh_exchange(sender, endpoint, query).await
     })
     .await
     .map_err(|_| "DoH request timed out".to_owned())?
+}
+
+async fn doh_exchange(
+    sender: h2::client::SendRequest<Bytes>,
+    endpoint: Ipv4Addr,
+    query: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut sender = sender
+        .ready()
+        .await
+        .map_err(|error| format!("DoH HTTP/2 connection failed: {error}"))?;
+    let uri = format!("https://{endpoint}/dns-query")
+        .parse::<Uri>()
+        .map_err(|error| format!("invalid DoH URI: {error}"))?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(http::header::CONTENT_TYPE, "application/dns-message")
+        .header(http::header::ACCEPT, "application/dns-message")
+        .body(())
+        .map_err(|error| format!("invalid DoH HTTP/2 request: {error}"))?;
+    let (response, mut send) = sender
+        .send_request(request, false)
+        .map_err(|error| format!("DoH HTTP/2 request failed: {error}"))?;
+    send_doh_h2_data(&mut send, query).await?;
+
+    let mut response = response
+        .await
+        .map_err(|error| format!("DoH HTTP/2 response failed: {error}"))?;
+    if response.status() != StatusCode::OK {
+        return Err(format!("DoH HTTP status {}", response.status().as_u16()));
+    }
+    let content_type = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .unwrap_or("");
+    if !content_type.eq_ignore_ascii_case("application/dns-message") {
+        return Err(format!("DoH response content type is {content_type:?}"));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.body_mut().data().await {
+        let chunk = chunk.map_err(|error| format!("DoH HTTP/2 body failed: {error}"))?;
+        if body.len().saturating_add(chunk.len()) > MAX_DNS_MESSAGE {
+            return Err("DNS response exceeds 65535 bytes".into());
+        }
+        body.extend_from_slice(&chunk);
+        response
+            .body_mut()
+            .flow_control()
+            .release_capacity(chunk.len())
+            .map_err(|error| format!("DoH HTTP/2 flow control failed: {error}"))?;
+    }
+    validate_dns_message(&body, "response")?;
+    if body[..2] != query[..2] {
+        return Err("DoH response transaction ID mismatch".into());
+    }
+    Ok(body)
 }
 
 async fn send_doh_h2_data(
@@ -589,11 +651,12 @@ async fn run_udp_session(
     client: SocketAddr,
     upstream_destination: SocketAddr,
     outbound: OutboundProxy,
+    reply_sockets: UdpReplySockets,
     receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
     match outbound {
         OutboundProxy::Direct => {
-            run_direct_udp_session(client, upstream_destination, receiver).await
+            run_direct_udp_session(client, upstream_destination, reply_sockets, receiver).await
         }
         OutboundProxy::Socks5 { host, port } => {
             run_socks_udp_session(
@@ -601,20 +664,22 @@ async fn run_udp_session(
                 upstream_destination,
                 &host,
                 port,
+                reply_sockets,
                 receiver,
             )
             .await
         }
-        OutboundProxy::Http { .. } => Err("HTTP proxy does not support UDP relay".into()),
     }
 }
 
 async fn run_direct_udp_session(
     client: SocketAddr,
     upstream_destination: SocketAddr,
+    reply_sockets: UdpReplySockets,
     mut receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
     let upstream = UdpSocket::bind(unspecified_for(upstream_destination)).await.map_err(io_message)?;
+    upstream.connect(upstream_destination).await.map_err(io_message)?;
     let mut buffer = vec![0_u8; 65_535];
     let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -623,12 +688,12 @@ async fn run_direct_udp_session(
         tokio::select! {
             request = receiver.recv() => {
                 let Some(request) = request else { return Ok(()); };
-                upstream.send_to(&request.payload, upstream_destination).await.map_err(io_message)?;
+                upstream.send(&request.payload).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
-            response = upstream.recv_from(&mut buffer) => {
-                let (size, source) = response.map_err(io_message)?;
-                send_spoofed_udp(source, client, &buffer[..size]).await.map_err(io_message)?;
+            response = upstream.recv(&mut buffer) => {
+                let size = response.map_err(io_message)?;
+                send_spoofed_udp(&reply_sockets, upstream_destination, client, &buffer[..size]).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             _ = &mut idle => return Ok(()),
@@ -641,6 +706,7 @@ async fn run_socks_udp_session(
     upstream_destination: SocketAddr,
     host: &str,
     port: u16,
+    reply_sockets: UdpReplySockets,
     mut receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
     let (control, relay) = tokio::time::timeout(CONNECT_TIMEOUT, socks5_udp_associate(host, port))
@@ -664,7 +730,8 @@ async fn run_socks_udp_session(
                 let (size, sender) = response.map_err(io_message)?;
                 if sender != relay { continue; }
                 let (source, payload) = decode_socks_udp(&buffer[..size])?;
-                send_spoofed_udp(source, client, payload).await.map_err(io_message)?;
+                if source != upstream_destination { continue; }
+                send_spoofed_udp(&reply_sockets, source, client, payload).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             _ = &mut idle => return Ok(()),
@@ -762,10 +829,7 @@ fn decode_socks_udp(packet: &[u8]) -> Result<(SocketAddr, &[u8]), String> {
     }
 }
 
-async fn send_spoofed_udp(source: SocketAddr, client: SocketAddr, payload: &[u8]) -> io::Result<()> {
-    if source.is_ipv4() != client.is_ipv4() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "UDP reply address families differ"));
-    }
+fn create_spoofed_udp_socket(source: SocketAddr) -> io::Result<UdpSocket> {
     let socket = match source {
         SocketAddr::V4(_) => {
             let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -785,7 +849,41 @@ async fn send_spoofed_udp(source: SocketAddr, client: SocketAddr, payload: &[u8]
     };
     socket.bind(&source.into())?;
     socket.set_nonblocking(true)?;
-    let socket = UdpSocket::from_std(socket.into())?;
+    UdpSocket::from_std(socket.into())
+}
+
+async fn send_spoofed_udp(
+    cache: &UdpReplySockets,
+    source: SocketAddr,
+    client: SocketAddr,
+    payload: &[u8],
+) -> io::Result<()> {
+    if source.is_ipv4() != client.is_ipv4() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "UDP reply address families differ"));
+    }
+
+    let socket = {
+        let mut sockets = cache.lock().await;
+        if let Some(socket) = sockets.get(&source) {
+            Arc::clone(socket)
+        } else {
+            if sockets.len() >= UDP_REPLY_SOCKET_MAX {
+                let removable = sockets
+                    .iter()
+                    .find(|(_, socket)| Arc::strong_count(socket) == 1)
+                    .map(|(address, _)| *address);
+                if let Some(address) = removable {
+                    sockets.remove(&address);
+                }
+            }
+            let socket = Arc::new(create_spoofed_udp_socket(source)?);
+            if sockets.len() < UDP_REPLY_SOCKET_MAX {
+                sockets.insert(source, Arc::clone(&socket));
+            }
+            socket
+        }
+    };
+
     socket.send_to(payload, client).await?;
     Ok(())
 }
@@ -793,42 +891,12 @@ async fn send_spoofed_udp(source: SocketAddr, client: SocketAddr, payload: &[u8]
 async fn connect_tcp_outbound(outbound: &OutboundProxy, destination: SocketAddr) -> Result<TcpStream, String> {
     match outbound {
         OutboundProxy::Direct => TcpStream::connect(destination).await.map_err(io_message),
-        OutboundProxy::Http { host, port } => {
-            let mut stream = TcpStream::connect((host.as_str(), *port)).await.map_err(io_message)?;
-            http_connect(&mut stream, destination).await?;
-            Ok(stream)
-        }
         OutboundProxy::Socks5 { host, port } => {
             let mut stream = TcpStream::connect((host.as_str(), *port)).await.map_err(io_message)?;
             socks5_connect(&mut stream, destination).await?;
             Ok(stream)
         }
     }
-}
-
-async fn http_connect(stream: &mut TcpStream, destination: SocketAddr) -> Result<(), String> {
-    let authority = destination.to_string();
-    let request = format!(
-        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes()).await.map_err(io_message)?;
-    let mut response = Vec::with_capacity(256);
-    let mut byte = [0_u8; 1];
-    while response.len() < 8192 {
-        if stream.read(&mut byte).await.map_err(io_message)? == 0 {
-            return Err("HTTP proxy closed during CONNECT".into());
-        }
-        response.push(byte[0]);
-        if response.ends_with(b"\r\n\r\n") { break; }
-    }
-    let status = std::str::from_utf8(&response)
-        .ok()
-        .and_then(|text| text.lines().next())
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "invalid HTTP proxy CONNECT response".to_owned())?;
-    if status != 200 { return Err(format!("HTTP proxy CONNECT status {status}")); }
-    Ok(())
 }
 
 async fn socks5_connect(stream: &mut TcpStream, destination: SocketAddr) -> Result<(), String> {
