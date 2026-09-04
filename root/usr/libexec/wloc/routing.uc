@@ -73,7 +73,7 @@ function parse_config(raw) {
             continue;
         }
 
-        let rule = match(line, /^ip\s+-([46])\s+rule\s+add\s+fwmark\s+([^\/\s]+)\/([^\s]+)\s+lookup\s+(\d+)$/);
+        let rule = match(line, /^ip\s+-([46])\s+rule\s+add(?:\s+priority\s+\d+)?\s+fwmark\s+([^\/\s]+)\/([^\s]+)\s+lookup\s+(\d+)$/);
         if (!rule) return { ok: false, error: `unsupported routing command: ${line}` };
         let family = rule[1];
         if (rules[family]) return { ok: false, error: `duplicate IPv${family} rule` };
