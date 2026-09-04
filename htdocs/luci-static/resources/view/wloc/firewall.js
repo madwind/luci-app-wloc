@@ -7,6 +7,8 @@
 'require wloc.nftformat as wlocNftFormat';
 
 var callRead = rpc.declare({ object: 'luci.wloc.firewall', method: 'read', expect: { '': {} } });
+var callReady = rpc.declare({ object: 'luci.wloc.firewall', method: 'ready', expect: { '': {} } });
+var callRuntime = rpc.declare({ object: 'luci.wloc.firewall', method: 'runtime', expect: { '': {} } });
 var callValidate = rpc.declare({ object: 'luci.wloc.firewall', method: 'validate', params: [ 'config' ], expect: { '': {} } });
 var callSave = rpc.declare({ object: 'luci.wloc.firewall', method: 'save', params: [ 'config' ], expect: { '': {} } });
 var callApply = rpc.declare({ object: 'luci.wloc.firewall', method: 'apply', params: [ 'config' ], expect: { '': {} } });
@@ -33,6 +35,7 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
+        var runtimeReadyTimer = null;
         var pageVisible = true;
         var editor;
         var activeEditor = wlocEditor.create({
@@ -43,16 +46,15 @@ return view.extend({
             readonly: true
         });
 
+        activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+
         function setMessage(state, value) {
             wlocUi.setState(message, state, value);
         }
 
         function updateRuntime(next) {
             activeEditor.markSaved(next && next.active ? next.active : _('# No WLOC nftables tables are active.\n'));
-            wlocUi.setState(runtimeState, next && next.recovering === true ? 'warn' : 'ok',
-                next && next.recovering === true
-                    ? (next.warning || _('Recovering'))
-                    : _('Loaded'));
+            wlocUi.setState(runtimeState, 'ok', _('Loaded'));
         }
 
         function refreshRuntime(manual) {
@@ -60,7 +62,7 @@ return view.extend({
                 return runtimeRequest || Promise.resolve();
             if (manual) wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
-            runtimeRequest = callRead().then(function(next) {
+            runtimeRequest = callRuntime().then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to read runtime nftables rules.')));
                 updateRuntime(next);
@@ -75,13 +77,35 @@ return view.extend({
             return runtimeRequest;
         }
 
+        function refreshRuntimeWhenReady(manual) {
+            if (!pageVisible)
+                return Promise.resolve();
+            if (runtimeReadyTimer !== null) {
+                window.clearTimeout(runtimeReadyTimer);
+                runtimeReadyTimer = null;
+            }
+
+            return callReady().then(function(state) {
+                if (state && state.ok === true && state.busy === true) {
+                    wlocUi.setState(runtimeState, 'notice', _('Waiting for service...'));
+                    runtimeReadyTimer = window.setTimeout(function() {
+                        runtimeReadyTimer = null;
+                        refreshRuntimeWhenReady(false);
+                    }, 1000);
+                    return false;
+                }
+                return refreshRuntime(manual);
+            }).catch(function() {
+                return refreshRuntime(manual);
+            });
+        }
+
         function reloadFirewall(current) {
             setMessage('notice', _('Reloading the saved Firewall file...'));
             return callRead().then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to read the Firewall file.')));
                 current.markSaved(next.config || '');
-                updateRuntime(next);
                 setMessage('ok', _('Saved Firewall file reloaded.'));
                 return true;
             }).catch(function(error) {
@@ -191,7 +215,6 @@ return view.extend({
 
         if (result && result.ok === true) {
             editor.markSaved(result.config || '');
-            updateRuntime(result);
         } else {
             setMessage('error', wlocUi.errorMessage(result, _('Unable to read the Firewall file.')));
         }
@@ -200,15 +223,18 @@ return view.extend({
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
         }, _('Refresh'));
-        refreshButton.addEventListener('click', function() { refreshRuntime(true); });
+        refreshButton.addEventListener('click', function() { refreshRuntimeWhenReady(true); });
 
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
+        refreshRuntimeWhenReady(false);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            if (runtimeReadyTimer !== null)
+                window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
