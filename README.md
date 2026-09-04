@@ -42,11 +42,11 @@ validated by `nft --check`. Destructive commands such as `flush ruleset`,
 are rejected before any nftables transaction runs. WLOC does not inspect,
 modify, or delete any other table, family, or table name.
 
-WLOC maintains two fixed managed sets when they exist: `apple_wloc_v4`
-(`ipv4_addr`, `flags timeout`) in `table inet wloc` receives resolved Apple
-addresses, and `target_ingress_interfaces` (`ifname`, `flags timeout`) in
-`table bridge wloc` receives configured AP interfaces. If a table or set is
-absent, its maintenance is skipped; nftables reports all other set errors.
+The packaged ruleset uses `target_ingress_interfaces` (`ifname`, `flags timeout`)
+in `table bridge wloc` to select the configured AP interfaces. WLOC refreshes
+that set at runtime. The default `table inet wloc` also contains static IPv4 and
+IPv6 bypass sets used by the TPROXY chain. If the managed ingress set is absent,
+its maintenance is skipped; nftables reports other set or ruleset errors.
 
 For example, these APs may share one bridge without sharing a WLOC identity:
 
@@ -64,10 +64,18 @@ WLOC does not inspect or rewrite nftables rule priority. The relationship betwee
 custom rules and the WLOC listener is entirely controlled by the ruleset you
 enter.
 
-WLOC does not install a TPROXY stage, policy route, or OUTPUT hook. The client
-connection is redirected to WLOC first. After WLOC handles it, the daemon's
-upstream socket is ordinary router-local output, so any other proxy—including
-a transparent proxy—with a matching OUTPUT policy can process it normally.
+The packaged firewall marks traffic from selected ingress interfaces and uses a
+TPROXY prerouting chain plus policy routing to deliver matching TCP and UDP to
+the local WLOC listener. It does not install an OUTPUT hook. After WLOC handles
+a connection, its upstream socket is ordinary router-local output, so another
+transparent proxy with an OUTPUT policy can process that upstream traffic. The
+policy-routing controller refuses to replace a conflicting route owned by
+another component.
+
+The firewall source supports the runtime placeholder `%port%`. It is resolved
+to `wloc.main.listen_port` immediately before nftables validation and apply, so
+the saved template and the daemon listener stay synchronized without hardcoding
+the default `61520` port.
 
 ## Supported OpenWrt targets
 
@@ -148,8 +156,8 @@ response uses the fixed virtual baseline plus the difference between the
 current and previous real location. The upstream accuracy is preserved
 unchanged. Install the
 generated CA profile on the devices and explicitly enable full trust in iOS
-Certificate Trust Settings. Each AP can use the router's direct connection, an
-HTTP CONNECT proxy, or an unauthenticated SOCKS5 proxy for its Apple WLOC traffic.
+Certificate Trust Settings. Each AP can use the router's direct connection or
+an unauthenticated SOCKS5 proxy for its Apple WLOC traffic.
 
 The generated CA key and certificate are retained by OpenWrt sysupgrade so
 trusted devices do not unexpectedly lose interception after a firmware update.
@@ -163,13 +171,14 @@ want to reset trust, stop WLOC and remove `ca.key`, `ca.der`, `ca.pem`,
 `ca.info.json`, and `/www/wloc-ca.mobileconfig` explicitly before generating a
 new CA.
 
-The default local listener is TCP port `61520` and can be changed in LuCI under
-Service settings. WLOC runs with the service's existing user and group
-identity; it does not change the daemon GID. The daemon starts independently of
-the nftables layout and periodically retries only the optional set maintenance.
-Upgrades migrate the previous `8443`, `58443`, and `28443` defaults while retaining
-any other custom port. WLOC checks that the selected port is free before installing
-interception rules and stops safely if another router service already owns it.
+The default local listener is TCP and UDP port `61520` and can be changed in
+LuCI under Service settings. The packaged firewall uses `%port%`, so changing
+that setting changes both the daemon listener and the runtime TPROXY target.
+WLOC runs with the service's existing user and group identity; it does not
+change the daemon GID. Upgrades migrate the previous `8443`, `58443`, and
+`28443` defaults while retaining any other custom port. WLOC checks that the
+selected port is free before installing interception rules and stops safely if
+another router service already owns it.
 
 WLOC intercepts exactly these two fixed Apple WLOC endpoints:
 
@@ -183,11 +192,9 @@ without contacting the upstream server.
 The LuCI **Interception status** reports whether the service is actually usable:
 `Active`, `Recovering`, `Error`, `Disabled`, or `Traffic conflict`. In the
 firewall editor, **Check syntax** validates the table definitions, **Apply**
-only changes runtime firewall state, and **Save** persists exactly the currently
-applied revision. Rebooting without Save restores the last saved persistent
-rules. Applied rules are never written to the persistent file until you confirm
-that network, LuCI, and SSH still work. All firewall state transitions use the
-native OpenWrt lock at `/var/lock/wloc-firewall.lock`.
+only changes runtime firewall state, and **Save** persists the current editor
+revision. Rebooting without Save restores the last saved persistent rules.
+All firewall state transitions are restricted to the two WLOC-owned tables.
 
 The firewall snapshots have distinct roles:
 
@@ -203,10 +210,10 @@ The firewall snapshots have distinct roles:
     normally promoted or removed immediately; it is not an ownership database
 ```
 
-WLOC immediately reconciles its dynamic sets when the listener is ready; if the
-daemon or a runtime update is temporarily unavailable, the sets remain
-fail-open and the daemon retries automatically. Normal firewall or runtime
-recovery does not require a manual **Restart service**.
+WLOC immediately reconciles its dynamic ingress set and policy route when the
+listener is ready; if the daemon or a runtime update is temporarily unavailable,
+cleanup is fail-open and the daemon retries reconciliation automatically. Normal
+firewall or runtime recovery does not require a manual **Restart service**.
 When the package is uninstalled, its lifecycle hook deletes `table bridge wloc`
 and `table inet wloc` and removes the runtime snapshots. Unrelated tables are
 not touched.
