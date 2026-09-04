@@ -246,6 +246,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
             loop {
                 interval.tick().await;
                 if let Err(error) = reconcile_rules_async(
