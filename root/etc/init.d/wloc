@@ -115,6 +115,7 @@ start_service() {
     config_get_bool enabled main enabled 0
     config_get listen_port main listen_port 61520
     config_get_bool debug main debug 0
+    config_get_bool debug_log main debug_log 0
 
     cleanup_detail=''
     if cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
@@ -151,7 +152,8 @@ start_service() {
     done
     procd_set_param env WLOC_PROFILE_PATH=/www/wloc-ca.mobileconfig \
         WLOC_STATUS_PATH=/var/run/wloc/status.json \
-        WLOC_START_ERROR_PATH="$START_ERROR"
+        WLOC_START_ERROR_PATH="$START_ERROR" \
+        WLOC_DEBUG_LOG="$debug_log"
     procd_set_param respawn 60 5 3
     procd_set_param stdout 1
     procd_set_param stderr 1

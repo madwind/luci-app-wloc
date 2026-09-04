@@ -39,6 +39,11 @@ return view.extend({
         };
         domainsOption.description = _('Apple WLOC endpoints intercepted by this service.');
 
+        option = settings.option(form.Flag, 'debug_log', _('Debug request logging'));
+        option.default = '0';
+        option.rmempty = false;
+        option.description = _('Log every observed TLS request with client address, SNI hostname, and whether WLOC will intercept or pass it through. Normal WLOC events continue to report upstream status, patched coordinates, and failures.');
+
         option = settings.option(form.Flag, 'debug', _('Debug: fixed JSON response'));
         option.default = '0';
         option.rmempty = false;

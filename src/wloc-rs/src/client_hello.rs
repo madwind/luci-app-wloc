@@ -14,6 +14,41 @@ fn be16(bytes: &[u8], at: usize) -> Result<usize, HelloError> {
     Ok(u16::from_be_bytes([data[0], data[1]]) as usize)
 }
 
+fn debug_logging_enabled() -> bool {
+    std::env::var("WLOC_DEBUG_LOG").as_deref() == Ok("1")
+}
+
+fn log_peek_result(stream: &TcpStream, result: &Result<Option<String>, HelloError>) {
+    if !debug_logging_enabled() {
+        return;
+    }
+    let client = stream
+        .peer_addr()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| "unknown".into());
+    match result {
+        Ok(Some(host)) => {
+            let action = if crate::DEFAULT_DOMAINS
+                .iter()
+                .any(|domain| host.eq_ignore_ascii_case(domain))
+            {
+                "intercept"
+            } else {
+                "passthrough"
+            };
+            eprintln!(
+                "wlocd: debug=request protocol=tls client={client} host={host} action={action} result=sni_parsed"
+            );
+        }
+        Ok(None) => eprintln!(
+            "wlocd: debug=request protocol=tls client={client} host=none action=passthrough result=no_sni"
+        ),
+        Err(error) => eprintln!(
+            "wlocd: debug=request protocol=tls client={client} host=unknown action=failed result=client_hello_{error:?}"
+        ),
+    }
+}
+
 /// Parse SNI from the first TLS ClientHello without consuming stream bytes.
 pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
     let mut handshake = Vec::new();
@@ -131,14 +166,21 @@ pub async fn peek_sni(stream: &TcpStream) -> Result<Option<String>, HelloError> 
             .await
             .map_err(|_| HelloError::Malformed)?;
         if count == 0 {
-            return Err(HelloError::Incomplete);
+            let result = Err(HelloError::Incomplete);
+            log_peek_result(stream, &result);
+            return result;
         }
         match parse_sni(&buf[..count]) {
             Err(HelloError::Incomplete) => {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await
             }
-            result => return result,
+            result => {
+                log_peek_result(stream, &result);
+                return result;
+            }
         }
     }
-    Err(HelloError::Incomplete)
+    let result = Err(HelloError::Incomplete);
+    log_peek_result(stream, &result);
+    result
 }
