@@ -109,21 +109,9 @@ function package_version() {
 function firewall_status() {
     let present = read_file(FIREWALL_RUNTIME) != null || read_file(FIREWALL_CONFIG) != null;
     let result = run_ucode(FIREWALL, [ 'active' ]);
-    let active_text = result && result.ok === true ? `${result.active || ''}` : '';
-    let inet_text = result && result.ok === true ? `${result.inet_active || active_text}` : '';
-    let attempts = 0;
-
-    for (let line in split(inet_text, /\r?\n/)) {
-        if (index(line, 'wloc owned ingress redirect') < 0) continue;
-        let found = match(line, /counter packets ([0-9]+)/);
-        if (found && found[1] != null) attempts += integer(found[1], 0);
-    }
-
     return {
         present,
-        active: !!(result && result.ok === true && result.active_found === true),
-        attempts,
-        intercepted: attempts
+        active: !!(result && result.ok === true && result.active_found === true)
     };
 }
 
@@ -136,7 +124,6 @@ function status() {
 
     let running = daemon_running(), firewall = firewall_status();
     let accepted = integer(state.accepted_connections, 0);
-    let conflict = firewall.attempts > 0 && accepted === 0;
     let reason = '';
 
     if (!running) {
@@ -147,8 +134,6 @@ function status() {
             reason = 'Runtime rule refresh failed' + (state.last_error ? `: ${state.last_error}` : '');
         else if (state.last_event === 'cleanup_failed')
             reason = 'Runtime rule cleanup failed' + (state.last_error ? `: ${state.last_error}` : '');
-    } else if (conflict) {
-        reason = 'transparent-proxy path conflict; redirected packets are not reaching the WLOC listener';
     }
 
     let fingerprint = state.ca_fingerprint || '';
@@ -193,9 +178,6 @@ function status() {
         service_reason: reason,
         session_started_at: integer(state.session_started_at, 0),
         updated_at: integer(state.updated_at, 0),
-        interception_attempts: firewall.attempts,
-        intercepted_packets: firewall.intercepted,
-        path_conflict: conflict,
         fingerprint,
         profile_url: '/wloc-ca.mobileconfig',
         ap_activity: activity
