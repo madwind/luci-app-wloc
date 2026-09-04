@@ -113,6 +113,52 @@ function runtimeLogSection() {
         logOutput.scrollTop = wasAtBottom ? logOutput.scrollHeight : oldScrollTop;
     }
 
+    function appendRenderedLogLine(line) {
+        var previous = logLines;
+        var next = wlocUi.boundedLines(previous.concat([ line ]), LOG_LINES, LOG_MAX_BYTES);
+        logLines = next;
+
+        if (logFilter.value.trim() || typeof logOutput.setRangeText !== 'function') {
+            renderLogs();
+            return;
+        }
+
+        var retained = Math.max(0, next.length - 1);
+        var dropped = previous.length - retained;
+        var canAppend = dropped >= 0 && next.length > 0 && next[next.length - 1] === line;
+
+        if (canAppend) {
+            for (var index = 0; index < retained; index++) {
+                if (previous[dropped + index] !== next[index]) {
+                    canAppend = false;
+                    break;
+                }
+            }
+        }
+
+        if (!canAppend) {
+            renderLogs();
+            return;
+        }
+
+        var oldScrollTop = logOutput.scrollTop;
+        var wasAtBottom = followLogs;
+
+        if (dropped > 0) {
+            var removeChars = 0;
+            for (var i = 0; i < dropped; i++) {
+                removeChars += previous[i].length;
+                if (i < previous.length - 1)
+                    removeChars++;
+            }
+            logOutput.setRangeText('', 0, removeChars, 'preserve');
+        }
+
+        var appendText = (logOutput.value ? '\n' : '') + line;
+        logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+        logOutput.scrollTop = wasAtBottom ? logOutput.scrollHeight : oldScrollTop;
+    }
+
     function isRelevantLogEntry(entry) {
         var message = entry && entry.msg != null ? String(entry.msg) : '';
         return message.toLowerCase().indexOf(LOG_TAG) !== -1;
@@ -146,9 +192,7 @@ function runtimeLogSection() {
         if (!rememberLogEntry(entry))
             return;
 
-        logLines.push(formatLogEntry(entry));
-        logLines = wlocUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
-        renderLogs();
+        appendRenderedLogLine(formatLogEntry(entry));
     }
 
     function mergeInitialLogs(entries) {
