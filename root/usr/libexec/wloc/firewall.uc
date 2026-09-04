@@ -13,6 +13,7 @@ const NEXT = `${APPLIED}.next`;
 const RULES = '/usr/libexec/wloc/rules.uc';
 const STATUS = '/var/run/wloc/status.json';
 const MAX_BYTES = 1024 * 1024;
+const FOLD_THRESHOLD = 10;
 const FAMILIES = [ 'bridge', 'inet' ];
 let sequence = 0;
 
@@ -50,6 +51,89 @@ function normalize(raw) {
     raw = replace(`${raw ?? ''}`, /\r\n/g, '\n');
     raw = replace(raw, /\r/g, '\n');
     if (raw && substr(raw, -1) != '\n') raw += '\n';
+    return raw;
+}
+function is_space(c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
+function runtime_token_visible(raw, position) {
+    let line = position, quote = null, escaped = false;
+    while (line > 0 && substr(raw, line - 1, 1) != '\n') line--;
+    for (let i = line; i < position; i++) {
+        let c = substr(raw, i, 1);
+        if (quote != null) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') return false;
+        if (c == '"' || c == "'") quote = c;
+    }
+    return quote == null;
+}
+function scan_runtime_elements(raw, open_position) {
+    let depth = 1, count = 0, has_item = false;
+    let quote = null, escaped = false, comment = false;
+    for (let pos = open_position + 1; pos < length(raw); pos++) {
+        let c = substr(raw, pos, 1);
+        if (comment) {
+            if (c == '\n') comment = false;
+            continue;
+        }
+        if (quote != null) {
+            if (depth == 1) has_item = true;
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') { comment = true; continue; }
+        if (c == '"' || c == "'") { quote = c; if (depth == 1) has_item = true; continue; }
+        if (c == '{') { if (depth == 1) has_item = true; depth++; continue; }
+        if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                if (has_item) count++;
+                return { ok: true, close: pos, count };
+            }
+            if (depth < 0) return { ok: false };
+            continue;
+        }
+        if (depth != 1) continue;
+        if (c == ',') {
+            if (has_item) count++;
+            has_item = false;
+            continue;
+        }
+        if (!is_space(c)) has_item = true;
+    }
+    return { ok: false };
+}
+function fold_runtime(raw) {
+    raw = `${raw ?? ''}`;
+    let replacements = [], search_position = 0;
+    while (search_position < length(raw)) {
+        let rel = index(substr(raw, search_position), 'elements');
+        if (rel == null || rel < 0) break;
+        let start = search_position + rel, finish = start + 8;
+        search_position = finish;
+        let before = start > 0 ? substr(raw, start - 1, 1) : '';
+        let after = finish < length(raw) ? substr(raw, finish, 1) : '';
+        if ((before && match(before, /^[A-Za-z0-9_.-]$/)) || (after && match(after, /^[A-Za-z0-9_.-]$/)) || !runtime_token_visible(raw, start)) continue;
+        let open = finish;
+        while (open < length(raw) && is_space(substr(raw, open, 1))) open++;
+        if (substr(raw, open, 1) != '=') continue;
+        open++;
+        while (open < length(raw) && is_space(substr(raw, open, 1))) open++;
+        if (substr(raw, open, 1) != '{') continue;
+        let scanned = scan_runtime_elements(raw, open);
+        if (!scanned.ok) return raw;
+        if (scanned.count > FOLD_THRESHOLD) push(replacements, { open, close: scanned.close, count: scanned.count });
+        search_position = scanned.close + 1;
+    }
+    for (let i = length(replacements) - 1; i >= 0; i--) {
+        let replacement = replacements[i];
+        raw = substr(raw, 0, replacement.open + 1) + ` # ${replacement.count} entries ` + substr(raw, replacement.close);
+    }
     return raw;
 }
 function parse_result(output) {
@@ -121,7 +205,7 @@ function active() {
         let result = capture(`nft list table ${family} wloc`);
         if (!result.ok) continue;
         count++;
-        let text = result.output || '';
+        let text = fold_runtime(result.output || '');
         if (family == 'bridge') bridge = text;
         else inet = text;
         push(dumps, trim(text));
