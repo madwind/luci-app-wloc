@@ -81,6 +81,130 @@ struct UdpRequest {
     payload: Vec<u8>,
 }
 
+struct DnsQuestion {
+    id: u16,
+    name: String,
+    qtype: u16,
+}
+
+struct DnsResponseSummary {
+    rcode: u8,
+    answer_count: u16,
+    answers: Vec<String>,
+}
+
+struct DnsDebugContext {
+    transport: &'static str,
+    client: SocketAddr,
+    destination: SocketAddr,
+    rule_id: String,
+    outbound: &'static str,
+    question: Option<DnsQuestion>,
+    parse_error: Option<String>,
+}
+
+impl DnsDebugContext {
+    fn new(
+        transport: &'static str,
+        client: SocketAddr,
+        destination: SocketAddr,
+        rule_id: &str,
+        outbound: &OutboundProxy,
+        query: &[u8],
+    ) -> Self {
+        let (question, parse_error) = match dns_question(query) {
+            Ok(question) => (Some(question), None),
+            Err(error) => (None, Some(error)),
+        };
+        Self {
+            transport,
+            client,
+            destination,
+            rule_id: rule_id.to_owned(),
+            outbound: outbound.label(),
+            question,
+            parse_error,
+        }
+    }
+
+    fn context(&self) -> String {
+        if let Some(question) = self.question.as_ref() {
+            format!(
+                "transport={} client={} destination={} rule={} outbound={} id={} name={} type={} qtype={}",
+                self.transport,
+                self.client,
+                self.destination,
+                self.rule_id,
+                self.outbound,
+                question.id,
+                question.name,
+                dns_type_label(question.qtype),
+                question.qtype
+            )
+        } else {
+            format!(
+                "transport={} client={} destination={} rule={} outbound={} id=unknown name=unknown type=unknown parse_error={:?}",
+                self.transport,
+                self.client,
+                self.destination,
+                self.rule_id,
+                self.outbound,
+                self.parse_error.as_deref().unwrap_or("unknown")
+            )
+        }
+    }
+
+    fn log_query(&self) {
+        eprintln!("wlocd: debug=dns event=query {} action=doh", self.context());
+    }
+
+    fn log_endpoint(&self, endpoint: Ipv4Addr, result: &str, error: Option<&str>) {
+        if let Some(error) = error {
+            eprintln!(
+                "wlocd: debug=dns event=endpoint {} endpoint={endpoint} result={result} error={error:?}",
+                self.context()
+            );
+        } else {
+            eprintln!(
+                "wlocd: debug=dns event=endpoint {} endpoint={endpoint} result={result}",
+                self.context()
+            );
+        }
+    }
+
+    fn log_result(&self, endpoint: Ipv4Addr, response: &[u8]) {
+        match dns_response_summary(response) {
+            Ok(summary) => {
+                let answers = if summary.answers.is_empty() {
+                    "none".to_owned()
+                } else {
+                    summary.answers.join(",")
+                };
+                eprintln!(
+                    "wlocd: debug=dns event=result {} endpoint={endpoint} result=ok rcode={} answer_count={} answers={} bytes={}",
+                    self.context(),
+                    dns_rcode_label(summary.rcode),
+                    summary.answer_count,
+                    answers,
+                    response.len()
+                );
+            }
+            Err(error) => eprintln!(
+                "wlocd: debug=dns event=result {} endpoint={endpoint} result=ok rcode=unknown answers=unparsed bytes={} parse_error={error:?}",
+                self.context(),
+                response.len()
+            ),
+        }
+    }
+
+    fn log_failure(&self, error: &str) {
+        eprintln!(
+            "wlocd: debug=dns event=result {} result=failed error={error:?}",
+            self.context()
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct TransparentProxy {
     rules: Vec<LocationRule>,
@@ -94,6 +218,7 @@ pub struct TransparentProxy {
     udp_error_log: UdpErrorLog,
     doh_pool: DohPool,
     doh_connect_gates: DohConnectGates,
+    debug_log: bool,
 }
 
 impl TransparentProxy {
@@ -116,6 +241,7 @@ impl TransparentProxy {
             udp_error_log: Arc::new(Mutex::new(log_start)),
             doh_pool: Arc::new(Mutex::new(HashMap::new())),
             doh_connect_gates: Arc::new(Mutex::new(HashMap::new())),
+            debug_log: std::env::var("WLOC_DEBUG_LOG").as_deref() == Ok("1"),
         }
     }
 
@@ -180,6 +306,10 @@ impl TransparentProxy {
                 None
             }
         };
+        let rule_id = rule
+            .as_ref()
+            .map(|rule| rule.id.clone())
+            .unwrap_or_else(|| "direct".to_owned());
         let outbound = rule
             .as_ref()
             .map(|rule| rule.outbound.clone())
@@ -188,7 +318,11 @@ impl TransparentProxy {
         if destination.port() == 53 {
             return handle_dns_tcp(
                 &mut client,
+                peer,
+                destination,
+                &rule_id,
                 &outbound,
+                self.debug_log,
                 &self.doh_pool,
                 &self.doh_connect_gates,
             )
@@ -274,13 +408,41 @@ impl TransparentProxy {
         };
 
         if destination.port() == 53 {
-            let response = doh_query(
+            let debug = if self.debug_log {
+                Some(DnsDebugContext::new(
+                    "udp",
+                    client,
+                    destination,
+                    &rule_id,
+                    &outbound,
+                    &payload,
+                ))
+            } else {
+                None
+            };
+            if let Some(debug) = debug.as_ref() {
+                debug.log_query();
+            }
+            let (response, endpoint) = match doh_query(
                 &self.doh_pool,
                 &self.doh_connect_gates,
                 &outbound,
                 &payload,
+                debug.as_ref(),
             )
-            .await?;
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(debug) = debug.as_ref() {
+                        debug.log_failure(&error);
+                    }
+                    return Err(error);
+                }
+            };
+            if let Some(debug) = debug.as_ref() {
+                debug.log_result(endpoint, &response);
+            }
             send_spoofed_udp(&self.udp_reply_sockets, destination, client, &response)
                 .await
                 .map_err(io_message)?;
@@ -354,7 +516,11 @@ async fn error_log_allowed(last_log: &UdpErrorLog) -> bool {
 
 async fn handle_dns_tcp(
     client: &mut TcpStream,
+    client_address: SocketAddr,
+    destination: SocketAddr,
+    rule_id: &str,
     outbound: &OutboundProxy,
+    debug_log: bool,
     pool: &DohPool,
     connect_gates: &DohConnectGates,
 ) -> Result<(), String> {
@@ -378,7 +544,41 @@ async fn handle_dns_tcp(
             .await
             .map_err(|_| "TCP DNS query timed out".to_owned())?
             .map_err(io_message)?;
-        let response = doh_query(pool, connect_gates, outbound, &query).await?;
+        let debug = if debug_log {
+            Some(DnsDebugContext::new(
+                "tcp",
+                client_address,
+                destination,
+                rule_id,
+                outbound,
+                &query,
+            ))
+        } else {
+            None
+        };
+        if let Some(debug) = debug.as_ref() {
+            debug.log_query();
+        }
+        let (response, endpoint) = match doh_query(
+            pool,
+            connect_gates,
+            outbound,
+            &query,
+            debug.as_ref(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(debug) = debug.as_ref() {
+                    debug.log_failure(&error);
+                }
+                return Err(error);
+            }
+        };
+        if let Some(debug) = debug.as_ref() {
+            debug.log_result(endpoint, &response);
+        }
         let response_len = u16::try_from(response.len())
             .map_err(|_| "DoH response exceeds TCP DNS framing limit".to_owned())?;
         tokio::time::timeout(
@@ -400,7 +600,8 @@ async fn doh_query(
     connect_gates: &DohConnectGates,
     outbound: &OutboundProxy,
     query: &[u8],
-) -> Result<Vec<u8>, String> {
+    debug: Option<&DnsDebugContext>,
+) -> Result<(Vec<u8>, Ipv4Addr), String> {
     validate_dns_message(query, "query")?;
     let deadline = Instant::now() + DOH_QUERY_TIMEOUT;
     let mut last_error = String::new();
@@ -422,10 +623,16 @@ async fn doh_query(
         .await
         {
             Ok(response) if dns_servfail(&response) => {
+                if let Some(debug) = debug {
+                    debug.log_endpoint(endpoint, "servfail", None);
+                }
                 last_error = format!("{endpoint} returned SERVFAIL");
             }
-            Ok(response) => return Ok(response),
+            Ok(response) => return Ok((response, endpoint)),
             Err(error) => {
+                if let Some(debug) = debug {
+                    debug.log_endpoint(endpoint, "failed", Some(&error));
+                }
                 last_error = format!("{endpoint}: {error}");
             }
         }
@@ -673,6 +880,183 @@ fn validate_dns_message(message: &[u8], kind: &str) -> Result<(), String> {
         return Err(format!("DNS {kind} exceeds 65535 bytes"));
     }
     Ok(())
+}
+
+fn dns_u16(message: &[u8], offset: usize) -> Result<u16, String> {
+    let bytes = message
+        .get(offset..offset + 2)
+        .ok_or_else(|| "DNS field exceeds message length".to_owned())?;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn dns_name(message: &[u8], offset: &mut usize) -> Result<String, String> {
+    let mut cursor = *offset;
+    let mut resume = None;
+    let mut jumps = 0usize;
+    let mut name = String::new();
+
+    loop {
+        let length = *message
+            .get(cursor)
+            .ok_or_else(|| "DNS name exceeds message length".to_owned())?;
+        if length & 0xc0 == 0xc0 {
+            let next = *message
+                .get(cursor + 1)
+                .ok_or_else(|| "DNS compression pointer is truncated".to_owned())?;
+            let pointer = (usize::from(length & 0x3f) << 8) | usize::from(next);
+            if pointer >= message.len() {
+                return Err("DNS compression pointer is out of range".into());
+            }
+            if resume.is_none() {
+                resume = Some(cursor + 2);
+            }
+            cursor = pointer;
+            jumps += 1;
+            if jumps > 16 {
+                return Err("DNS compression pointer loop".into());
+            }
+            continue;
+        }
+        if length & 0xc0 != 0 {
+            return Err("invalid DNS label length".into());
+        }
+        cursor += 1;
+        if length == 0 {
+            *offset = resume.unwrap_or(cursor);
+            return Ok(if name.is_empty() { ".".into() } else { name });
+        }
+        let end = cursor
+            .checked_add(usize::from(length))
+            .filter(|end| *end <= message.len())
+            .ok_or_else(|| "DNS label exceeds message length".to_owned())?;
+        if !name.is_empty() {
+            name.push('.');
+        }
+        for byte in &message[cursor..end] {
+            let character = if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_') {
+                char::from(*byte).to_ascii_lowercase()
+            } else {
+                '?'
+            };
+            name.push(character);
+        }
+        if name.len() > 253 {
+            return Err("DNS name exceeds 253 characters".into());
+        }
+        cursor = end;
+    }
+}
+
+fn dns_question(message: &[u8]) -> Result<DnsQuestion, String> {
+    validate_dns_message(message, "query")?;
+    if dns_u16(message, 4)? == 0 {
+        return Err("DNS query has no question".into());
+    }
+    let id = dns_u16(message, 0)?;
+    let mut offset = 12usize;
+    let name = dns_name(message, &mut offset)?;
+    let qtype = dns_u16(message, offset)?;
+    let _qclass = dns_u16(message, offset + 2)?;
+    Ok(DnsQuestion { id, name, qtype })
+}
+
+fn dns_response_summary(message: &[u8]) -> Result<DnsResponseSummary, String> {
+    validate_dns_message(message, "response")?;
+    let rcode = message[3] & 0x0f;
+    let question_count = dns_u16(message, 4)?;
+    let answer_count = dns_u16(message, 6)?;
+    let mut offset = 12usize;
+
+    for _ in 0..question_count {
+        let _ = dns_name(message, &mut offset)?;
+        offset = offset
+            .checked_add(4)
+            .filter(|offset| *offset <= message.len())
+            .ok_or_else(|| "DNS question exceeds message length".to_owned())?;
+    }
+
+    let mut answers = Vec::new();
+    for _ in 0..usize::from(answer_count).min(64) {
+        let _ = dns_name(message, &mut offset)?;
+        let rr_type = dns_u16(message, offset)?;
+        let class = dns_u16(message, offset + 2)?;
+        offset = offset
+            .checked_add(8)
+            .filter(|offset| *offset <= message.len())
+            .ok_or_else(|| "DNS answer header exceeds message length".to_owned())?;
+        let rdlength = usize::from(dns_u16(message, offset)?);
+        offset += 2;
+        let rdata_start = offset;
+        let rdata_end = rdata_start
+            .checked_add(rdlength)
+            .filter(|end| *end <= message.len())
+            .ok_or_else(|| "DNS answer data exceeds message length".to_owned())?;
+
+        if answers.len() < 4 && class == 1 {
+            match (rr_type, rdlength) {
+                (1, 4) => answers.push(
+                    Ipv4Addr::new(
+                        message[rdata_start],
+                        message[rdata_start + 1],
+                        message[rdata_start + 2],
+                        message[rdata_start + 3],
+                    )
+                    .to_string(),
+                ),
+                (28, 16) => {
+                    let mut octets = [0_u8; 16];
+                    octets.copy_from_slice(&message[rdata_start..rdata_end]);
+                    answers.push(Ipv6Addr::from(octets).to_string());
+                }
+                (5, _) => {
+                    let mut cname_offset = rdata_start;
+                    if let Ok(cname) = dns_name(message, &mut cname_offset) {
+                        answers.push(format!("cname:{cname}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        offset = rdata_end;
+    }
+
+    Ok(DnsResponseSummary {
+        rcode,
+        answer_count,
+        answers,
+    })
+}
+
+fn dns_type_label(qtype: u16) -> &'static str {
+    match qtype {
+        1 => "A",
+        2 => "NS",
+        5 => "CNAME",
+        6 => "SOA",
+        12 => "PTR",
+        15 => "MX",
+        16 => "TXT",
+        28 => "AAAA",
+        33 => "SRV",
+        64 => "SVCB",
+        65 => "HTTPS",
+        255 => "ANY",
+        _ => "OTHER",
+    }
+}
+
+fn dns_rcode_label(rcode: u8) -> &'static str {
+    match rcode {
+        0 => "NOERROR",
+        1 => "FORMERR",
+        2 => "SERVFAIL",
+        3 => "NXDOMAIN",
+        4 => "NOTIMP",
+        5 => "REFUSED",
+        9 => "NOTAUTH",
+        10 => "NOTZONE",
+        _ => "OTHER",
+    }
 }
 
 fn dns_servfail(message: &[u8]) -> bool {
