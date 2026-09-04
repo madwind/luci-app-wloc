@@ -14,6 +14,7 @@ const SOURCE = '/etc/wloc/firewall.nft';
 const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const STATUS = `${RUNTIME}/status.json`;
+const STARTUP_GRACE_SECONDS = 20;
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -81,10 +82,15 @@ function service_running() {
 }
 
 function firewall_ready() {
-    let state = read_json(STATUS) || {};
+    let status = read_json(STATUS) || {};
     let running = service_running();
-    let ready = running && (state.armed === true || state.armed === 1 || state.armed == '1' || state.armed == 'true');
-    return { ok: true, running, ready, busy: running && !ready };
+    let armed = status.armed === true || status.armed === 1 || status.armed == '1' || status.armed == 'true';
+    let started = int(status.session_started_at || 0);
+    let now = time();
+    let age = started > 0 && now >= started ? now - started : 0;
+    let starting = running && !armed && started > 0 && age < STARTUP_GRACE_SECONDS;
+    let state = !running ? 'stopped' : armed ? 'ready' : starting ? 'starting' : 'unready';
+    return { ok: true, running, ready: running && armed, busy: starting, state };
 }
 
 function firewall_read_effective() {
