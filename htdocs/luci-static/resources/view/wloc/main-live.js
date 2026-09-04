@@ -23,6 +23,7 @@ var LOG_TAG = 'wlocd';
 var LOG_FETCH_LINES = 1000;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
+var LOG_PENDING_MAX = LOG_FETCH_LINES;
 var LOG_RECONNECT_MS = 2000;
 var ACTION_TIMEOUT = 20000;
 
@@ -78,11 +79,17 @@ function formatLogEntry(entry) {
         .replace(/^wlocd:\s*/, '');
 }
 
-function runtimeLogSection() {
+function runtimeLogSection(options) {
+    options = options || {};
     var logState = E('span', { 'aria-live': 'polite' }, _('Loading'));
     var logFilter = E('input', {
-        'class': 'cbi-input-text', 'type': 'search', 'placeholder': _('Filter'),
-        'autocomplete': 'off', 'spellcheck': 'false', 'aria-label': _('Filter runtime log')
+        'class': 'cbi-input-text',
+        'type': 'search',
+        'placeholder': _('Regular expression'),
+        'autocomplete': 'off',
+        'spellcheck': 'false',
+        'aria-label': _('Filter runtime log by regular expression'),
+        'title': _('Enter the regular expression without /.../.')
     });
     var logOutput = E('textarea', {
         'id': 'wloc-runtime-log', 'class': 'cbi-input-text',
@@ -95,15 +102,51 @@ function runtimeLogSection() {
     var followLogs = true;
     var logLines = [];
     var initialLogsLoaded = false;
+    var historySyncInProgress = false;
     var pendingLiveEntries = [];
     var recentLogKeys = Object.create(null);
     var recentLogKeyOrder = [];
     var streamController = null;
     var reconnectTimer = null;
+    var logsDeferred = false;
+
+    function startupBusy() {
+        return typeof options.isStartupBusy === 'function' && options.isStartupBusy();
+    }
+
+    function logFilterExpression() {
+        var pattern = logFilter.value.trim();
+        if (!pattern) {
+            logFilter.setCustomValidity('');
+            logFilter.removeAttribute('aria-invalid');
+            return null;
+        }
+
+        try {
+            var expression = new RegExp(pattern);
+            logFilter.setCustomValidity('');
+            logFilter.removeAttribute('aria-invalid');
+            return expression;
+        } catch (error) {
+            logFilter.setCustomValidity(_('Invalid regular expression.'));
+            logFilter.setAttribute('aria-invalid', 'true');
+            return false;
+        }
+    }
+
+    function lineMatchesFilter(line, expression) {
+        return expression === null || (expression !== false && expression.test(line));
+    }
 
     function filteredLogLines() {
-        var filter = logFilter.value.trim().toLowerCase();
-        return filter ? logLines.filter(function(line) { return line.toLowerCase().indexOf(filter) !== -1; }) : logLines;
+        var expression = logFilterExpression();
+        if (expression === null)
+            return logLines;
+        if (expression === false)
+            return [];
+        return logLines.filter(function(line) {
+            return lineMatchesFilter(line, expression);
+        });
     }
 
     function renderLogs() {
@@ -120,16 +163,12 @@ function runtimeLogSection() {
     function appendRenderedLogLine(line) {
         var previous = logLines;
         var next = wlocUi.boundedLines(previous.concat([ line ]), LOG_LINES, LOG_MAX_BYTES);
-        logLines = next;
-
-        if (logFilter.value.trim() || typeof logOutput.setRangeText !== 'function') {
-            renderLogs();
-            return;
-        }
-
         var retained = Math.max(0, next.length - 1);
         var dropped = previous.length - retained;
         var canAppend = dropped >= 0 && next.length > 0 && next[next.length - 1] === line;
+        var expression = logFilterExpression();
+
+        logLines = next;
 
         if (canAppend) {
             for (var index = 0; index < retained; index++) {
@@ -140,31 +179,41 @@ function runtimeLogSection() {
             }
         }
 
-        if (!canAppend) {
+        if (!canAppend || typeof logOutput.setRangeText !== 'function' || expression === false) {
             renderLogs();
             return;
         }
 
         var oldScrollTop = logOutput.scrollTop;
+        var oldScrollHeight = logOutput.scrollHeight;
         var wasAtBottom = followLogs;
+        var droppedVisible = [];
+        var retainedVisible = 0;
 
-        if (dropped > 0) {
-            var removeChars = 0;
-            for (var i = 0; i < dropped; i++) {
-                removeChars += previous[i].length;
-                if (i < previous.length - 1)
-                    removeChars++;
-            }
+        for (var i = 0; i < previous.length; i++) {
+            if (!lineMatchesFilter(previous[i], expression))
+                continue;
+            if (i < dropped)
+                droppedVisible.push(previous[i]);
+            else
+                retainedVisible++;
+        }
+
+        if (droppedVisible.length) {
+            var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
             logOutput.setRangeText('', 0, removeChars, 'preserve');
         }
 
-        var appendText = (logOutput.value ? '\n' : '') + line;
-        logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+        var removedHeight = Math.max(0, oldScrollHeight - logOutput.scrollHeight);
+        if (lineMatchesFilter(line, expression)) {
+            var appendText = (logOutput.value ? '\n' : '') + line;
+            logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+        }
 
         if (wasAtBottom)
             logOutput.scrollTop = logOutput.scrollHeight;
         else
-            logOutput.scrollTop = oldScrollTop;
+            logOutput.scrollTop = Math.max(0, oldScrollTop - removedHeight);
     }
 
     function isRelevantLogEntry(entry) {
@@ -190,40 +239,67 @@ function runtimeLogSection() {
         return true;
     }
 
-    function appendLogEntry(entry) {
-        if (!isRelevantLogEntry(entry))
-            return;
-        if (!initialLogsLoaded) {
-            pendingLiveEntries.push(entry);
-            return;
-        }
-        if (!rememberLogEntry(entry))
-            return;
+    function queuePendingLogEntry(entry) {
+        pendingLiveEntries.push(entry);
+        if (pendingLiveEntries.length > LOG_PENDING_MAX)
+            pendingLiveEntries.splice(0, pendingLiveEntries.length - LOG_PENDING_MAX);
+    }
 
+    function appendKnownLogEntry(entry) {
+        if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+            return;
         appendRenderedLogLine(formatLogEntry(entry));
     }
 
-    function mergeInitialLogs(entries) {
-        var merged = [];
-
-        (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
-            if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
-                return;
-            merged.push(formatLogEntry(entry));
-        });
-
-        pendingLiveEntries = [];
-        initialLogsLoaded = true;
-        logLines = wlocUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
-        renderLogs();
+    function appendLogEntry(entry) {
+        if (!isRelevantLogEntry(entry))
+            return;
+        if (!initialLogsLoaded || historySyncInProgress) {
+            queuePendingLogEntry(entry);
+            return;
+        }
+        appendKnownLogEntry(entry);
     }
 
-    function loadInitialLogs() {
+    function mergeLogHistory(entries) {
+        var combined = (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries);
+        pendingLiveEntries = [];
+        historySyncInProgress = false;
+
+        if (!initialLogsLoaded) {
+            var merged = [];
+            combined.forEach(function(entry) {
+                if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+                    return;
+                merged.push(formatLogEntry(entry));
+            });
+            initialLogsLoaded = true;
+            logLines = wlocUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
+            renderLogs();
+            return;
+        }
+
+        combined.forEach(appendKnownLogEntry);
+    }
+
+    function syncRecentLogs() {
+        if (!pageVisible || logStopped)
+            return Promise.resolve(false);
+        if (startupBusy()) {
+            deferLogs();
+            return Promise.resolve(false);
+        }
+        if (historySyncInProgress)
+            return Promise.resolve(false);
+
+        historySyncInProgress = true;
         return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
-            mergeInitialLogs(entries);
+            mergeLogHistory(entries);
+            return true;
         }).catch(function(error) {
             console.warn(error);
-            mergeInitialLogs([]);
+            mergeLogHistory([]);
+            return false;
         });
     }
 
@@ -265,23 +341,39 @@ function runtimeLogSection() {
         streamController = null;
     }
 
+    function deferLogs() {
+        clearReconnect();
+        logsDeferred = true;
+        if (!streamController && !logStopped)
+            wlocUi.setState(logState, 'notice', _('Waiting for service...'));
+    }
+
     function scheduleReconnect() {
         if (logStopped || !pageVisible || reconnectTimer !== null) return;
+        if (startupBusy()) {
+            deferLogs();
+            return;
+        }
         wlocUi.setState(logState, 'notice', _('Reconnecting'));
         reconnectTimer = window.setTimeout(function() {
             reconnectTimer = null;
-            startLogStream();
+            startLogStream(true);
         }, LOG_RECONNECT_MS);
     }
 
-    function startLogStream() {
+    function startLogStream(backfill) {
         if (logStopped || !pageVisible || streamController) return Promise.resolve();
+        if (startupBusy()) {
+            deferLogs();
+            return Promise.resolve();
+        }
         if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
             wlocUi.setState(logState, 'warn', _('Unavailable'));
             return Promise.resolve();
         }
 
         clearReconnect();
+        logsDeferred = false;
         wlocUi.setState(logState, 'notice', _('Connecting'));
         var controller = new AbortController();
         streamController = controller;
@@ -293,13 +385,39 @@ function runtimeLogSection() {
         }).then(function(response) {
             if (!response.ok || !response.body) throw new Error('log subscription HTTP ' + response.status);
             wlocUi.setState(logState, 'ok', _('Live'));
+            if (backfill || !initialLogsLoaded)
+                syncRecentLogs();
             return pump(response.body.getReader(), new TextDecoder(), controller, { buffer: '' });
         }).catch(function(error) {
-            if (!controller.signal.aborted) console.warn(error);
+            if (!controller.signal.aborted) {
+                console.warn(error);
+                if (!initialLogsLoaded && !startupBusy())
+                    syncRecentLogs();
+            }
         }).then(function() {
             if (streamController === controller) streamController = null;
             if (!controller.signal.aborted) scheduleReconnect();
         });
+    }
+
+    function resumeLogs() {
+        if (logStopped || !pageVisible || startupBusy())
+            return;
+        logsDeferred = false;
+        if (!streamController)
+            startLogStream(true);
+        else if (!initialLogsLoaded)
+            syncRecentLogs();
+    }
+
+    function lifecycleChanged() {
+        if (startupBusy()) {
+            if (!streamController && !logStopped)
+                deferLogs();
+            return;
+        }
+        if (logsDeferred || !streamController)
+            resumeLogs();
     }
 
     logOutput.addEventListener('scroll', function() {
@@ -316,7 +434,7 @@ function runtimeLogSection() {
             wlocUi.setState(logState, 'notice', _('Stopped'));
             return Promise.resolve();
         }
-        startLogStream();
+        resumeLogs();
         return Promise.resolve();
     }));
 
@@ -325,14 +443,7 @@ function runtimeLogSection() {
         stopLogStream();
     }, { once: true });
 
-    window.setTimeout(function() {
-        if (!pageVisible)
-            return;
-        loadInitialLogs();
-        startLogStream();
-    }, 0);
-
-    return E('div', { 'class': 'cbi-section' }, [
+    var root = E('div', { 'class': 'cbi-section' }, [
         E('h3', { 'class': 'cbi-section-title' }, _('Runtime log')),
         E('div', { 'class': 'cbi-section-descr', 'style': 'display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;' }, [
             logState,
@@ -343,6 +454,17 @@ function runtimeLogSection() {
         ]),
         logOutput
     ]);
+
+    window.setTimeout(function() {
+        if (!pageVisible)
+            return;
+        lifecycleChanged();
+    }, 0);
+
+    return {
+        root: root,
+        lifecycleChanged: lifecycleChanged
+    };
 }
 
 return view.extend({
@@ -370,8 +492,10 @@ return view.extend({
         var pageVisible = true;
         var statusRequest = null;
         var actionInProgress = false;
+        var activeAction = null;
         var actionDeadline = 0;
         var lastStatus = null;
+        var runtimeLogController = null;
         var overviewController = wlocOverview.create(data && data[1] || {}, initial);
 
         function setMessage(state, value) {
@@ -381,6 +505,22 @@ return view.extend({
                 return;
             }
             wlocUi.setState(message, state, value);
+        }
+
+        function startupBusyForLogs() {
+            if (actionInProgress && (activeAction === 'start' || activeAction === 'restart' || activeAction === 'regenerate'))
+                return true;
+            if (!lastStatus || !truthy(lastStatus.running) || truthy(lastStatus.armed))
+                return false;
+
+            var startedAt = numberOrNull(lastStatus.session_started_at);
+            return startedAt !== null && startedAt > 0 &&
+                Date.now() / 1000 - startedAt < ACTION_TIMEOUT / 1000;
+        }
+
+        function notifyLogLifecycle() {
+            if (runtimeLogController)
+                runtimeLogController.lifecycleChanged();
         }
 
         function updateActionButtons() {
@@ -431,6 +571,7 @@ return view.extend({
 
             overviewController.updateStatus(result);
             updateActionButtons();
+            notifyLogLifecycle();
             return result;
         }
 
@@ -494,9 +635,11 @@ return view.extend({
         function serviceAction(action) {
             var request = action === 'start' ? callStart : action === 'stop' ? callStop : callRestart;
             actionInProgress = true;
+            activeAction = action;
             actionDeadline = Date.now() + ACTION_TIMEOUT;
             setMessage('notice', _('%s requested...').format(actionText(action)));
             updateActionButtons();
+            notifyLogLifecycle();
 
             return request().then(function(result) {
                 if (result && result.ok === false)
@@ -510,15 +653,19 @@ return view.extend({
                 return false;
             }).then(function(result) {
                 actionInProgress = false;
+                activeAction = null;
                 updateActionButtons();
+                notifyLogLifecycle();
                 return result;
             });
         }
 
         function regenerateCa() {
             actionInProgress = true;
+            activeAction = 'regenerate';
             setMessage('notice', _('Regenerating Root CA...'));
             updateActionButtons();
+            notifyLogLifecycle();
 
             return callRegenerate().then(function(result) {
                 if (result && result.ok === false)
@@ -532,7 +679,9 @@ return view.extend({
                 return false;
             }).then(function(result) {
                 actionInProgress = false;
+                activeAction = null;
                 updateActionButtons();
+                notifyLogLifecycle();
                 return result;
             });
         }
@@ -591,6 +740,8 @@ return view.extend({
             }, _('Regenerate CA'));
             regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, confirmRegenerateCa));
 
+            runtimeLogController = runtimeLogSection({ isStartupBusy: startupBusyForLogs });
+
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
                 E('div', { 'class': 'cbi-map-descr' }, _('WLOC process, runtime integration, AP locations, Root CA and live log.')),
@@ -622,7 +773,7 @@ return view.extend({
                     message
                 ]),
                 overviewForm,
-                runtimeLogSection()
+                runtimeLogController.root
             ]);
 
             updateActionButtons();
