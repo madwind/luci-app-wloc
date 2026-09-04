@@ -158,7 +158,11 @@ function remove_tables() {
     }
     return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
 }
-function rules(command, args) { return run_ucode(RULES, [ command ].concat(args || [])); }
+function rules(command, args) {
+    let argv = [ command ];
+    for (let arg in (args || [])) push(argv, arg);
+    return run_ucode(RULES, argv);
+}
 function daemon_ready() {
     let st = fs.stat(STATUS);
     return quiet('pidof wlocd') && type(st) == 'object' && int(st.size || 0) > 0;

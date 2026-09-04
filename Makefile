@@ -21,10 +21,9 @@ LUCI_EXTRA_DEPENDS:= \
 	nftables (>=0), \
 	kmod-nft-tproxy (>=0), \
 	ip-full (>=0), \
-	jshn (>=0), \
 	uclient-fetch (>=0)
 
-LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native rpcd ucode handlers and LuCI.
+LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native ucode runtime and rpcd controllers, and LuCI.
 LUCI_MAINTAINER:=luci-app-wloc maintainers
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
@@ -56,18 +55,21 @@ version_cache="$${postinst_root}/usr/share/wloc/installed-version"
 mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
 printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
 chmod 0644 "$${version_cache}" 2>/dev/null || true
+chmod 0755 \
+	"$${postinst_root}/etc/init.d/wloc" \
+	"$${postinst_root}/usr/libexec/wloc/ap.uc" \
+	"$${postinst_root}/usr/libexec/wloc/firewall.uc" \
+	"$${postinst_root}/usr/libexec/wloc/routing.uc" \
+	"$${postinst_root}/usr/libexec/wloc/rules.uc" \
+	"$${postinst_root}/usr/libexec/wloc/update.uc" \
+	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" 2>/dev/null || true
+chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {
-	chmod 0755 \
-		/usr/libexec/wloc/update.sh \
-		/usr/libexec/wloc/update-auto.sh \
-		/usr/libexec/wloc/firewall.sh \
-		/usr/libexec/wloc/firewall-core.sh 2>/dev/null || true
-	chmod 0644 /usr/share/rpcd/ucode/luci.wloc*.uc 2>/dev/null || true
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
-	/usr/libexec/wloc/update-auto.sh sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
+	/usr/bin/ucode /usr/libexec/wloc/update.uc auto-sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
 	exit 0
 }
 exit 0
@@ -79,11 +81,11 @@ define Package/luci-app-wloc/prerm
 	case "$${1:-remove}" in
 		upgrade) ;;
 		*)
-			[ -x /usr/libexec/wloc/update-auto.sh ] && /usr/libexec/wloc/update-auto.sh remove >/dev/null 2>&1 || true
+			[ -f /usr/libexec/wloc/update.uc ] && /usr/bin/ucode /usr/libexec/wloc/update.uc auto-remove >/dev/null 2>&1 || true
 			rm -f /usr/share/wloc/installed-version
 			;;
 	esac
-	/usr/libexec/wloc/firewall.sh remove-runtime 2>/dev/null || true
+	[ -f /usr/libexec/wloc/firewall.uc ] && /usr/bin/ucode /usr/libexec/wloc/firewall.uc remove-runtime >/dev/null 2>&1 || true
 }
 exit 0
 endef

@@ -144,7 +144,7 @@ impl Config {
         let mut debug = false;
         let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
-        let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.sh");
+        let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.uc");
         let mut args = arguments.into_iter();
         while let Some(flag) = args.next() {
             let value = || format!("missing value for {flag}");

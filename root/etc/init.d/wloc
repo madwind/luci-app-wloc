@@ -4,12 +4,13 @@ USE_PROCD=1
 START=95
 STOP=10
 
-RULES=/usr/libexec/wloc/rules.sh
+UCODE=/usr/bin/ucode
+RULES=/usr/libexec/wloc/rules.uc
 FIREWALL=/etc/wloc/firewall.nft
 FIREWALL_DEFAULT=/usr/share/wloc/defaults/firewall.nft
-FIREWALL_HELPER=/usr/libexec/wloc/firewall.sh
-SCHEDULE=/usr/libexec/wloc/wifi-schedule.sh
-AP_LIB=/usr/libexec/wloc/ap-lib.sh
+FIREWALL_CTL=/usr/libexec/wloc/firewall.uc
+SCHEDULE=/usr/libexec/wloc/wifi-schedule.uc
+AP_CTL=/usr/libexec/wloc/ap.uc
 START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
@@ -35,8 +36,7 @@ validate_wifi() {
         rule_error="incomplete location parameters for AP: $name"; return 0;
     }
     [ -n "$iface" ] || { rule_error='interface is required for every enabled WLOC rule'; return 0; }
-    . "$AP_LIB"
-    if ! wloc_ap_find_section_by_ifname "$iface" >/dev/null; then
+    if ! "$UCODE" "$AP_CTL" find "$iface" >/dev/null 2>&1; then
         rule_error="interface \"$iface\" cannot be resolved"; return 0
     fi
     case "$proxy_type" in
@@ -87,18 +87,18 @@ startup_warning() {
 }
 
 start_service() {
-    local firewall_source
+    local firewall_source firewall_apply_detail cleanup_detail
     mkdir -p /var/run/wloc
     rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
     firewall_source="$FIREWALL"
     [ -r "$firewall_source" ] || firewall_source="$FIREWALL_DEFAULT"
-    if ! firewall_apply_detail="$("$FIREWALL_HELPER" apply "$firewall_source" 2>&1)"; then
+    if ! firewall_apply_detail="$("$UCODE" "$FIREWALL_CTL" apply-file "$firewall_source" 2>&1)"; then
         startup_warning "firewall apply failed: ${firewall_apply_detail:-unknown error}"
     fi
     config_load wloc
 
     procd_open_instance schedule
-    procd_set_param command "$SCHEDULE" run
+    procd_set_param command "$UCODE" "$SCHEDULE" run
     procd_set_param respawn 60 5 3
     procd_set_param stdout 1
     procd_set_param stderr 1
@@ -110,7 +110,7 @@ start_service() {
     config_get_bool debug main debug 0
 
     cleanup_detail=''
-    if cleanup_detail="$("$RULES" reset 2>&1)"; then
+    if cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
@@ -137,7 +137,7 @@ start_service() {
     chmod 0700 /etc/wloc
 
     procd_open_instance daemon
-    procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port"
+    procd_set_param command /usr/sbin/wlocd --listen-port "$listen_port" --rules-helper "$RULES"
     [ "$debug" -eq 1 ] && procd_append_param command --debug
     for wifi in $wifi_sections; do
         append_rule_for_wifi "$wifi"
@@ -154,7 +154,7 @@ start_service() {
 
 stop_service() {
     local rc=0 cleanup_detail
-    if cleanup_detail="$("$RULES" reset 2>&1)"; then
+    if cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
@@ -166,7 +166,7 @@ stop_service() {
 
 service_stopped() {
     local rc=0 cleanup_detail
-    if cleanup_detail="$("$RULES" reset 2>&1)"; then
+    if cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
         :
     else
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
