@@ -36,6 +36,15 @@ function numberOrNull(value) {
     return isFinite(number) && number >= 0 ? number : null;
 }
 
+function startupStatus(status) {
+    if (!status || !truthy(status.running) || truthy(status.armed))
+        return false;
+
+    var startedAt = numberOrNull(status.session_started_at);
+    return startedAt !== null && startedAt > 0 &&
+        Date.now() / 1000 - startedAt < ACTION_TIMEOUT / 1000;
+}
+
 function tableRow(label, value) {
     return E('tr', { 'class': 'tr' }, [
         E('th', { 'class': 'th cbi-section-table-cell' }, label),
@@ -108,7 +117,7 @@ function runtimeLogSection(options) {
     var recentLogKeyOrder = [];
     var streamController = null;
     var reconnectTimer = null;
-    var logsDeferred = false;
+    var logsDeferred = true;
 
     function startupBusy() {
         return typeof options.isStartupBusy === 'function' && options.isStartupBusy();
@@ -416,7 +425,7 @@ function runtimeLogSection(options) {
                 deferLogs();
             return;
         }
-        if (logsDeferred || !streamController)
+        if (logsDeferred)
             resumeLogs();
     }
 
@@ -469,11 +478,16 @@ function runtimeLogSection(options) {
 
 return view.extend({
     load: function() {
-        return Promise.all([
-            L.resolveDefault(callStatus(), {}),
-            wlocOverview.load(),
-            L.resolveDefault(callRouting(), {})
-        ]);
+        return L.resolveDefault(callStatus(), {}).then(function(status) {
+            var routing = startupStatus(status)
+                ? Promise.resolve({})
+                : L.resolveDefault(callRouting(), {});
+            return Promise.all([
+                Promise.resolve(status),
+                wlocOverview.load(),
+                routing
+            ]);
+        });
     },
 
     render: function(data) {
@@ -495,6 +509,7 @@ return view.extend({
         var activeAction = null;
         var actionDeadline = 0;
         var lastStatus = null;
+        var lastRoutingStatus = initialRouting;
         var runtimeLogController = null;
         var overviewController = wlocOverview.create(data && data[1] || {}, initial);
 
@@ -507,15 +522,10 @@ return view.extend({
             wlocUi.setState(message, state, value);
         }
 
-        function startupBusyForLogs() {
+        function startupBusy(status) {
             if (actionInProgress && (activeAction === 'start' || activeAction === 'restart' || activeAction === 'regenerate'))
                 return true;
-            if (!lastStatus || !truthy(lastStatus.running) || truthy(lastStatus.armed))
-                return false;
-
-            var startedAt = numberOrNull(lastStatus.session_started_at);
-            return startedAt !== null && startedAt > 0 &&
-                Date.now() / 1000 - startedAt < ACTION_TIMEOUT / 1000;
+            return startupStatus(status || lastStatus);
         }
 
         function notifyLogLifecycle() {
@@ -540,7 +550,9 @@ return view.extend({
 
         function applyStatus(result, routingResult) {
             result = result || {};
-            routingResult = routingResult || {};
+            if (routingResult && routingResult.ok === true)
+                lastRoutingStatus = routingResult;
+            routingResult = routingResult && routingResult.ok === true ? routingResult : (lastRoutingStatus || {});
             lastStatus = result;
 
             var runningKnown = result.running !== undefined;
@@ -588,19 +600,16 @@ return view.extend({
             updateActionButtons();
         }
 
-        function readRuntimeStatus() {
-            return Promise.all([
-                callStatus(),
-                L.resolveDefault(callRouting(), {})
-            ]);
-        }
-
         function refreshStatus() {
             if (!pageVisible || statusRequest)
                 return statusRequest || Promise.resolve();
 
-            statusRequest = readRuntimeStatus().then(function(results) {
-                return applyStatus(results[0], results[1]);
+            statusRequest = callStatus().then(function(result) {
+                if (startupBusy(result))
+                    return applyStatus(result, lastRoutingStatus);
+                return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
+                    return applyStatus(result, routingResult);
+                });
             }).catch(function(error) {
                 showStatusUnavailable(error);
                 return null;
@@ -612,9 +621,9 @@ return view.extend({
         }
 
         function waitForLifecycle(action) {
-            return readRuntimeStatus().then(function(results) {
-                var result = results[0] || {};
-                applyStatus(result, results[1]);
+            return callStatus().then(function(result) {
+                result = result || {};
+                applyStatus(result, lastRoutingStatus);
                 var running = truthy(result.running);
                 var complete = action === 'stop' ? !running : running;
 
@@ -740,7 +749,7 @@ return view.extend({
             }, _('Regenerate CA'));
             regenerateButton.addEventListener('click', ui.createHandlerFn(regenerateButton, confirmRegenerateCa));
 
-            runtimeLogController = runtimeLogSection({ isStartupBusy: startupBusyForLogs });
+            runtimeLogController = runtimeLogSection({ isStartupBusy: function() { return startupBusy(lastStatus); } });
 
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
