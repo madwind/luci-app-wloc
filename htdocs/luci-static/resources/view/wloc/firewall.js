@@ -207,7 +207,7 @@ return view.extend({
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, applied
                     ? _('Applied to runtime, but the Firewall file could not be saved.')
-                    : _('Unable to apply Firewall rules.'));
+                    : _('Unable to apply Firewall rules.')));
                 return false;
             });
         }
