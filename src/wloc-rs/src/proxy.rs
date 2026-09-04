@@ -499,6 +499,8 @@ impl Proxy {
             .map_err(|_| ProxyError::Protocol("stream_queue_timeout".into()))?
             .map_err(|_| ProxyError::Protocol("stream_limit_closed".into()))?;
 
+        let pool_key = outbound.pool_key(hostname);
+        let mut active_generation = None;
         let forward_result = tokio::select! {
             reset = std::future::poll_fn(|context| respond.poll_reset(context)) => {
                 let reason = match reset {
@@ -517,11 +519,19 @@ impl Proxy {
                     ip,
                     connection_id,
                     outbound,
+                    &mut active_generation,
                 ),
             ) => upstream,
         };
-        let upstream = forward_result
-            .map_err(|_| ProxyError::Upstream("request_timeout".into()).with_domain(hostname))??;
+        let upstream = match forward_result {
+            Ok(result) => result?,
+            Err(_) => {
+                if let Some(generation) = active_generation {
+                    remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
+                }
+                return Err(ProxyError::Upstream("request_timeout".into()).with_domain(hostname));
+            }
+        };
         let end = upstream.body.is_empty();
         let delivered_status = upstream.status.as_u16();
         let delivered_wloc = upstream.wloc;
@@ -620,6 +630,7 @@ impl Proxy {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
         request: Request<h2::RecvStream>,
@@ -629,6 +640,7 @@ impl Proxy {
         ip: IpAddr,
         connection_id: u32,
         outbound: &OutboundProxy,
+        active_generation: &mut Option<u64>,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
             .uri()
@@ -682,6 +694,7 @@ impl Proxy {
                     tls_sni,
                     &body,
                     outbound,
+                    active_generation,
                 )
                 .await;
             match result {
@@ -690,10 +703,6 @@ impl Proxy {
                         && upstream_attempt < UPSTREAM_REQUEST_ATTEMPTS
                         && retryable_upstream_request_error(&error).is_some() =>
                 {
-                    self.h2_pool
-                        .lock()
-                        .await
-                        .remove(&outbound.pool_key(tls_sni));
                     upstream_attempt += 1;
                 }
                 result => break result.map_err(|error| error.with_domain(tls_sni))?,
@@ -748,20 +757,27 @@ impl Proxy {
         hostname: &str,
         body: &[u8],
         outbound: &OutboundProxy,
+        active_generation: &mut Option<u64>,
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
         let pool_key = outbound.pool_key(hostname);
         if let Some(entry) = self.h2_pool.lock().await.get(&pool_key).cloned() {
             let upstream_ip = entry.upstream_ip;
             let proxy_ip = entry.proxy_ip;
+            *active_generation = Some(entry.generation);
             match entry.sender.ready().await {
                 Ok(sender) => {
-                    return exchange_h2(sender, method, uri, headers, hostname, body)
-                        .await
-                        .map(|response| (response, "h2"))
-                        .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip));
+                    match exchange_h2(sender, method, uri, headers, hostname, body).await {
+                        Ok(response) => return Ok((response, "h2")),
+                        Err(error) => {
+                            remove_h2_generation(&self.h2_pool, &pool_key, entry.generation).await;
+                            *active_generation = None;
+                            return Err(error.with_target(hostname, upstream_ip, proxy_ip));
+                        }
+                    }
                 }
                 Err(_) => {
                     remove_h2_generation(&self.h2_pool, &pool_key, entry.generation).await;
+                    *active_generation = None;
                 }
             }
         }
@@ -831,25 +847,41 @@ impl Proxy {
                         proxy_ip,
                     },
                 );
+                *active_generation = Some(generation);
                 let pool = Arc::clone(&self.h2_pool);
-                let driver_key = pool_key;
+                let driver_key = pool_key.clone();
                 tokio::spawn(async move {
                     let _ = connection.await;
                     remove_h2_generation(&pool, &driver_key, generation).await;
                 });
-                let sender = sender.ready().await.map_err(|error| {
-                    ProxyError::upstream_h2(error).with_target(hostname, upstream_ip, proxy_ip)
-                })?;
-                exchange_h2(sender, method, uri, headers, hostname, body)
-                    .await
-                    .map(|response| (response, "h2"))
+                let sender = match sender.ready().await {
+                    Ok(sender) => sender,
+                    Err(error) => {
+                        remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
+                        *active_generation = None;
+                        return Err(ProxyError::upstream_h2(error)
+                            .with_target(hostname, upstream_ip, proxy_ip));
+                    }
+                };
+                match exchange_h2(sender, method, uri, headers, hostname, body).await {
+                    Ok(response) => Ok((response, "h2")),
+                    Err(error) => {
+                        remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
+                        *active_generation = None;
+                        Err(error)
+                    }
+                }
             }
             Some(b"http/1.1") | None => {
+                *active_generation = None;
                 crate::http1::exchange(tls, method, uri, headers, hostname, body)
                     .await
                     .map(|response| (response, "http/1.1"))
             }
-            _ => Err(ProxyError::Upstream("unsupported_upstream_alpn".into())),
+            _ => {
+                *active_generation = None;
+                Err(ProxyError::Upstream("unsupported_upstream_alpn".into()))
+            }
         }
         .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip))
     }
