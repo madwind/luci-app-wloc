@@ -12,7 +12,7 @@ const HELPER = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
-const RPC_PAYLOAD_MAX_BYTES = 1024 * 1024;
+const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
 
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
@@ -108,7 +108,7 @@ function create_payload(value, prefix) {
 function defer_payload(request, command, value) {
     let content = `${value == null ? '' : value}`;
     if (length(content) > RPC_PAYLOAD_MAX_BYTES)
-        return { ok: false, error: 'Firewall file is larger than 1 MiB.' };
+        return { ok: false, error: 'Firewall file is larger than 32 KiB.' };
 
     let payload = create_payload(content, `rpc-firewall-${command}`);
     if (!payload)
