@@ -1,7 +1,6 @@
 'use strict';
 'require view';
 'require rpc';
-'require poll';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 
@@ -42,8 +41,6 @@ var callDefault = rpc.declare({
     expect: { '': {} },
     reject: true
 });
-
-var RUNTIME_REFRESH_INTERVAL = 10;
 
 function routingMessage(result, fallback) {
     return [ result && result.error, result && result.detail ]
@@ -87,7 +84,7 @@ return view.extend({
         document.title = 'OpenWrt | ' + _('Routing');
 
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Auto refresh every 10 seconds'));
+        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var pageVisible = true;
         var editor;
@@ -114,9 +111,7 @@ return view.extend({
                 ? next.active
                 : _('# No active policy routing commands are installed.\n'));
             wlocUi.setState(runtimeState, next && next.route_active === true ? 'ok' : 'warn',
-                next && next.route_active === true
-                    ? _('Active · auto refresh every 10 seconds')
-                    : _('Inactive · auto refresh every 10 seconds'));
+                next && next.route_active === true ? _('Loaded') : _('Inactive'));
         }
 
         function refreshRuntime(manual) {
@@ -280,10 +275,13 @@ return view.extend({
             refreshRuntime(true);
         });
 
-        poll.add(refreshRuntime, RUNTIME_REFRESH_INTERVAL);
+        var runtimeToolbar = E('div', {
+            'class': 'cbi-section-descr',
+            'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
+        }, [ runtimeState, refreshButton ]);
+
         window.addEventListener('pagehide', function() {
             pageVisible = false;
-            poll.remove(refreshRuntime);
         }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [
@@ -296,7 +294,7 @@ return view.extend({
             ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
-                E('div', { 'class': 'cbi-section-descr' }, [ runtimeState, ' ', refreshButton ]),
+                runtimeToolbar,
                 activeEditor.root
             ])
         ]);
