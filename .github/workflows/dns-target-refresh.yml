@@ -20,6 +20,7 @@ jobs:
         run: |
           set -eu
           cp .github/patch-dns-target-refresh.py /tmp/patch-dns-target-refresh.py
+          sed -i 's/re.subn(pattern, replacement, text, count=1, flags=re.S)/re.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)/' /tmp/patch-dns-target-refresh.py
           git fetch origin master
           git checkout -B dns-target-refresh-r66 origin/master
           git config user.name "IvonWei"
