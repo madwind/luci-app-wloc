@@ -18,6 +18,9 @@ use wloc_rs::config::Config;
 use wloc_rs::proxy::Proxy;
 use wloc_rs::status::Status;
 
+const TCP_LISTEN_BACKLOG: i32 = 1024;
+const TCP_CONNECTION_LIMIT: usize = 1024;
+
 fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), String> {
     let mut command = std::process::Command::new(helper);
     command.arg(action);
@@ -83,7 +86,7 @@ fn listener_v4(port: u16) -> std::io::Result<tokio::net::TcpListener> {
     #[cfg(target_os = "linux")]
     socket.set_ip_transparent_v4(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
-    socket.listen(128)?;
+    socket.listen(TCP_LISTEN_BACKLOG)?;
     socket.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(socket.into())
 }
@@ -95,7 +98,7 @@ fn listener_v6(port: u16) -> std::io::Result<tokio::net::TcpListener> {
     #[cfg(target_os = "linux")]
     socket.set_ip_transparent_v6(true)?;
     socket.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0).into())?;
-    socket.listen(128)?;
+    socket.listen(TCP_LISTEN_BACKLOG)?;
     socket.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(socket.into())
 }
@@ -147,7 +150,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_no_client_auth();
     client.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(2)
         .enable_all()
         .build()?;
@@ -326,7 +329,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.debug,
             Arc::clone(&status),
         ));
-        let connection_limit = Arc::new(tokio::sync::Semaphore::new(128));
+        let connection_limit = Arc::new(tokio::sync::Semaphore::new(TCP_CONNECTION_LIMIT));
         loop {
             let permit = Arc::clone(&connection_limit)
                 .acquire_owned()
