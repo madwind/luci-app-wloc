@@ -1,0 +1,39 @@
+name: Firewall set placeholders debug
+
+on:
+  push:
+    branches:
+      - firewall-set-placeholders-r65c
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Capture patch result
+        shell: bash
+        run: |
+          set -u
+          cp .github/patch-firewall-sets.py /tmp/patch-firewall-sets.py
+          git fetch origin master
+          git checkout -B firewall-set-placeholders-debug-output origin/master
+          set +e
+          python3 /tmp/patch-firewall-sets.py > /tmp/patch-output.txt 2>&1
+          rc=$?
+          set -e
+          {
+            echo "patch_rc=$rc"
+            cat /tmp/patch-output.txt
+            echo "--- status ---"
+            git status --short
+            echo "--- diff check ---"
+            git diff --check 2>&1 || true
+          } > patch-debug.txt
+          git add patch-debug.txt
+          git commit -m 'Record firewall set patch debug output'
+          git push --force origin HEAD:firewall-set-placeholders-debug-output
