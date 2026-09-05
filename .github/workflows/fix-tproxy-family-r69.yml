@@ -1,0 +1,117 @@
+name: Fix WLOC TPROXY family and formatting
+
+on:
+  push:
+    branches:
+      - fix-tproxy-family-r69-run
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch clean output branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'IvonWei'
+          git config user.email 'madwind.cn@gmail.com'
+          git fetch origin fix-tproxy-family-r69
+          git checkout -B fix-tproxy-family-r69 origin/fix-tproxy-family-r69
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one match for {old!r}, found {text.count(old)}')
+              p.write_text(text.replace(old, new), encoding='utf-8', newline='\n')
+
+          def format_nft(text):
+              text = text.replace('\r\n', '\n').replace('\r', '\n')
+              lines = text.split('\n')
+              out = []
+              depth = 0
+              blank = False
+              for index, source in enumerate(lines):
+                  value = source.strip()
+                  if not value:
+                      if index + 1 < len(lines) and out and not blank:
+                          out.append('')
+                          blank = True
+                      continue
+                  if value.startswith('}'):
+                      depth = max(0, depth - 1)
+                  out.append('    ' * depth + value)
+                  blank = False
+                  if value.endswith('{'):
+                      depth += 1
+              return '\n'.join(out) + ('\n' if out else '')
+
+          firewall_path = Path('root/usr/share/wloc/defaults/firewall.nft')
+          firewall = firewall_path.read_text(encoding='utf-8')
+          firewall = firewall.replace(
+              'counter tproxy to :%port% accept comment "wloc location"',
+              'counter tproxy ip to :%port% accept comment "wloc location"',
+              1,
+          )
+          firewall = firewall.replace(
+              'counter tproxy to :%port% accept comment "wloc location"',
+              'counter tproxy ip6 to :%port% accept comment "wloc location"',
+              1,
+          )
+          if 'meta nfproto ipv4' not in firewall or 'tproxy ip to :%port%' not in firewall:
+              raise SystemExit('IPv4 family-qualified TPROXY rule was not produced')
+          if 'meta nfproto ipv6' not in firewall or 'tproxy ip6 to :%port%' not in firewall:
+              raise SystemExit('IPv6 family-qualified TPROXY rule was not produced')
+          firewall_path.write_text(format_nft(firewall), encoding='utf-8', newline='\n')
+
+          uc = Path('root/usr/libexec/wloc/firewall.uc')
+          text = uc.read_text(encoding='utf-8')
+          normalize_block = '''function normalize(raw) {\n    raw = replace(`${raw ?? ''}`, /\\r\\n/g, '\\n');\n    raw = replace(raw, /\\r/g, '\\n');\n    if (raw && substr(raw, -1) != '\\n') raw += '\\n';\n    return raw;\n}\n'''
+          formatter_block = normalize_block + '''function format_nftables(raw) {\n    let source = split(normalize(raw), '\\n'), output = [], depth = 0, blank = false;\n    for (let i = 0; i < length(source); i++) {\n        let value = trim(source[i] || '');\n        if (!value) {\n            if (i + 1 < length(source) && length(output) && !blank) { push(output, ''); blank = true; }\n            continue;\n        }\n        if (substr(value, 0, 1) == '}') depth = max(0, depth - 1);\n        let prefix = '';\n        for (let level = 0; level < depth; level++) prefix += '    ';\n        push(output, prefix + value);\n        blank = false;\n        if (substr(value, -1) == '{') depth++;\n    }\n    return length(output) ? join('\\n', output) + '\\n' : '';\n}\n'''
+          if text.count(normalize_block) != 1:
+              raise SystemExit('firewall.uc normalize block mismatch')
+          text = text.replace(normalize_block, formatter_block, 1)
+          text = text.replace('function compile_runtime(raw) {\n    raw = normalize(raw);', 'function compile_runtime(raw) {\n    raw = format_nftables(raw);', 1)
+          text = text.replace('    compiled = replace(compiled, /%location_ipv6%/g, \'\');\n    return { ok: true, source: raw, compiled };', '    compiled = replace(compiled, /%location_ipv6%/g, \'\');\n    compiled = format_nftables(compiled);\n    return { ok: true, source: raw, compiled };', 1)
+          text = text.replace('    config = normalize(config);\n    return {', '    config = format_nftables(config);\n    return {', 1)
+          uc.write_text(text, encoding='utf-8', newline='\n')
+
+          replace_once(
+              'htdocs/luci-static/resources/view/wloc/firewall.js',
+              "                current.setValue(next.config || '');\n",
+              "                current.setValue(wlocNftFormat.format(next.config || ''));\n",
+          )
+          replace_once(
+              'htdocs/luci-static/resources/view/wloc/routing.js',
+              "                current.setValue(next.config || '');\n",
+              "                current.setValue(formatRouting(next.config || ''));\n",
+          )
+          PY
+
+          git diff --check
+          git add root/usr/share/wloc/defaults/firewall.nft root/usr/libexec/wloc/firewall.uc htdocs/luci-static/resources/view/wloc/firewall.js htdocs/luci-static/resources/view/wloc/routing.js
+          git commit -m 'Fix family-qualified TPROXY template rendering'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('version.env')
+          text = path.read_text(encoding='utf-8')
+          if 'WLOC_RELEASE=68' not in text:
+              raise SystemExit('expected WLOC_RELEASE=68')
+          path.write_text(text.replace('WLOC_RELEASE=68', 'WLOC_RELEASE=69'), encoding='utf-8', newline='\n')
+          PY
+
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r69'
+          git push origin HEAD:fix-tproxy-family-r69
