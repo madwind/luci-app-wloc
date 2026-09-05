@@ -10,7 +10,6 @@ const STATE_DIR = '/tmp/wloc-update';
 const STATE_PATH = `${STATE_DIR}/wloc.json`;
 const LOG = `${STATE_DIR}/wloc.log`;
 const VERSION_CACHE = '/usr/share/wloc/installed-version';
-const STATUS_PATH = '/var/run/wloc/status.json';
 const PACKAGE = 'luci-app-wloc';
 const REPO = 'madwind/luci-app-wloc';
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -22,7 +21,6 @@ const SCHEDULE = '17 4 * * 0';
 const SCHEDULE_MINUTE = 17;
 const SCHEDULE_HOUR = 4;
 const SCHEDULE_DOW = 0;
-const POST_ARMED_PENDING = 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.';
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -109,27 +107,6 @@ function daemon_running() {
         return bool(value && value.wloc && value.wloc.instances && value.wloc.instances.daemon && value.wloc.instances.daemon.running);
     } catch (e) { return quiet('pidof wlocd'); }
 }
-function daemon_armed() {
-    let state = parse_json(read_text(STATUS_PATH) || '');
-    return type(state) == 'object' && bool(state.running) && bool(state.armed);
-}
-function wait_daemon_running() {
-    let stable = 0;
-    for (let i = 0; i < 20; i++) {
-        if (daemon_running()) { stable++; if (stable >= 2) return true; }
-        else stable = 0;
-        system('sleep 1');
-    }
-    return false;
-}
-function wait_daemon_armed() {
-    for (let i = 0; i < 15; i++) {
-        if (!daemon_running()) return false;
-        if (daemon_armed()) return true;
-        system('sleep 1');
-    }
-    return daemon_armed();
-}
 function default_state() {
     return {
         kind: 'wloc', status: 'idle', phase: null, pid: null, started: null, finished: null,
@@ -167,7 +144,9 @@ function normalize_state(state) {
 }
 function status_result() {
     let state = normalize_state(read_state());
-    if (state.status == 'done' && state.post_check_error == POST_ARMED_PENDING && daemon_armed()) {
+    if (state.post_check_error == 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.' ||
+        state.post_check_error == 'WLOC did not remain running after update; the service was left stopped.') {
+        if (!daemon_running()) quiet('/etc/init.d/wloc start');
         state.post_check_error = null;
         save_state(state);
     }
@@ -273,12 +252,7 @@ function worker_update() {
         let detail = compact_error(installed.output || '');
         if (was_running) {
             set_phase(state, 'restarting', 'Restoring WLOC after failed package installation');
-            if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
-                quiet('/etc/init.d/wloc stop');
-                detail += ' WLOC did not remain running after the failed package install.';
-            } else if (!wait_daemon_armed()) {
-                detail += ' WLOC restarted, but interception did not become armed.';
-            }
+            quiet('/etc/init.d/wloc start');
         }
         return fail_worker(state, `APK install failed: ${trim(detail)}`);
     }
@@ -286,12 +260,7 @@ function worker_update() {
     state.post_check_error = null;
     if (was_running) {
         set_phase(state, 'restarting', 'Starting WLOC after package update');
-        if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
-            quiet('/etc/init.d/wloc stop');
-            append_post_error(state, 'WLOC did not remain running after update; the service was left stopped.');
-        } else if (!wait_daemon_armed()) {
-            append_post_error(state, POST_ARMED_PENDING);
-        }
+        quiet('/etc/init.d/wloc start');
     }
     state.installed_version = installed_version() || state.installed_version;
     if (!state.installed_version) append_post_error(state, 'Unable to verify the installed WLOC version after update.');
