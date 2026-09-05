@@ -314,6 +314,7 @@ function compile_runtime(raw) {
     let port = int(port_text);
     if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
     let compiled = replace(raw, /%port%/g, `${port}`);
+    compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
     return { ok: true, source: raw, compiled };
