@@ -73,9 +73,6 @@ wget --header='Accept: application/octet-stream' -O "$PACKAGE" "$ASSET_URL" || d
 ACTUAL="$(sha256sum "$PACKAGE" | awk '{ print $1 }')"
 [ "$ACTUAL" = "$SHA256" ] || die 'SHA256 verification failed'
 
-printf 'Updating package indexes...\n'
-apk update || die 'apk update failed'
-
 if apk info -e "$PACKAGE_NAME" >/dev/null 2>&1; then
     printf 'Upgrading %s...\n' "$ASSET"
     apk add --allow-untrusted --upgrade "$PACKAGE" || die 'package upgrade failed'
