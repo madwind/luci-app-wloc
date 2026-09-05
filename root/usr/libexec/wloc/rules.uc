@@ -68,16 +68,6 @@ function valid_port(value) {
     let port = number(value);
     return port != null && port >= 1 && port <= 65535;
 }
-function profile_id(value) {
-    let mark = number(value);
-    if (mark == null || mark < 1) return null;
-    if (mark <= MAX_PROFILE) return mark;
-    if ((mark & 0xff) == 1) {
-        let profile = ((mark - 1) >> PROFILE_SHIFT) + 1;
-        if (profile <= MAX_PROFILE) return profile;
-    }
-    return null;
-}
 function valid_ipv4(value) {
     let fields = split(`${value ?? ''}`, '.');
     if (length(fields) != 4) return false;
@@ -130,11 +120,8 @@ function clear_chain(family, name) {
         ? { ok: true }
         : { ok: false, error: `unable to clear WLOC chain ${name}` };
 }
-function suggested_outbound(index) {
-    return { port: 12345 + index, mark: index + 1 };
-}
 function configured_rules() {
-    let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
+    let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, error = null, index = -1;
     try {
         ctx.foreach('wloc', 'wifi', function(section) {
             index++;
@@ -147,14 +134,11 @@ function configured_rules() {
             let outbound = `${section.outbound || 'direct'}`;
             if (outbound == 'direct') return;
             if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
-            let suggested = suggested_outbound(index);
-            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? suggested.port : number(section.tproxy_port);
-            let raw_mark = section.tproxy_mark == null || `${section.tproxy_mark}` == '' ? suggested.mark : section.tproxy_mark;
-            let mark = profile_id(raw_mark);
-            if (!valid_port(port) || mark == null) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
-            if (seen_marks[`${mark}`]) { error = `duplicate TPROXY profile ${mark}`; return; }
-            seen_marks[`${mark}`] = true;
-            push(outbounds, { iface, port, mark });
+            let profile = index + 1;
+            if (profile > MAX_PROFILE) { error = `TPROXY profile limit exceeded in enabled rule ${section['.name'] || ''}`; return; }
+            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? 12345 + index : number(section.tproxy_port);
+            if (!valid_port(port)) { error = `invalid TPROXY port in enabled rule ${section['.name'] || ''}`; return; }
+            push(outbounds, { iface, port, profile });
         });
     } catch (e) { return { ok: false, error: `${e}` }; }
     if (error) return { ok: false, error };
@@ -176,16 +160,16 @@ function sync_runtime_rules(configured) {
     if (length(errors)) return { ok: false, error: join('; ', errors) };
 
     for (let outbound in configured.outbounds) {
-        let profile = outbound.mark << PROFILE_SHIFT;
-        let outbound_mark = profile | WLOC_ROUTE_MARK;
+        let profile_mark = outbound.profile << PROFILE_SHIFT;
+        let outbound_mark = profile_mark | WLOC_ROUTE_MARK;
         let ap = add_rule(BRIDGE_FAMILY, AP_MARK_CHAIN,
-            `iifname ${q(outbound.iface)} meta mark set ${hex32(profile)} return comment ${q(`wloc ap mark ${outbound.mark}`)}`);
+            `iifname ${q(outbound.iface)} meta mark set ${hex32(profile_mark)} return comment ${q(`wloc ap mark ${outbound.profile}`)}`);
         if (!ap.ok) { clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN); return ap; }
         let dispatch = add_rule('inet', AP_TPROXY_CHAIN,
-            `meta mark ${hex32(profile)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc ap tproxy ${outbound.mark}`)}`);
+            `meta mark ${hex32(profile_mark)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc ap tproxy ${outbound.profile}`)}`);
         if (!dispatch.ok) { clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN); clear_chain('inet', AP_TPROXY_CHAIN); return dispatch; }
         let outbound_rule = add_rule('inet', OUTBOUND_CHAIN,
-            `meta mark ${hex32(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc outbound ${outbound.mark}`)}`);
+            `meta mark ${hex32(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc outbound ${outbound.profile}`)}`);
         if (!outbound_rule.ok) {
             clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN);
             clear_chain('inet', AP_TPROXY_CHAIN);

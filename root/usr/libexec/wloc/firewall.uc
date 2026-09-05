@@ -16,10 +16,7 @@ const STATUS = '/var/run/wloc/status.json';
 const MAX_BYTES = 1024 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
-const RESERVED_MARK_MASK = 0xe0010000;
-const INGRESS_MARK = 0x80000000;
-const HANDLED_MARK = 0x00010000;
-const OUTBOUND_NAMESPACE_MARK = 0x20000000;
+const MAX_PROFILE = 0xff;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -337,15 +334,10 @@ function number(value) {
     let result = +text;
     return result == result ? result : null;
 }
-function hex32(value) { return sprintf('0x%08x', value); }
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function valid_port(value) {
     let port = number(value);
     return port != null && port >= 1 && port <= 65535;
-}
-function valid_mark(value) {
-    let mark = number(value);
-    return mark != null && mark >= 1 && mark <= 0xffffffff && (mark & RESERVED_MARK_MASK) == 0;
 }
 function valid_ipv4(value) {
     let fields = split(`${value ?? ''}`, '.');
@@ -354,14 +346,8 @@ function valid_ipv4(value) {
         if (!match(field, /^[0-9]{1,3}$/) || int(field) < 0 || int(field) > 255) return false;
     return true;
 }
-function suggested_outbound(index) {
-    return {
-        port: 12345 + index,
-        mark: 1 + ((index & 0xff) * 0x100) + (int(index / 0x100) * 0x20000)
-    };
-}
 function configured_firewall() {
-    let interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
+    let interfaces = [], seen_ifaces = {}, error = null, index = -1;
     try {
         let ctx = cursor();
         ctx.foreach('wloc', 'wifi', function(section) {
@@ -375,18 +361,13 @@ function configured_firewall() {
             let outbound = `${section.outbound || 'direct'}`;
             if (outbound == 'direct') return;
             if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
-            let suggested = suggested_outbound(index);
-            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? suggested.port : number(section.tproxy_port);
-            let mark = section.tproxy_mark == null || `${section.tproxy_mark}` == '' ? suggested.mark : number(section.tproxy_mark);
-            if (!valid_port(port) || !valid_mark(mark)) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
-            if (seen_marks[`${mark}`]) { error = `duplicate TPROXY mark ${mark}`; return; }
-            seen_marks[`${mark}`] = true;
-            push(outbounds, { iface, port, mark });
+            if (index + 1 > MAX_PROFILE) { error = `TPROXY profile limit exceeded in enabled rule ${section['.name'] || ''}`; return; }
+            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? 12345 + index : number(section.tproxy_port);
+            if (!valid_port(port)) { error = `invalid TPROXY port in enabled rule ${section['.name'] || ''}`; return; }
         });
     } catch (e) { return { ok: false, error: `${e}` }; }
-    return error ? { ok: false, error } : { ok: true, interfaces, outbounds };
+    return error ? { ok: false, error } : { ok: true, interfaces };
 }
-function render_rules(values) { return length(values) ? join('\n        ', values) : ''; }
 function runtime_location_targets() {
     let raw = read_text(LOCATION_STATE);
     if (!raw) return { ok: true, v4: [], v6: [] };
@@ -422,17 +403,9 @@ function compile_runtime(raw) {
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
     if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
-    let ap_marks = [], ap_dispatch = [], outbound_dispatch = [];
-    for (let outbound in configured.outbounds) {
-        let ingress = INGRESS_MARK | outbound.mark;
-        let handled = HANDLED_MARK | outbound.mark;
-        push(ap_marks, `iifname "${outbound.iface}" meta mark set ${hex32(ingress)} return comment "wloc ap mark ${outbound.mark}"`);
-        push(ap_dispatch, `meta mark ${hex32(ingress)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.mark}"`);
-        push(outbound_dispatch, `meta mark ${hex32(OUTBOUND_NAMESPACE_MARK | outbound.mark)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.mark}"`);
-    }
-    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, render_rules(ap_marks));
-    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, render_rules(ap_dispatch));
-    compiled = replace(compiled, /%outbound_tproxy_rules%/g, render_rules(outbound_dispatch));
+    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, '');
+    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, '');
+    compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%location_ipv4%/g, '');
     compiled = replace(compiled, /%location_ipv6%/g, '');
