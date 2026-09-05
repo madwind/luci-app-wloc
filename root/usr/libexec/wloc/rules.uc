@@ -18,7 +18,8 @@ const LOCATION_SET4 = 'location_v4';
 const LOCATION_SET6 = 'location_v6';
 const AP_TPROXY_CHAIN = 'ap_tproxy_dispatch';
 const OUTBOUND_CHAIN = 'outbound_prerouting';
-const RESERVED_MARK_MASK = 0xc0010000;
+const RESERVED_MARK_MASK = 0xe0010000;
+const OUTBOUND_NAMESPACE_MARK = 0x20000000;
 const OUTBOUND_POLICY_MASK = 0xfffeffff;
 const OUTBOUND_RULE_PRIORITY = 90;
 
@@ -172,7 +173,7 @@ function policy_rule_present(family, mark, mask, table) {
     }
     return false;
 }
-function rule_present(family, mark, table) { return policy_rule_present(family, mark, OUTBOUND_POLICY_MASK, table); }
+function rule_present(family, mark, table) { return policy_rule_present(family, OUTBOUND_NAMESPACE_MARK | mark, OUTBOUND_POLICY_MASK, table); }
 function delete_policy_rule(family, mark, table) {
     for (let mask in [ OUTBOUND_POLICY_MASK, 0xffffffff ]) {
         let count = 0;
@@ -181,6 +182,11 @@ function delete_policy_rule(family, mark, table) {
         }
     }
     return true;
+}
+function delete_outbound_policy_rule(family, mark, table) {
+    let namespaced = delete_policy_rule(family, OUTBOUND_NAMESPACE_MARK | mark, table);
+    let legacy = delete_policy_rule(family, mark, table);
+    return namespaced && legacy;
 }
 function read_outbound_state() {
     let raw = fs.readfile(OUTBOUND_STATE);
@@ -197,8 +203,8 @@ function read_outbound_state() {
 function remove_outbound_policy() {
     let errors = [];
     for (let item in read_outbound_state()) {
-        if (!delete_policy_rule('4', item.mark, item.table)) push(errors, `unable to remove IPv4 outbound rule for mark ${item.mark}`);
-        if (item.ipv6 && !delete_policy_rule('6', item.mark, item.table)) push(errors, `unable to remove IPv6 outbound rule for mark ${item.mark}`);
+        if (!delete_outbound_policy_rule('4', item.mark, item.table)) push(errors, `unable to remove IPv4 outbound rule for mark ${item.mark}`);
+        if (item.ipv6 && !delete_outbound_policy_rule('6', item.mark, item.table)) push(errors, `unable to remove IPv6 outbound rule for mark ${item.mark}`);
     }
     if (length(errors)) return { ok: false, error: join('; ', errors) };
     fs.unlink(OUTBOUND_STATE);
@@ -237,20 +243,20 @@ function sync_outbound(configured, route) {
     if (!length(configured.outbounds)) return { ok: true, changed: true };
     let installed = [];
     for (let outbound in configured.outbounds) {
-        if (!quiet(`ip -4 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
-            for (let item in installed) delete_policy_rule('4', item.mark, table);
+        if (!quiet(`ip -4 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${OUTBOUND_NAMESPACE_MARK | outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
+            for (let item in installed) delete_outbound_policy_rule('4', item.mark, table);
             return { ok: false, error: `unable to install IPv4 outbound policy for mark ${outbound.mark}` };
         }
-        if (ipv6 && !quiet(`ip -6 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
-            delete_policy_rule('4', outbound.mark, table);
-            for (let item in installed) { delete_policy_rule('4', item.mark, table); delete_policy_rule('6', item.mark, table); }
+        if (ipv6 && !quiet(`ip -6 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${OUTBOUND_NAMESPACE_MARK | outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
+            delete_outbound_policy_rule('4', outbound.mark, table);
+            for (let item in installed) { delete_outbound_policy_rule('4', item.mark, table); delete_outbound_policy_rule('6', item.mark, table); }
             return { ok: false, error: `unable to install IPv6 outbound policy for mark ${outbound.mark}` };
         }
         push(installed, outbound);
     }
     let saved = write_outbound_state(configured.outbounds, table, ipv6);
     if (!saved.ok) {
-        for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
+        for (let item in installed) { delete_outbound_policy_rule('4', item.mark, table); if (ipv6) delete_outbound_policy_rule('6', item.mark, table); }
         return saved;
     }
     return { ok: true, changed: true };

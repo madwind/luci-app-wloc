@@ -16,9 +16,10 @@ const STATUS = '/var/run/wloc/status.json';
 const MAX_BYTES = 1024 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
-const RESERVED_MARK_MASK = 0xc0010000;
+const RESERVED_MARK_MASK = 0xe0010000;
 const INGRESS_MARK = 0x80000000;
 const HANDLED_MARK = 0x00010000;
+const OUTBOUND_NAMESPACE_MARK = 0x20000000;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -410,7 +411,7 @@ function compile_runtime(raw) {
         let handled = HANDLED_MARK | outbound.mark;
         push(ap_marks, `iifname "${outbound.iface}" meta mark set ${hex32(ingress)} return comment "wloc ap mark ${outbound.mark}"`);
         push(ap_dispatch, `meta mark ${hex32(ingress)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.mark}"`);
-        push(outbound_dispatch, `meta mark ${hex32(outbound.mark)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.mark}"`);
+        push(outbound_dispatch, `meta mark ${hex32(OUTBOUND_NAMESPACE_MARK | outbound.mark)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.mark}"`);
     }
     compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, render_rules(ap_marks));
     compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, render_rules(ap_dispatch));

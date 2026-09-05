@@ -4,7 +4,7 @@ macro_rules! eprintln {
     }};
 }
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use socket2::{Domain, Protocol, Socket, Type};
 use wloc_rs::ca::{default_profile_path, write_mobileconfig, CaBundle};
 use wloc_rs::config::Config;
+use wloc_rs::dns::{self, DnsProxy, DnsTracker};
 use wloc_rs::proxy::Proxy;
-use wloc_rs::resolver;
 use wloc_rs::status::Status;
 
 const TCP_CONNECTION_LIMIT_MIN: usize = 64;
@@ -21,7 +21,6 @@ const TCP_CONNECTION_LIMIT_MAX: usize = 1024;
 const TCP_CONNECTION_MEMORY_KIB: usize = 256;
 const TCP_FD_RESERVE: usize = 384;
 const TOKIO_WORKER_STACK_SIZE: usize = 1024 * 1024;
-const LOCATION_DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 fn total_memory_kib() -> Option<usize> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -89,17 +88,6 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn update_location_targets(helper: &Path, targets: &[IpAddr]) -> Result<(), String> {
-    let selectors = targets.iter().map(ToString::to_string).collect::<Vec<_>>();
-    run_rules(helper, "update-targets", &selectors)
-}
-
-async fn update_location_targets_async(helper: PathBuf, targets: Vec<IpAddr>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || update_location_targets(&helper, &targets))
-        .await
-        .map_err(|error| format!("rules task failed: {error}"))?
 }
 
 async fn bootstrap_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
@@ -224,27 +212,13 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "listener_ready",
             &format!(
-                "transparent_tcp=0.0.0.0,[::]:{} dual_stack=true tcp_limit={} backlog={}",
-                config.listen_port, tcp_connection_limit, tcp_listen_backlog
+                "transparent_tcp=0.0.0.0,[::]:{} transparent_udp=0.0.0.0,[::]:{} dual_stack=true tcp_limit={} backlog={}",
+                config.listen_port, config.listen_port, tcp_connection_limit, tcp_listen_backlog
             ),
             None,
             |_| {},
         );
         let bootstrap = bootstrap_rules_async(config.rules_helper.clone(), config.listen_port).await;
-        let bootstrap_ready = bootstrap.is_ok();
-        let resolution = if bootstrap_ready {
-            resolver::resolve_location_targets(&config.rules, &config.domains).await
-        } else {
-            resolver::Resolution {
-                addresses: Vec::new(),
-                complete: false,
-                errors: vec!["runtime bootstrap failed before DNS resolution".into()],
-            }
-        };
-        for error in &resolution.errors {
-            eprintln!("wlocd: location_dns=failed {error}");
-        }
-        let location_targets = resolution.addresses;
         let initially_armed = if let Err(error) = bootstrap {
             match cleanup_rules_async(config.rules_helper.clone()).await {
                 Ok(()) => status.update_detail(
@@ -266,115 +240,33 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
             false
-        } else if location_targets.is_empty() {
-            status.update_detail(
-                "location_resolution_failed",
-                "armed=false targets=0 action=tproxy-pass-through",
-                Some("No location-service IP addresses were resolved at startup."),
-                |c| c.armed(false),
-            );
-            false
         } else {
-            match update_location_targets_async(
-                config.rules_helper.clone(),
-                location_targets.clone(),
-            )
-            .await
-            {
-                Ok(()) => {
-                    status.update_detail(
-                        "interception_armed",
-                        &format!(
-                            "rules={} hosts={} targets={} protocol=tcp mode=targeted-ip listen_port={}",
-                            config.rules.len(),
-                            config.domains.join(","),
-                            location_targets.len(),
-                            config.listen_port
-                        ),
-                        None,
-                        |c| c.armed(true),
-                    );
-                    true
-                }
-                Err(error) => {
-                    status.update_detail(
-                        "lease_failed",
-                        "armed=false action=tproxy-pass-through phase=target_apply",
-                        Some(&error),
-                        |c| c.armed(false),
-                    );
-                    false
-                }
-            }
+            status.update_detail(
+                "interception_armed",
+                &format!(
+                    "rules={} hosts={} targets=0 protocol=tcp,dns mode=dns-learned-ip listen_port={}",
+                    config.rules.len(),
+                    config.domains.join(","),
+                    config.listen_port
+                ),
+                None,
+                |c| c.armed(true),
+            );
+            true
         };
         eprintln!(
-            "wlocd: daemon=ready interception={} targets={} dns_complete={} ca_generated={generated}",
-            initially_armed,
-            location_targets.len(),
-            resolution.complete
+            "wlocd: daemon=ready interception={} targets=0 dns_mode=intercept ca_generated={generated}",
+            initially_armed
         );
 
-        if bootstrap_ready {
-            let refresh_rules = config.rules.clone();
-            let refresh_domains = config.domains.clone();
-            let refresh_helper = config.rules_helper.clone();
-            let refresh_status = Arc::clone(&status);
-            let mut current_targets = location_targets.clone();
-            let mut refresh_armed = initially_armed;
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(LOCATION_DNS_REFRESH_INTERVAL);
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    let refresh = resolver::resolve_location_targets(&refresh_rules, &refresh_domains).await;
-                    for error in &refresh.errors {
-                        eprintln!("wlocd: location_dns_refresh=failed {error}");
-                    }
-                    if !refresh.complete {
-                        eprintln!("wlocd: location_dns_refresh=incomplete action=keep_previous_targets");
-                        continue;
-                    }
-                    if refresh.addresses == current_targets {
-                        continue;
-                    }
-                    let next_targets = refresh.addresses;
-                    match update_location_targets_async(refresh_helper.clone(), next_targets.clone()).await {
-                        Ok(()) => {
-                            let previous_count = current_targets.len();
-                            current_targets = next_targets;
-                            refresh_armed = !current_targets.is_empty();
-                            refresh_status.update_detail(
-                                "location_targets_updated",
-                                &format!(
-                                    "previous_targets={} targets={} action=firewall_reloaded",
-                                    previous_count,
-                                    current_targets.len()
-                                ),
-                                None,
-                                |c| c.armed(refresh_armed),
-                            );
-                            eprintln!(
-                                "wlocd: location_targets=updated previous={} current={} interception={}",
-                                previous_count,
-                                current_targets.len(),
-                                refresh_armed
-                            );
-                        }
-                        Err(error) => {
-                            refresh_status.update_detail(
-                                "location_targets_update_failed",
-                                "action=keep_previous_targets",
-                                Some(&error),
-                                |c| c.armed(refresh_armed),
-                            );
-                            eprintln!("wlocd: location_targets=update_failed action=keep_previous_targets error={error}");
-                        }
-                    }
-                }
-            });
-        }
-
+        let dns_tracker = DnsTracker::new(
+            config.domains.clone(),
+            config.rules_helper.clone(),
+            Arc::clone(&status),
+            config.debug,
+        );
+        let dns_udp_v4 = dns::listener_v4(config.listen_port)?;
+        let dns_udp_v6 = dns::listener_v6(config.listen_port)?;
         let proxy = Arc::new(Proxy::new(
             server,
             client,
@@ -382,8 +274,18 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.listen_port,
             config.domains,
             config.debug,
+            dns_tracker.clone(),
             Arc::clone(&status),
         ));
+        let dns_proxy = Arc::new(DnsProxy::new(Arc::clone(&proxy), dns_tracker));
+        for (family, socket) in [("ipv4", dns_udp_v4), ("ipv6", dns_udp_v6)] {
+            let dns_proxy = Arc::clone(&dns_proxy);
+            tokio::spawn(async move {
+                if let Err(error) = dns_proxy.run_udp(socket).await {
+                    eprintln!("wlocd: dns_listener=failed family={family} error={error}");
+                }
+            });
+        }
         let connection_limit = Arc::new(tokio::sync::Semaphore::new(tcp_connection_limit));
         loop {
             let permit = Arc::clone(&connection_limit)

@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::client_hello::peek_sni;
+use crate::dns::DnsTracker;
 use crate::config::{LocationRule, MacAddress, Outbound};
 use crate::network_source::HostapdNetworkSource;
 use crate::outbound;
@@ -162,6 +163,7 @@ pub struct Proxy {
     h2_generation: Arc<AtomicU64>,
     connection_generation: Arc<AtomicU32>,
     stream_limit: Arc<tokio::sync::Semaphore>,
+    dns: DnsTracker,
     followers: HashMap<String, Arc<tokio::sync::Mutex<LocationFollower>>>,
 }
 
@@ -173,6 +175,7 @@ impl Proxy {
         listen_port: u16,
         domains: Vec<String>,
         debug: bool,
+        dns: DnsTracker,
         status: Arc<Status>,
     ) -> Self {
         let followers = rules
@@ -204,6 +207,7 @@ impl Proxy {
             h2_generation: Arc::new(AtomicU64::new(1)),
             connection_generation: Arc::new(AtomicU32::new(connection_id_seed())),
             stream_limit: Arc::new(tokio::sync::Semaphore::new(GLOBAL_STREAM_LIMIT)),
+            dns,
             followers,
         }
     }
@@ -269,7 +273,7 @@ impl Proxy {
         Ok(Some(identity))
     }
 
-    async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
+    pub(crate) async fn target_for(&self, peer: IpAddr) -> Result<Option<LocationRule>, String> {
         let Some(identity) = self.identity_for(peer).await? else {
             return Ok(None);
         };
@@ -330,6 +334,14 @@ impl Proxy {
                 return Err(ProxyError::Protocol(format!("rule_lookup_failed: {error}")));
             }
         };
+        let destination = passthrough_destination(&stream).map_err(ProxyError::io)?;
+        if destination.port() == 53 {
+            return self
+                .dns
+                .handle_tcp(stream, peer_address, destination, &rule)
+                .await
+                .map_err(|error| ProxyError::Protocol(format!("dns_proxy_failed: {error}")));
+        }
         self.handle_target(stream, rule, peer_address.ip()).await
     }
 

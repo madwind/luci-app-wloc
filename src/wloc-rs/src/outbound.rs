@@ -7,6 +7,8 @@ use tokio::net::{TcpStream, UdpSocket};
 
 use crate::config::Outbound;
 
+const OUTBOUND_NAMESPACE_MARK: u32 = 0x20000000;
+
 fn set_socket_mark(socket: &Socket, mark: u32) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -30,7 +32,7 @@ fn set_socket_mark(socket: &Socket, mark: u32) -> io::Result<()> {
         let _ = (socket, mark);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "TPROXY outbound marks require Linux",
+            "WLOC outbound marks require Linux",
         ))
     }
 }
@@ -67,7 +69,9 @@ pub async fn connect_tcp_addr(
             stream.set_nodelay(true)?;
             Ok(stream)
         }
-        Outbound::Tproxy { mark, .. } => connect_marked(destination, *mark).await,
+        Outbound::Tproxy { mark, .. } => {
+            connect_marked(destination, OUTBOUND_NAMESPACE_MARK | *mark).await
+        }
     }
 }
 
@@ -87,7 +91,7 @@ pub fn bind_udp(outbound: &Outbound, family: SocketAddr) -> io::Result<UdpSocket
         }
     };
     if let Outbound::Tproxy { mark, .. } = outbound {
-        set_socket_mark(&socket, *mark)?;
+        set_socket_mark(&socket, OUTBOUND_NAMESPACE_MARK | *mark)?;
     }
     socket.bind(&bind_address.into())?;
     socket.set_nonblocking(true)?;

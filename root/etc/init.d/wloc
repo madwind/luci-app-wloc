@@ -79,7 +79,7 @@ validate_wifi() {
             [ "$mark_value" -gt 0 ] 2>/dev/null && [ "$mark_value" -le 4294967295 ] 2>/dev/null || {
                 rule_error="invalid TPROXY mark for AP: $name"; return 0;
             }
-            [ $((mark_value & 0xc0010000)) -eq 0 ] || {
+            [ $((mark_value & 0xe0010000)) -eq 0 ] || {
                 rule_error="TPROXY mark uses WLOC reserved bits for AP: $name"; return 0;
             }
             seen_mark=" $mark_value "

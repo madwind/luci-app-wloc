@@ -7,12 +7,12 @@ macro_rules! eprintln {
 pub mod ca;
 pub mod client_hello;
 pub mod config;
+pub mod dns;
 pub mod http1;
 pub mod logging;
 pub mod network_source;
 pub mod outbound;
 pub mod proxy;
-pub mod resolver;
 pub mod status;
 pub mod wloc;
 

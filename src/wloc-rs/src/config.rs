@@ -10,7 +10,7 @@ pub enum Outbound {
     Tproxy { port: u16, mark: u32 },
 }
 
-const RESERVED_MARK_MASK: u32 = 0xc0010000;
+const RESERVED_MARK_MASK: u32 = 0xe0010000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MacAddress([u8; 6]);
