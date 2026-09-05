@@ -2,6 +2,7 @@
 set -eu
 
 API='https://api.github.com/repos/madwind/luci-app-wloc'
+PACKAGE_NAME='luci-app-wloc'
 TMP="/tmp/wloc-install.$$"
 RELEASE="$TMP/release.json"
 COMPACT="$TMP/release.compact.json"
@@ -75,7 +76,12 @@ ACTUAL="$(sha256sum "$PACKAGE" | awk '{ print $1 }')"
 printf 'Updating package indexes...\n'
 apk update || die 'apk update failed'
 
-printf 'Installing %s...\n' "$ASSET"
-apk add --allow-untrusted --upgrade "$PACKAGE" || die 'package installation failed'
+if apk info -e "$PACKAGE_NAME" >/dev/null 2>&1; then
+    printf 'Upgrading %s...\n' "$ASSET"
+    apk add --allow-untrusted --upgrade "$PACKAGE" || die 'package upgrade failed'
+else
+    printf 'Installing %s...\n' "$ASSET"
+    apk add --allow-untrusted "$PACKAGE" || die 'package installation failed'
+fi
 
 printf '[OK] WLOC %s installed successfully.\n' "$VERSION"
