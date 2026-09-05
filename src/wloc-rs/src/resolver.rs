@@ -7,8 +7,7 @@ use crate::config::{LocationRule, Outbound};
 use crate::outbound;
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(3);
-const LOCAL_DNS: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 53));
-const TPROXY_DNS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)];
+const DNS_SERVERS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)];
 static NEXT_ID: AtomicU16 = AtomicU16::new(1);
 
 pub struct Resolution {
@@ -21,21 +20,8 @@ pub async fn resolve_location_targets(rules: &[LocationRule], domains: &[String]
     let mut addresses = BTreeSet::new();
     let mut errors = Vec::new();
 
-    resolve_scope(
-        "local",
-        &Outbound::Direct,
-        &[LOCAL_DNS],
-        domains,
-        &mut addresses,
-        &mut errors,
-    )
-    .await;
-
     for rule in rules {
-        let Outbound::Tproxy { .. } = rule.outbound else {
-            continue;
-        };
-        let servers = TPROXY_DNS.map(|address| SocketAddr::V4(SocketAddrV4::new(address, 53)));
+        let servers = DNS_SERVERS.map(|address| SocketAddr::V4(SocketAddrV4::new(address, 53)));
         resolve_scope(
             &format!("rule={} iface={}", rule.id, rule.iface),
             &rule.outbound,
