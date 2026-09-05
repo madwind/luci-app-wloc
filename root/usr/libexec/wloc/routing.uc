@@ -323,8 +323,13 @@ function apply_effective() {
     if (applied_raw) {
         let parsed = parse_config(applied_raw);
         if (!parsed.ok) return { ok: false, error: `invalid applied routing snapshot: ${parsed.error}` };
-        let installed = install_state(parsed.state);
-        return installed.ok ? { ok: true, active: true } : installed;
+        let state = parsed.state;
+        let installed = install_state(state);
+        if (!installed.ok) return installed;
+        return {
+            ok: true, active: true, ipv6_enabled: state.ipv6_enabled,
+            firewall_mark: state.mark, routing_table: state.table
+        };
     }
     let effective = effective_raw();
     if (!effective) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}` };
