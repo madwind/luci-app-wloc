@@ -1,0 +1,64 @@
+name: Fix WLOC update button lifecycle
+
+on:
+  push:
+    branches:
+      - fix-update-button-r70-run
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare clean output branch
+        run: |
+          set -euo pipefail
+          git config user.name 'IvonWei'
+          git config user.email 'madwind.cn@gmail.com'
+          git fetch origin master
+          git checkout -B fix-update-button-r70 origin/master
+
+      - name: Keep Update disabled for the full operation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('htdocs/luci-static/resources/view/wloc/updates.js')
+          text = path.read_text()
+          old = "        updateButton.addEventListener('click', ui.createHandlerFn(updateButton, runUpdate));\n"
+          new = "        updateButton.addEventListener('click', function() { runUpdate(); });\n"
+          if text.count(old) != 1:
+              raise SystemExit('expected Update button handler not found exactly once')
+          path.write_text(text.replace(old, new), newline='\n')
+          PY
+          git diff --check
+          git add htdocs/luci-static/resources/view/wloc/updates.js
+          git commit -m 'Keep Update disabled while operation runs'
+
+      - name: Bump release
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('version.env')
+          text = path.read_text()
+          old = 'WLOC_RELEASE=69\n'
+          new = 'WLOC_RELEASE=70\n'
+          if text.count(old) != 1:
+              raise SystemExit('expected r69 release marker not found exactly once')
+          path.write_text(text.replace(old, new), newline='\n')
+          PY
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r70'
+
+      - name: Push output branch
+        run: |
+          set -euo pipefail
+          git push --force origin HEAD:refs/heads/fix-update-button-r70
