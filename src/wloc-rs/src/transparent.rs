@@ -12,7 +12,7 @@ use http::{Method, Request, StatusCode, Uri};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::TlsConnector;
 use wloc_rs::config::{LocationRule, MacAddress, OutboundProxy};
 use wloc_rs::network_source::HostapdNetworkSource;
@@ -22,14 +22,15 @@ const PEER_CACHE_MAX: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DNS_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const UDP_DISPATCH_LIMIT: usize = 256;
+const UDP_DISPATCH_LIMIT: usize = 64;
 const DNS_DISPATCH_LIMIT: usize = 32;
-const UDP_ASSOCIATION_MAX: usize = 256;
+const UDP_ASSOCIATION_MAX: usize = 128;
 const UDP_ASSOCIATION_QUEUE: usize = 64;
-const UDP_REPLY_SOCKET_MAX: usize = 256;
+const UDP_BUFFER_BUDGET: usize = 2 * 1024 * 1024;
+const UDP_REPLY_SOCKET_MAX: usize = 128;
 const UDP_REPLY_SOCKET_TTL: Duration = Duration::from_secs(60);
 const UDP_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(1);
-const DOH_POOL_MAX: usize = 64;
+const DOH_POOL_MAX: usize = 16;
 const DOH_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(3);
 const DOH_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_DNS_MESSAGE: usize = u16::MAX as usize;
@@ -46,10 +47,33 @@ type UdpErrorLog = Arc<Mutex<Instant>>;
 struct DohEntry {
     generation: u64,
     sender: h2::client::SendRequest<Bytes>,
+    last_used: Instant,
 }
 
 type DohPool = Arc<Mutex<HashMap<String, DohEntry>>>;
 type DohConnectGates = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
+
+struct DohExchangeError {
+    message: String,
+    connection_failed: bool,
+}
+
+impl DohExchangeError {
+    fn request(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            connection_failed: false,
+        }
+    }
+
+    fn h2(context: &str, error: h2::Error) -> Self {
+        let connection_failed = error.is_io() || error.is_go_away();
+        Self {
+            message: format!("{context}: {error}"),
+            connection_failed,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum AddressFamily {
@@ -72,23 +96,24 @@ struct PeerCacheEntry {
     expires_at: Instant,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UdpAssociationKey {
-    client: SocketAddr,
-    rule_id: String,
-}
-
 struct UdpAssociationEntry {
     generation: u64,
     sender: mpsc::Sender<UdpRequest>,
     last_used: Instant,
 }
 
-type UdpAssociations = Arc<Mutex<HashMap<UdpAssociationKey, UdpAssociationEntry>>>;
+type UdpAssociations = Arc<Mutex<HashMap<SocketAddr, UdpAssociationEntry>>>;
 
 struct UdpRequest {
     destination: SocketAddr,
     payload: Vec<u8>,
+    _buffer_permit: OwnedSemaphorePermit,
+}
+
+enum UdpQueueResult {
+    Queued,
+    Missing(UdpRequest),
+    Full,
 }
 
 struct UdpReplySocketEntry {
@@ -232,6 +257,7 @@ pub struct TransparentProxy {
     udp_associations: UdpAssociations,
     udp_dispatch: Arc<Semaphore>,
     dns_dispatch: Arc<Semaphore>,
+    udp_buffer_budget: Arc<Semaphore>,
     udp_reply_sockets: UdpReplySockets,
     udp_error_log: UdpErrorLog,
     doh_pool: DohPool,
@@ -256,6 +282,7 @@ impl TransparentProxy {
             udp_associations: Arc::new(Mutex::new(HashMap::new())),
             udp_dispatch: Arc::new(Semaphore::new(UDP_DISPATCH_LIMIT)),
             dns_dispatch: Arc::new(Semaphore::new(DNS_DISPATCH_LIMIT)),
+            udp_buffer_budget: Arc::new(Semaphore::new(UDP_BUFFER_BUDGET)),
             udp_reply_sockets: Arc::new(Mutex::new(HashMap::new())),
             udp_error_log: Arc::new(Mutex::new(log_start)),
             doh_pool: Arc::new(Mutex::new(HashMap::new())),
@@ -268,9 +295,11 @@ impl TransparentProxy {
         let now = Instant::now();
         {
             let mut cache = self.peer_cache.lock().await;
-            cache.retain(|_, entry| entry.expires_at > now);
-            if let Some(entry) = cache.get(&peer).cloned() {
-                return Ok(entry.rule);
+            if let Some(entry) = cache.get(&peer) {
+                if entry.expires_at > now {
+                    return Ok(entry.rule.clone());
+                }
+                cache.remove(&peer);
             }
         }
 
@@ -297,10 +326,14 @@ impl TransparentProxy {
         };
 
         let mut cache = self.peer_cache.lock().await;
-        cache.retain(|_, entry| entry.expires_at > Instant::now());
         if cache.len() >= PEER_CACHE_MAX {
-            if let Some(key) = cache.keys().next().copied() {
-                cache.remove(&key);
+            if let Some(expired) = cache
+                .iter()
+                .find(|(_, entry)| entry.expires_at <= Instant::now())
+                .map(|(key, _)| *key)
+                .or_else(|| cache.keys().next().copied())
+            {
+                cache.remove(&expired);
             }
         }
         cache.insert(
@@ -351,6 +384,25 @@ impl TransparentProxy {
         Ok(())
     }
 
+    async fn queue_existing_udp(&self, client: SocketAddr, request: UdpRequest) -> UdpQueueResult {
+        let (sender, generation) = {
+            let mut associations = self.udp_associations.lock().await;
+            let Some(entry) = associations.get_mut(&client) else {
+                return UdpQueueResult::Missing(request);
+            };
+            entry.last_used = Instant::now();
+            (entry.sender.clone(), entry.generation)
+        };
+        match sender.try_send(request) {
+            Ok(()) => UdpQueueResult::Queued,
+            Err(mpsc::error::TrySendError::Full(_)) => UdpQueueResult::Full,
+            Err(mpsc::error::TrySendError::Closed(request)) => {
+                remove_udp_association(&self.udp_associations, client, generation).await;
+                UdpQueueResult::Missing(request)
+            }
+        }
+    }
+
     pub async fn run_udp(self: Arc<Self>, socket: UdpSocket) -> io::Result<()> {
         let family = match socket.local_addr()? {
             SocketAddr::V4(_) => AddressFamily::V4,
@@ -371,33 +423,83 @@ impl TransparentProxy {
                     continue;
                 }
             };
-            let limiter = if destination.port() == 53 {
-                Arc::clone(&self.dns_dispatch)
-            } else {
-                Arc::clone(&self.udp_dispatch)
-            };
-            let permit = match limiter.try_acquire_owned() {
+            let charge = u32::try_from(size.max(1)).unwrap_or(u32::MAX);
+            let buffer_permit = match Arc::clone(&self.udp_buffer_budget)
+                .try_acquire_many_owned(charge)
+            {
                 Ok(permit) => permit,
                 Err(_) => {
                     if error_log_allowed(&self.udp_error_log).await {
                         eprintln!(
-                            "wlocd: udp_dispatch=full client={client} destination={destination} recovery=drop"
+                            "wlocd: udp_buffer=full client={client} destination={destination} bytes={size} recovery=drop"
                         );
                     }
                     continue;
                 }
             };
-            let payload = buffer[..size].to_vec();
+            let request = UdpRequest {
+                destination,
+                payload: buffer[..size].to_vec(),
+                _buffer_permit: buffer_permit,
+            };
+
+            if destination.port() != 53 {
+                match self.queue_existing_udp(client, request).await {
+                    UdpQueueResult::Queued => continue,
+                    UdpQueueResult::Full => {
+                        if error_log_allowed(&self.udp_error_log).await {
+                            eprintln!(
+                                "wlocd: udp_queue=full client={client} destination={destination} recovery=drop"
+                            );
+                        }
+                        continue;
+                    }
+                    UdpQueueResult::Missing(request) => {
+                        let permit = match Arc::clone(&self.udp_dispatch).try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                if error_log_allowed(&self.udp_error_log).await {
+                                    eprintln!(
+                                        "wlocd: udp_dispatch=full client={client} destination={destination} recovery=drop"
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        let proxy = Arc::clone(&self);
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Err(error) = proxy.handle_new_udp(client, request).await {
+                                if error_log_allowed(&proxy.udp_error_log).await {
+                                    eprintln!(
+                                        "wlocd: udp=failed client={client} destination={destination} error={error}"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let permit = match Arc::clone(&self.dns_dispatch).try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if error_log_allowed(&self.udp_error_log).await {
+                        eprintln!(
+                            "wlocd: dns_dispatch=full client={client} destination={destination} recovery=drop"
+                        );
+                    }
+                    continue;
+                }
+            };
             let proxy = Arc::clone(&self);
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) = proxy
-                    .handle_udp_datagram(client, destination, payload)
-                    .await
-                {
+                if let Err(error) = proxy.handle_dns_udp(client, request).await {
                     if error_log_allowed(&proxy.udp_error_log).await {
                         eprintln!(
-                            "wlocd: udp=failed client={client} destination={destination} error={error}"
+                            "wlocd: udp_dns=failed client={client} destination={destination} error={error}"
                         );
                     }
                 }
@@ -405,72 +507,79 @@ impl TransparentProxy {
         }
     }
 
-    async fn handle_udp_datagram(
-        &self,
-        client: SocketAddr,
-        destination: SocketAddr,
-        payload: Vec<u8>,
-    ) -> Result<(), String> {
+    async fn handle_dns_udp(&self, client: SocketAddr, request: UdpRequest) -> Result<(), String> {
+        let destination = request.destination;
         let rule = self
             .target_for(client.ip())
             .await?
             .ok_or_else(|| format!("no matching WLOC rule for client {client}"))?;
         let rule_id = rule.id;
         let outbound = rule.outbound;
-
-        if destination.port() == 53 {
-            let debug = if self.debug_log {
-                Some(DnsDebugContext::new(
-                    "udp",
-                    client,
-                    destination,
-                    &rule_id,
-                    &outbound,
-                    &payload,
-                ))
-            } else {
-                None
-            };
-            if let Some(debug) = debug.as_ref() {
-                debug.log_query();
-            }
-            let (response, endpoint) = match doh_query(
-                &self.doh_pool,
-                &self.doh_connect_gates,
+        let debug = if self.debug_log {
+            Some(DnsDebugContext::new(
+                "udp",
+                client,
+                destination,
+                &rule_id,
                 &outbound,
-                &payload,
-                debug.as_ref(),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    if let Some(debug) = debug.as_ref() {
-                        debug.log_failure(&error);
-                    }
-                    return Err(error);
-                }
-            };
-            if let Some(debug) = debug.as_ref() {
-                debug.log_result(endpoint, &response);
-            }
-            send_spoofed_udp(&self.udp_reply_sockets, destination, client, &response)
-                .await
-                .map_err(io_message)?;
-            return Ok(());
-        }
-
-        let key = UdpAssociationKey { client, rule_id };
-        let mut request = UdpRequest {
-            destination,
-            payload,
+                &request.payload,
+            ))
+        } else {
+            None
         };
+        if let Some(debug) = debug.as_ref() {
+            debug.log_query();
+        }
+        let (response, endpoint) = match doh_query(
+            &self.doh_pool,
+            &self.doh_connect_gates,
+            &outbound,
+            &request.payload,
+            debug.as_ref(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(debug) = debug.as_ref() {
+                    debug.log_failure(&error);
+                }
+                return Err(error);
+            }
+        };
+        if let Some(debug) = debug.as_ref() {
+            debug.log_result(endpoint, &response);
+        }
+        send_spoofed_udp(&self.udp_reply_sockets, destination, client, &response)
+            .await
+            .map_err(io_message)
+    }
 
+    async fn handle_new_udp(&self, client: SocketAddr, request: UdpRequest) -> Result<(), String> {
+        match self.queue_existing_udp(client, request).await {
+            UdpQueueResult::Queued => return Ok(()),
+            UdpQueueResult::Full => return Err("UDP association queue full".into()),
+            UdpQueueResult::Missing(request) => {
+                let rule = self
+                    .target_for(client.ip())
+                    .await?
+                    .ok_or_else(|| format!("no matching WLOC rule for client {client}"))?;
+                self.create_udp_association(client, rule, request).await
+            }
+        }
+    }
+
+    async fn create_udp_association(
+        &self,
+        client: SocketAddr,
+        rule: LocationRule,
+        mut request: UdpRequest,
+    ) -> Result<(), String> {
         for _ in 0..2 {
             let (sender, generation) = {
                 let mut associations = self.udp_associations.lock().await;
                 let now = Instant::now();
-                if let Some(entry) = associations.get_mut(&key) {
+                if let Some(entry) = associations.get_mut(&client) {
                     entry.last_used = now;
                     (entry.sender.clone(), entry.generation)
                 } else {
@@ -478,7 +587,7 @@ impl TransparentProxy {
                         if let Some(oldest) = associations
                             .iter()
                             .min_by_key(|(_, entry)| entry.last_used)
-                            .map(|(key, _)| key.clone())
+                            .map(|(client, _)| *client)
                         {
                             associations.remove(&oldest);
                         }
@@ -486,16 +595,16 @@ impl TransparentProxy {
                     let generation = UDP_ASSOCIATION_GENERATION.fetch_add(1, Ordering::Relaxed);
                     let (sender, receiver) = mpsc::channel(UDP_ASSOCIATION_QUEUE);
                     associations.insert(
-                        key.clone(),
+                        client,
                         UdpAssociationEntry {
                             generation,
                             sender: sender.clone(),
                             last_used: now,
                         },
                     );
-                    let association_key = key.clone();
                     let associations = Arc::clone(&self.udp_associations);
-                    let association_outbound = outbound.clone();
+                    let association_outbound = rule.outbound.clone();
+                    let rule_id = rule.id.clone();
                     let reply_sockets = Arc::clone(&self.udp_reply_sockets);
                     let error_log = Arc::clone(&self.udp_error_log);
                     tokio::spawn(async move {
@@ -506,12 +615,11 @@ impl TransparentProxy {
                             receiver,
                         )
                         .await;
-                        remove_udp_association(&associations, &association_key, generation).await;
+                        remove_udp_association(&associations, client, generation).await;
                         if let Err(error) = result {
                             if error_log_allowed(&error_log).await {
                                 eprintln!(
-                                    "wlocd: udp_association=failed client={client} rule={} error={error}",
-                                    association_key.rule_id
+                                    "wlocd: udp_association=failed client={client} rule={rule_id} error={error}"
                                 );
                             }
                         }
@@ -527,7 +635,7 @@ impl TransparentProxy {
                 }
                 Err(mpsc::error::TrySendError::Closed(returned)) => {
                     request = returned;
-                    remove_udp_association(&self.udp_associations, &key, generation).await;
+                    remove_udp_association(&self.udp_associations, client, generation).await;
                 }
             }
         }
@@ -537,15 +645,15 @@ impl TransparentProxy {
 
 async fn remove_udp_association(
     associations: &UdpAssociations,
-    key: &UdpAssociationKey,
+    client: SocketAddr,
     generation: u64,
 ) {
     let mut associations = associations.lock().await;
     if associations
-        .get(key)
+        .get(&client)
         .is_some_and(|entry| entry.generation == generation)
     {
-        associations.remove(key);
+        associations.remove(&client);
     }
 }
 
@@ -699,6 +807,13 @@ async fn doh_connect_gate(connect_gates: &DohConnectGates, key: &str) -> Arc<Mut
     )
 }
 
+async fn doh_pool_entry(pool: &DohPool, key: &str) -> Option<DohEntry> {
+    let mut pool = pool.lock().await;
+    let entry = pool.get_mut(key)?;
+    entry.last_used = Instant::now();
+    Some(entry.clone())
+}
+
 async fn doh_query_endpoint(
     pool: &DohPool,
     connect_gates: &DohConnectGates,
@@ -708,30 +823,31 @@ async fn doh_query_endpoint(
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let key = outbound.pool_key(&format!("doh:{endpoint}"));
-    let mut active_generation = None;
     let result = tokio::time::timeout(timeout, async {
-        if let Some(entry) = pool.lock().await.get(&key).cloned() {
-            active_generation = Some(entry.generation);
+        if let Some(entry) = doh_pool_entry(pool, &key).await {
             match doh_exchange(entry.sender, endpoint, query).await {
                 Ok(response) => return Ok(response),
-                Err(_) => {
+                Err(error) if error.connection_failed => {
                     remove_doh_generation(pool, &key, entry.generation).await;
-                    active_generation = None;
                 }
+                Err(error) => return Err(error.message),
             }
         }
 
         let connect_gate = doh_connect_gate(connect_gates, &key).await;
         let connect_guard = connect_gate.lock().await;
-        if let Some(entry) = pool.lock().await.get(&key).cloned() {
-            active_generation = Some(entry.generation);
-            drop(connect_guard);
+        if let Some(entry) = doh_pool_entry(pool, &key).await {
             match doh_exchange(entry.sender, endpoint, query).await {
-                Ok(response) => return Ok(response),
-                Err(error) => {
+                Ok(response) => {
+                    drop(connect_guard);
+                    return Ok(response);
+                }
+                Err(error) if error.connection_failed => {
                     remove_doh_generation(pool, &key, entry.generation).await;
-                    active_generation = None;
-                    return Err(error);
+                }
+                Err(error) => {
+                    drop(connect_guard);
+                    return Err(error.message);
                 }
             }
         }
@@ -759,7 +875,11 @@ async fn doh_query_endpoint(
         {
             let mut connections = pool.lock().await;
             if connections.len() >= DOH_POOL_MAX && !connections.contains_key(&key) {
-                if let Some(oldest) = connections.keys().next().cloned() {
+                if let Some(oldest) = connections
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone())
+                {
                     connections.remove(&oldest);
                 }
             }
@@ -768,10 +888,10 @@ async fn doh_query_endpoint(
                 DohEntry {
                     generation,
                     sender: sender.clone(),
+                    last_used: Instant::now(),
                 },
             );
         }
-        active_generation = Some(generation);
         drop(connect_guard);
         let driver_pool = Arc::clone(pool);
         let driver_key = key.clone();
@@ -782,9 +902,10 @@ async fn doh_query_endpoint(
         match doh_exchange(sender, endpoint, query).await {
             Ok(response) => Ok(response),
             Err(error) => {
-                remove_doh_generation(pool, &key, generation).await;
-                active_generation = None;
-                Err(error)
+                if error.connection_failed {
+                    remove_doh_generation(pool, &key, generation).await;
+                }
+                Err(error.message)
             }
         }
     })
@@ -792,12 +913,7 @@ async fn doh_query_endpoint(
 
     match result {
         Ok(result) => result,
-        Err(_) => {
-            if let Some(generation) = active_generation {
-                remove_doh_generation(pool, &key, generation).await;
-            }
-            Err("DoH request timed out".to_owned())
-        }
+        Err(_) => Err("DoH request timed out".to_owned()),
     }
 }
 
@@ -815,31 +931,34 @@ async fn doh_exchange(
     sender: h2::client::SendRequest<Bytes>,
     endpoint: Ipv4Addr,
     query: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, DohExchangeError> {
     let mut sender = sender
         .ready()
         .await
-        .map_err(|error| format!("DoH HTTP/2 connection failed: {error}"))?;
+        .map_err(|error| DohExchangeError::h2("DoH HTTP/2 connection failed", error))?;
     let uri = format!("https://{endpoint}/dns-query")
         .parse::<Uri>()
-        .map_err(|error| format!("invalid DoH URI: {error}"))?;
+        .map_err(|error| DohExchangeError::request(format!("invalid DoH URI: {error}")))?;
     let request = Request::builder()
         .method(Method::POST)
         .uri(uri)
         .header(http::header::CONTENT_TYPE, "application/dns-message")
         .header(http::header::ACCEPT, "application/dns-message")
         .body(())
-        .map_err(|error| format!("invalid DoH HTTP/2 request: {error}"))?;
+        .map_err(|error| DohExchangeError::request(format!("invalid DoH HTTP/2 request: {error}")))?;
     let (response, mut send) = sender
         .send_request(request, false)
-        .map_err(|error| format!("DoH HTTP/2 request failed: {error}"))?;
+        .map_err(|error| DohExchangeError::h2("DoH HTTP/2 request failed", error))?;
     send_doh_h2_data(&mut send, query).await?;
 
     let mut response = response
         .await
-        .map_err(|error| format!("DoH HTTP/2 response failed: {error}"))?;
+        .map_err(|error| DohExchangeError::h2("DoH HTTP/2 response failed", error))?;
     if response.status() != StatusCode::OK {
-        return Err(format!("DoH HTTP status {}", response.status().as_u16()));
+        return Err(DohExchangeError::request(format!(
+            "DoH HTTP status {}",
+            response.status().as_u16()
+        )));
     }
     let content_type = response
         .headers()
@@ -849,25 +968,32 @@ async fn doh_exchange(
         .map(str::trim)
         .unwrap_or("");
     if !content_type.eq_ignore_ascii_case("application/dns-message") {
-        return Err(format!("DoH response content type is {content_type:?}"));
+        return Err(DohExchangeError::request(format!(
+            "DoH response content type is {content_type:?}"
+        )));
     }
 
     let mut body = Vec::new();
     while let Some(chunk) = response.body_mut().data().await {
-        let chunk = chunk.map_err(|error| format!("DoH HTTP/2 body failed: {error}"))?;
+        let chunk = chunk
+            .map_err(|error| DohExchangeError::h2("DoH HTTP/2 body failed", error))?;
         if body.len().saturating_add(chunk.len()) > MAX_DNS_MESSAGE {
-            return Err("DNS response exceeds 65535 bytes".into());
+            return Err(DohExchangeError::request(
+                "DNS response exceeds 65535 bytes",
+            ));
         }
         body.extend_from_slice(&chunk);
         response
             .body_mut()
             .flow_control()
             .release_capacity(chunk.len())
-            .map_err(|error| format!("DoH HTTP/2 flow control failed: {error}"))?;
+            .map_err(|error| DohExchangeError::h2("DoH HTTP/2 flow control failed", error))?;
     }
-    validate_dns_message(&body, "response")?;
+    validate_dns_message(&body, "response").map_err(DohExchangeError::request)?;
     if body[..2] != query[..2] {
-        return Err("DoH response transaction ID mismatch".into());
+        return Err(DohExchangeError::request(
+            "DoH response transaction ID mismatch",
+        ));
     }
     Ok(body)
 }
@@ -875,14 +1001,16 @@ async fn doh_exchange(
 async fn send_doh_h2_data(
     sender: &mut h2::SendStream<Bytes>,
     body: &[u8],
-) -> Result<(), String> {
+) -> Result<(), DohExchangeError> {
     let mut offset = 0;
     while offset < body.len() {
         sender.reserve_capacity((body.len() - offset).min(16 * 1024));
         let capacity = std::future::poll_fn(|context| sender.poll_capacity(context))
             .await
-            .ok_or_else(|| "DoH HTTP/2 stream closed while sending request".to_owned())?
-            .map_err(|error| format!("DoH HTTP/2 send failed: {error}"))?;
+            .ok_or_else(|| {
+                DohExchangeError::request("DoH HTTP/2 stream closed while sending request")
+            })?
+            .map_err(|error| DohExchangeError::h2("DoH HTTP/2 send failed", error))?;
         if capacity == 0 {
             continue;
         }
@@ -893,7 +1021,7 @@ async fn send_doh_h2_data(
                 Bytes::copy_from_slice(&body[offset..offset + count]),
                 end_stream,
             )
-            .map_err(|error| format!("DoH HTTP/2 send failed: {error}"))?;
+            .map_err(|error| DohExchangeError::h2("DoH HTTP/2 send failed", error))?;
         offset += count;
     }
     Ok(())
@@ -1321,6 +1449,7 @@ async fn run_socks_udp_association(
     let upstream = UdpSocket::bind(unspecified_for(relay)).await.map_err(io_message)?;
     upstream.connect(relay).await.map_err(io_message)?;
     let mut buffer = vec![0_u8; 65_535];
+    let mut send_buffer = Vec::with_capacity(2048);
     let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
     tokio::pin!(idle);
 
@@ -1328,8 +1457,8 @@ async fn run_socks_udp_association(
         tokio::select! {
             request = receiver.recv() => {
                 let Some(request) = request else { return Ok(()); };
-                let packet = encode_socks_udp(request.destination, &request.payload);
-                upstream.send(&packet).await.map_err(io_message)?;
+                encode_socks_udp_into(&mut send_buffer, request.destination, &request.payload);
+                upstream.send(&send_buffer).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             response = upstream.recv(&mut buffer) => {
@@ -1388,8 +1517,9 @@ async fn read_socks_socket_addr(stream: &mut TcpStream, atyp: u8) -> Result<Sock
     Ok(SocketAddr::new(ip, u16::from_be_bytes(port_bytes)))
 }
 
-fn encode_socks_udp(destination: SocketAddr, payload: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(payload.len() + 22);
+fn encode_socks_udp_into(packet: &mut Vec<u8>, destination: SocketAddr, payload: &[u8]) {
+    packet.clear();
+    packet.reserve(payload.len().saturating_add(22).saturating_sub(packet.capacity()));
     packet.extend_from_slice(&[0x00, 0x00, 0x00]);
     match destination {
         SocketAddr::V4(address) => {
@@ -1403,7 +1533,6 @@ fn encode_socks_udp(destination: SocketAddr, payload: &[u8]) -> Vec<u8> {
     }
     packet.extend_from_slice(&destination.port().to_be_bytes());
     packet.extend_from_slice(payload);
-    packet
 }
 
 fn decode_socks_udp(packet: &[u8]) -> Result<(SocketAddr, &[u8]), String> {
@@ -1470,14 +1599,16 @@ async fn send_spoofed_udp(
     let socket = {
         let mut sockets = cache.lock().await;
         let now = Instant::now();
-        sockets.retain(|_, entry| {
-            now.duration_since(entry.last_used) < UDP_REPLY_SOCKET_TTL
-                || Arc::strong_count(&entry.socket) > 1
-        });
         if let Some(entry) = sockets.get_mut(&source) {
             entry.last_used = now;
             Arc::clone(&entry.socket)
         } else {
+            if sockets.len() >= UDP_REPLY_SOCKET_MAX {
+                sockets.retain(|_, entry| {
+                    now.duration_since(entry.last_used) < UDP_REPLY_SOCKET_TTL
+                        || Arc::strong_count(&entry.socket) > 1
+                });
+            }
             if sockets.len() >= UDP_REPLY_SOCKET_MAX {
                 if let Some(oldest) = sockets
                     .iter()
