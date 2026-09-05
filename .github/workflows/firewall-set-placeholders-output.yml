@@ -22,6 +22,8 @@ jobs:
           cp .github/patch-firewall-sets.py /tmp/patch-firewall-sets.py
           git fetch origin master
           git checkout -B firewall-set-placeholders-output-r65 origin/master
+          git config user.name 'IvonWei'
+          git config user.email 'madwind.cn@gmail.com'
           python3 /tmp/patch-firewall-sets.py
           git diff --check
           git add root/usr/libexec/wloc/firewall.uc root/usr/libexec/wloc/rules.uc
