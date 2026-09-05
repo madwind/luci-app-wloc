@@ -58,6 +58,23 @@ function normalize(raw) {
     if (raw && substr(raw, -1) != '\n') raw += '\n';
     return raw;
 }
+function format_nftables(raw) {
+    let source = split(normalize(raw), '\n'), output = [], depth = 0, blank = false;
+    for (let i = 0; i < length(source); i++) {
+        let value = trim(source[i] || '');
+        if (!value) {
+            if (i + 1 < length(source) && length(output) && !blank) { push(output, ''); blank = true; }
+            continue;
+        }
+        if (substr(value, 0, 1) == '}') depth = max(0, depth - 1);
+        let prefix = '';
+        for (let level = 0; level < depth; level++) prefix += '    ';
+        push(output, prefix + value);
+        blank = false;
+        if (substr(value, -1) == '{') depth++;
+    }
+    return length(output) ? join('\n', output) + '\n' : '';
+}
 function is_space(c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
 function ident_start(c) { return c != null && match(c, /^[A-Za-z_]$/) != null; }
 function ident_char(c) { return c != null && match(c, /^[A-Za-z0-9_.-]$/) != null; }
@@ -389,7 +406,7 @@ function runtime_location_targets() {
     return { ok: true, v4, v6 };
 }
 function compile_runtime(raw) {
-    raw = normalize(raw);
+    raw = format_nftables(raw);
     let port_text = listen_port();
     if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
     let port = int(port_text);
@@ -419,6 +436,7 @@ function compile_runtime(raw) {
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%location_ipv4%/g, '');
     compiled = replace(compiled, /%location_ipv6%/g, '');
+    compiled = format_nftables(compiled);
     return { ok: true, source: raw, compiled };
 }
 function prepare(raw) {
@@ -538,7 +556,7 @@ function read_current() {
     let config = read_text(SOURCE), using_default = false;
     if (config == null) { config = read_text(DEFAULT_SOURCE); using_default = true; }
     if (config == null) return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
-    config = normalize(config);
+    config = format_nftables(config);
     return {
         ok: true, path: SOURCE, config, bytes: length(config), using_default,
         recovering: false, warning: '', applied_config: read_text(APPLIED) || '', applied_path: APPLIED

@@ -131,7 +131,7 @@ return view.extend({
             return callDefault().then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('Unable to read the default Firewall template.')));
-                current.setValue(next.config || '');
+                current.setValue(wlocNftFormat.format(next.config || ''));
                 current.focus();
                 setMessage('notice', _('Default Firewall template loaded in the editor. Review before applying.'));
                 return true;

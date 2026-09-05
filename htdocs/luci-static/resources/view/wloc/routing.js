@@ -209,7 +209,7 @@ return view.extend({
             return callDefault().then(function(next) {
                 return requireOk(next, _('Unable to read the default Routing template.'));
             }).then(function(next) {
-                current.setValue(next.config || '');
+                current.setValue(formatRouting(next.config || ''));
                 current.focus();
                 setMessage('notice', _('Default Routing template loaded in the editor. Review before applying.'));
                 return true;

@@ -65,8 +65,8 @@ table inet wloc {
         ct direction reply return
         meta mark & 0x00010000 != 0 return
 
-        meta nfproto ipv4 ip daddr @location_v4 meta l4proto tcp th dport 443 ct mark set ct mark | 0x00010000 meta mark set 0x40010000 counter tproxy to :%port% accept comment "wloc location"
-        meta nfproto ipv6 ip6 daddr @location_v6 meta l4proto tcp th dport 443 ct mark set ct mark | 0x00010000 meta mark set 0x40010000 counter tproxy to :%port% accept comment "wloc location"
+        meta nfproto ipv4 ip daddr @location_v4 meta l4proto tcp th dport 443 ct mark set ct mark | 0x00010000 meta mark set 0x40010000 counter tproxy ip to :%port% accept comment "wloc location"
+        meta nfproto ipv6 ip6 daddr @location_v6 meta l4proto tcp th dport 443 ct mark set ct mark | 0x00010000 meta mark set 0x40010000 counter tproxy ip6 to :%port% accept comment "wloc location"
 
         meta l4proto { tcp, udp } th dport 53 ct mark set ct mark | 0x00010000 meta mark set 0x40010000 counter tproxy to :%port% accept comment "wloc dns"
 
