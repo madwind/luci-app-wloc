@@ -7,7 +7,29 @@ use tokio::net::{TcpStream, UdpSocket};
 
 use crate::config::Outbound;
 
-const OUTBOUND_NAMESPACE_MARK: u32 = 0x20000000;
+const WLOC_ROUTE_MARK: u32 = 0x00000002;
+const PROFILE_SHIFT: u32 = 8;
+const MAX_PROFILE: u32 = 0xff;
+
+fn profile_id(mark: u32) -> io::Result<u32> {
+    if (1..=MAX_PROFILE).contains(&mark) {
+        return Ok(mark);
+    }
+    if mark & 0xff == 1 {
+        let profile = ((mark - 1) >> PROFILE_SHIFT) + 1;
+        if profile <= MAX_PROFILE {
+            return Ok(profile);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "WLOC TPROXY mark must be a profile ID between 1 and 255",
+    ))
+}
+
+fn outbound_mark(mark: u32) -> io::Result<u32> {
+    Ok((profile_id(mark)? << PROFILE_SHIFT) | WLOC_ROUTE_MARK)
+}
 
 fn set_socket_mark(socket: &Socket, mark: u32) -> io::Result<()> {
     #[cfg(target_os = "linux")]
@@ -69,9 +91,7 @@ pub async fn connect_tcp_addr(
             stream.set_nodelay(true)?;
             Ok(stream)
         }
-        Outbound::Tproxy { mark, .. } => {
-            connect_marked(destination, OUTBOUND_NAMESPACE_MARK | *mark).await
-        }
+        Outbound::Tproxy { mark, .. } => connect_marked(destination, outbound_mark(*mark)?).await,
     }
 }
 
@@ -91,7 +111,7 @@ pub fn bind_udp(outbound: &Outbound, family: SocketAddr) -> io::Result<UdpSocket
         }
     };
     if let Outbound::Tproxy { mark, .. } = outbound {
-        set_socket_mark(&socket, OUTBOUND_NAMESPACE_MARK | *mark)?;
+        set_socket_mark(&socket, outbound_mark(*mark)?)?;
     }
     socket.bind(&bind_address.into())?;
     socket.set_nonblocking(true)?;
