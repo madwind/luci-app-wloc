@@ -18,8 +18,48 @@ use wloc_rs::config::Config;
 use wloc_rs::proxy::Proxy;
 use wloc_rs::status::Status;
 
-const TCP_LISTEN_BACKLOG: i32 = 1024;
-const TCP_CONNECTION_LIMIT: usize = 1024;
+const TCP_CONNECTION_LIMIT_MIN: usize = 64;
+const TCP_CONNECTION_LIMIT_MAX: usize = 1024;
+const TCP_CONNECTION_MEMORY_KIB: usize = 256;
+const TCP_FD_RESERVE: usize = 384;
+const TOKIO_WORKER_STACK_SIZE: usize = 1024 * 1024;
+
+fn total_memory_kib() -> Option<usize> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    meminfo.lines().find_map(|line| {
+        line.strip_prefix("MemTotal:")?
+            .split_whitespace()
+            .next()?
+            .parse::<usize>()
+            .ok()
+    })
+}
+
+fn nofile_soft_limit() -> Option<usize> {
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0
+        || limit.rlim_cur == libc::RLIM_INFINITY
+    {
+        return None;
+    }
+    usize::try_from(limit.rlim_cur).ok()
+}
+
+fn tcp_connection_limit() -> usize {
+    let memory_limit = total_memory_kib()
+        .map(|memory_kib| (memory_kib / 4) / TCP_CONNECTION_MEMORY_KIB)
+        .unwrap_or(256)
+        .clamp(TCP_CONNECTION_LIMIT_MIN, TCP_CONNECTION_LIMIT_MAX);
+    let fd_limit = nofile_soft_limit()
+        .map(|limit| limit.saturating_sub(TCP_FD_RESERVE) / 2)
+        .unwrap_or(TCP_CONNECTION_LIMIT_MAX)
+        .max(32);
+    memory_limit.min(fd_limit).max(32)
+}
+
+fn tcp_listen_backlog(connection_limit: usize) -> i32 {
+    connection_limit.saturating_mul(2).clamp(128, 1024) as i32
+}
 
 fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), String> {
     let mut command = std::process::Command::new(helper);
@@ -80,25 +120,25 @@ fn record_startup_error(error: &str) {
     }
 }
 
-fn listener_v4(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+fn listener_v4(port: u16, backlog: i32) -> std::io::Result<tokio::net::TcpListener> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
     #[cfg(target_os = "linux")]
     socket.set_ip_transparent_v4(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
-    socket.listen(TCP_LISTEN_BACKLOG)?;
+    socket.listen(backlog)?;
     socket.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(socket.into())
 }
 
-fn listener_v6(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+fn listener_v6(port: u16, backlog: i32) -> std::io::Result<tokio::net::TcpListener> {
     let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
     socket.set_only_v6(true)?;
     #[cfg(target_os = "linux")]
     socket.set_ip_transparent_v6(true)?;
     socket.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0).into())?;
-    socket.listen(TCP_LISTEN_BACKLOG)?;
+    socket.listen(backlog)?;
     socket.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(socket.into())
 }
@@ -150,13 +190,16 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_no_client_auth();
     client.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
+    let tcp_connection_limit = tcp_connection_limit();
+    let tcp_listen_backlog = tcp_listen_backlog(tcp_connection_limit);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(2)
+        .thread_stack_size(TOKIO_WORKER_STACK_SIZE)
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let transparent_tcp_listener_v4 = listener_v4(config.listen_port)?;
-        let transparent_tcp_listener_v6 = listener_v6(config.listen_port)?;
+        let transparent_tcp_listener_v4 = listener_v4(config.listen_port, tcp_listen_backlog)?;
+        let transparent_tcp_listener_v6 = listener_v6(config.listen_port, tcp_listen_backlog)?;
         let (transparent_udp_listener_v4, transparent_udp_listener_v6) =
             transparent::udp_listeners(config.listen_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
@@ -183,8 +226,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "listener_ready",
             &format!(
-                "transparent_tcp_udp=0.0.0.0,[::]:{} dual_stack=true",
-                config.listen_port
+                "transparent_tcp_udp=0.0.0.0,[::]:{} dual_stack=true tcp_limit={} backlog={}",
+                config.listen_port, tcp_connection_limit, tcp_listen_backlog
             ),
             None,
             |_| {},
@@ -329,7 +372,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.debug,
             Arc::clone(&status),
         ));
-        let connection_limit = Arc::new(tokio::sync::Semaphore::new(TCP_CONNECTION_LIMIT));
+        let connection_limit = Arc::new(tokio::sync::Semaphore::new(tcp_connection_limit));
         loop {
             let permit = Arc::clone(&connection_limit)
                 .acquire_owned()
