@@ -1,0 +1,52 @@
+name: Apply reconcile state fix
+
+on:
+  push:
+    branches:
+      - fix-update-armed-status
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: 0ce1afb65a5bd7cc57d114c7a35a2ba02703e820
+      - name: Fix ucode state matching
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('root/usr/libexec/wloc/rules.uc')
+          text = path.read_text()
+          old = """    for (let outbound in outbounds) {\n        if (!state.some((item) => item.mark == outbound.mark && item.table == table && item.ipv6 == ipv6)) return false;\n        if (!rule_present('4', outbound.mark, table)) return false;\n        if (ipv6 && !rule_present('6', outbound.mark, table)) return false;\n    }\n"""
+          new = """    for (let outbound in outbounds) {\n        let matched = false;\n        for (let item in state) {\n            if (item.mark == outbound.mark && item.table == table && item.ipv6 == ipv6) {\n                matched = true;\n                break;\n            }\n        }\n        if (!matched) return false;\n        if (!rule_present('4', outbound.mark, table)) return false;\n        if (ipv6 && !rule_present('6', outbound.mark, table)) return false;\n    }\n"""
+          if text.count(old) != 1:
+              raise SystemExit('unexpected outbound state matching code')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+      - name: Commit reconcile fix
+        run: |
+          git config user.name 'IvonWei'
+          git config user.email 'madwind.cn@gmail.com'
+          git add root/usr/libexec/wloc/rules.uc
+          git commit -m 'Fix recurring TPROXY reconciliation'
+      - name: Bump release
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('version.env')
+          text = path.read_text()
+          old = 'WLOC_RELEASE=54\n'
+          if text.count(old) != 1:
+              raise SystemExit('unexpected WLOC release')
+          path.write_text(text.replace(old, 'WLOC_RELEASE=55\n', 1))
+          PY
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r55'
+          git push origin HEAD:refs/heads/fix-reconcile-state --force
