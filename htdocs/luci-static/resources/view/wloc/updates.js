@@ -256,7 +256,7 @@ return view.extend({
         }
 
         checkButton.addEventListener('click', ui.createHandlerFn(checkButton, runCheck));
-        updateButton.addEventListener('click', ui.createHandlerFn(updateButton, runUpdate));
+        updateButton.addEventListener('click', function() { runUpdate(); });
         stopButton.addEventListener('click', ui.createHandlerFn(stopButton, stopUpdate));
         checkEnabled.addEventListener('change', setCheckSetting);
         autoUpdate.addEventListener('change', setAutoSetting);
