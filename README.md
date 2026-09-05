@@ -24,7 +24,7 @@ Supported release targets:
 
 - Assign a virtual WGS84 location baseline to each selected wireless interface
 - Preserve real movement deltas relative to the configured virtual baseline
-- Optional direct or unauthenticated SOCKS5 upstream per rule
+- Per-rule Direct or user-defined TPROXY-port outbound selection
 - Per-interface daily enable/disable schedule
 - Generate and manage the local CA profile required for WLOC interception
 - Intercept `gs-loc.apple.com` and `gs-loc-cn.apple.com`
@@ -42,7 +42,7 @@ table bridge wloc
 table inet wloc
 ```
 
-The packaged firewall uses the selected wireless interfaces for ingress matching and TPROXY interception. Router-local upstream traffic is not intercepted by WLOC itself and can still be handled by another transparent proxy using an OUTPUT policy.
+The packaged firewall uses the selected wireless interfaces for ingress matching and WLOC interception. A rule may send its outbound sockets directly or mark them for an exact nftables dispatch to a user-defined TPROXY listener port; TCP, UDP, DNS-over-HTTPS upstreams and Apple WLOC MITM traffic all use the same selected outbound.
 
 ## Usage
 

@@ -10,6 +10,7 @@ pub mod config;
 pub mod http1;
 pub mod logging;
 pub mod network_source;
+pub mod outbound;
 pub mod proxy;
 pub mod status;
 pub mod wloc;

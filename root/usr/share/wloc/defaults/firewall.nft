@@ -27,6 +27,11 @@ table inet wloc {
         elements = { ::/127, fc00::/7, fe80::/10, ff00::/8 }
     }
 
+    chain outbound_prerouting {
+        type filter hook prerouting priority mangle - 3;
+        policy accept;
+    }
+
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
         policy accept;

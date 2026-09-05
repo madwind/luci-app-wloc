@@ -5,10 +5,12 @@ use crate::wloc::PatchTarget;
 use crate::DEFAULT_DOMAINS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OutboundProxy {
+pub enum Outbound {
     Direct,
-    Socks5 { host: String, port: u16 },
+    Tproxy { port: u16, mark: u32 },
 }
+
+const RESERVED_MARK_MASK: u32 = 0xc0010000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MacAddress([u8; 6]);
@@ -42,18 +44,20 @@ impl MacAddress {
     }
 }
 
-impl OutboundProxy {
+impl Outbound {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Direct => "direct",
-            Self::Socks5 { .. } => "socks5",
+            Self::Tproxy { .. } => "tproxy",
         }
     }
 
     pub fn pool_key(&self, destination: &str) -> String {
         match self {
             Self::Direct => format!("direct|{destination}"),
-            Self::Socks5 { host, port } => format!("socks5|{host}:{port}|{destination}"),
+            Self::Tproxy { port, mark } => {
+                format!("tproxy|{mark:#010x}|{port}|{destination}")
+            }
         }
     }
 }
@@ -64,7 +68,7 @@ pub struct LocationRule {
     pub name: String,
     pub iface: String,
     pub target: PatchTarget,
-    pub outbound: OutboundProxy,
+    pub outbound: Outbound,
 }
 
 impl LocationRule {
@@ -169,34 +173,29 @@ impl Config {
                         id,
                         iface,
                         target,
-                        outbound: OutboundProxy::Direct,
+                        outbound: Outbound::Direct,
                     });
                 }
                 "--rule-name" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     rule_mut(&mut rules, &id, "name")?.name = args.next().ok_or_else(value)?;
                 }
-                "--rule-proxy" => {
+                "--rule-tproxy" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
-                    let proxy_type = args.next().ok_or_else(value)?;
-                    let host = parse_proxy_host(&args.next().ok_or_else(value)?)?;
                     let port = args
                         .next()
                         .ok_or_else(value)?
                         .parse::<u16>()
-                        .map_err(|_| "invalid proxy port")?;
+                        .map_err(|_| "invalid TPROXY port")?;
                     if port == 0 {
-                        return Err("invalid proxy port".into());
+                        return Err("invalid TPROXY port".into());
                     }
-                    let outbound = match proxy_type.as_str() {
-                        "socks5" => OutboundProxy::Socks5 { host, port },
-                        _ => return Err("proxy type must be socks5".into()),
-                    };
-                    let rule = rule_mut(&mut rules, &id, "proxy")?;
-                    if rule.outbound != OutboundProxy::Direct {
-                        return Err(format!("duplicate proxy for rule ID: {id}"));
+                    let mark = parse_mark(&args.next().ok_or_else(value)?)?;
+                    let rule = rule_mut(&mut rules, &id, "TPROXY outbound")?;
+                    if rule.outbound != Outbound::Direct {
+                        return Err(format!("duplicate outbound for rule ID: {id}"));
                     }
-                    rule.outbound = outbound;
+                    rule.outbound = Outbound::Tproxy { port, mark };
                 }
                 "--state-dir" => state_dir = PathBuf::from(args.next().ok_or_else(value)?),
                 "--rules-helper" => rules_helper = PathBuf::from(args.next().ok_or_else(value)?),
@@ -206,6 +205,16 @@ impl Config {
         }
         if rules.is_empty() {
             return Err("at least one --rule is required".into());
+        }
+        for (index, rule) in rules.iter().enumerate() {
+            let Outbound::Tproxy { mark, .. } = rule.outbound else {
+                continue;
+            };
+            if rules[..index].iter().any(|previous| {
+                matches!(previous.outbound, Outbound::Tproxy { mark: previous, .. } if previous == mark)
+            }) {
+                return Err(format!("duplicate TPROXY mark: {mark:#x}"));
+            }
         }
         Ok(Self {
             listen_port,
@@ -218,7 +227,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-proxy ID socks5 HOST PORT] [--rule ...] [--listen-port PORT] [--debug]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-tproxy ID PORT MARK] [--rule ...] [--listen-port PORT] [--debug]"
     }
 }
 
@@ -233,16 +242,16 @@ fn rule_mut<'a>(
         .ok_or_else(|| format!("{attribute} refers to unknown rule ID: {id}"))
 }
 
-fn parse_proxy_host(value: &str) -> Result<String, String> {
-    if value.is_empty()
-        || value.len() > 253
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-    {
-        return Err("invalid proxy host".into());
+fn parse_mark(value: &str) -> Result<u32, String> {
+    let mark = if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|_| "invalid TPROXY mark")?
+    } else {
+        value.parse::<u32>().map_err(|_| "invalid TPROXY mark")?
+    };
+    if mark == 0 || mark & RESERVED_MARK_MASK != 0 {
+        return Err("TPROXY mark is zero or uses WLOC reserved bits".into());
     }
-    Ok(value.to_owned())
+    Ok(mark)
 }
 
 fn parse_rule_id(value: &str) -> Result<String, String> {

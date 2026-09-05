@@ -14,8 +14,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::TlsConnector;
-use wloc_rs::config::{LocationRule, MacAddress, OutboundProxy};
+use wloc_rs::config::{LocationRule, MacAddress, Outbound};
 use wloc_rs::network_source::HostapdNetworkSource;
+use wloc_rs::outbound;
 
 const PEER_CACHE_TTL: Duration = Duration::from_secs(5);
 const PEER_CACHE_MAX: usize = 256;
@@ -151,7 +152,7 @@ impl DnsDebugContext {
         client: SocketAddr,
         destination: SocketAddr,
         rule_id: &str,
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
         query: &[u8],
     ) -> Self {
         let (question, parse_error) = match dns_question(query) {
@@ -672,7 +673,7 @@ async fn handle_dns_tcp(
     client_address: SocketAddr,
     destination: SocketAddr,
     rule_id: &str,
-    outbound: &OutboundProxy,
+    outbound: &Outbound,
     debug_log: bool,
     pool: &DohPool,
     connect_gates: &DohConnectGates,
@@ -751,7 +752,7 @@ async fn handle_dns_tcp(
 async fn doh_query(
     pool: &DohPool,
     connect_gates: &DohConnectGates,
-    outbound: &OutboundProxy,
+    outbound: &Outbound,
     query: &[u8],
     debug: Option<&DnsDebugContext>,
 ) -> Result<(Vec<u8>, Ipv4Addr), String> {
@@ -817,7 +818,7 @@ async fn doh_pool_entry(pool: &DohPool, key: &str) -> Option<DohEntry> {
 async fn doh_query_endpoint(
     pool: &DohPool,
     connect_gates: &DohConnectGates,
-    outbound: &OutboundProxy,
+    outbound: &Outbound,
     endpoint: Ipv4Addr,
     query: &[u8],
     timeout: Duration,
@@ -1396,24 +1397,11 @@ fn recv_original_datagram_v6_now(
 
 async fn run_udp_association(
     client: SocketAddr,
-    outbound: OutboundProxy,
-    reply_sockets: UdpReplySockets,
-    receiver: mpsc::Receiver<UdpRequest>,
-) -> Result<(), String> {
-    match outbound {
-        OutboundProxy::Direct => run_direct_udp_association(client, reply_sockets, receiver).await,
-        OutboundProxy::Socks5 { host, port } => {
-            run_socks_udp_association(client, &host, port, reply_sockets, receiver).await
-        }
-    }
-}
-
-async fn run_direct_udp_association(
-    client: SocketAddr,
+    outbound: Outbound,
     reply_sockets: UdpReplySockets,
     mut receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
-    let upstream = UdpSocket::bind(unspecified_for(client)).await.map_err(io_message)?;
+    let upstream = outbound::bind_udp(&outbound, client).map_err(io_message)?;
     let mut buffer = vec![0_u8; 65_535];
     let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -1432,134 +1420,6 @@ async fn run_direct_udp_association(
             }
             _ = &mut idle => return Ok(()),
         }
-    }
-}
-
-async fn run_socks_udp_association(
-    client: SocketAddr,
-    host: &str,
-    port: u16,
-    reply_sockets: UdpReplySockets,
-    mut receiver: mpsc::Receiver<UdpRequest>,
-) -> Result<(), String> {
-    let (control, relay) = tokio::time::timeout(CONNECT_TIMEOUT, socks5_udp_associate(host, port))
-        .await
-        .map_err(|_| "SOCKS5 UDP association timed out".to_owned())??;
-    let _control = control;
-    let upstream = UdpSocket::bind(unspecified_for(relay)).await.map_err(io_message)?;
-    upstream.connect(relay).await.map_err(io_message)?;
-    let mut buffer = vec![0_u8; 65_535];
-    let mut send_buffer = Vec::with_capacity(2048);
-    let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
-    tokio::pin!(idle);
-
-    loop {
-        tokio::select! {
-            request = receiver.recv() => {
-                let Some(request) = request else { return Ok(()); };
-                encode_socks_udp_into(&mut send_buffer, request.destination, &request.payload);
-                upstream.send(&send_buffer).await.map_err(io_message)?;
-                idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
-            }
-            response = upstream.recv(&mut buffer) => {
-                let size = response.map_err(io_message)?;
-                let (source, payload) = decode_socks_udp(&buffer[..size])?;
-                send_spoofed_udp(&reply_sockets, source, client, payload).await.map_err(io_message)?;
-                idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
-            }
-            _ = &mut idle => return Ok(()),
-        }
-    }
-}
-
-async fn socks5_udp_associate(host: &str, port: u16) -> Result<(TcpStream, SocketAddr), String> {
-    let mut control = TcpStream::connect((host, port)).await.map_err(io_message)?;
-    control.set_nodelay(true).map_err(io_message)?;
-    control.write_all(&[0x05, 0x01, 0x00]).await.map_err(io_message)?;
-    let mut greeting = [0_u8; 2];
-    control.read_exact(&mut greeting).await.map_err(io_message)?;
-    if greeting != [0x05, 0x00] {
-        return Err("SOCKS5 proxy requires unsupported authentication".into());
-    }
-    control
-        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await
-        .map_err(io_message)?;
-    let mut reply = [0_u8; 4];
-    control.read_exact(&mut reply).await.map_err(io_message)?;
-    if reply[0] != 0x05 || reply[1] != 0x00 {
-        return Err(format!("SOCKS5 UDP ASSOCIATE failed with code {}", reply[1]));
-    }
-    let mut relay = read_socks_socket_addr(&mut control, reply[3]).await?;
-    if relay.ip().is_unspecified() {
-        relay = SocketAddr::new(control.peer_addr().map_err(io_message)?.ip(), relay.port());
-    }
-    Ok((control, relay))
-}
-
-async fn read_socks_socket_addr(stream: &mut TcpStream, atyp: u8) -> Result<SocketAddr, String> {
-    let ip = match atyp {
-        0x01 => {
-            let mut address = [0_u8; 4];
-            stream.read_exact(&mut address).await.map_err(io_message)?;
-            IpAddr::V4(Ipv4Addr::from(address))
-        }
-        0x04 => {
-            let mut address = [0_u8; 16];
-            stream.read_exact(&mut address).await.map_err(io_message)?;
-            IpAddr::V6(Ipv6Addr::from(address))
-        }
-        0x03 => return Err("SOCKS5 UDP relay returned a domain address".into()),
-        _ => return Err("invalid SOCKS5 address type".into()),
-    };
-    let mut port_bytes = [0_u8; 2];
-    stream.read_exact(&mut port_bytes).await.map_err(io_message)?;
-    Ok(SocketAddr::new(ip, u16::from_be_bytes(port_bytes)))
-}
-
-fn encode_socks_udp_into(packet: &mut Vec<u8>, destination: SocketAddr, payload: &[u8]) {
-    packet.clear();
-    packet.reserve(payload.len().saturating_add(22).saturating_sub(packet.capacity()));
-    packet.extend_from_slice(&[0x00, 0x00, 0x00]);
-    match destination {
-        SocketAddr::V4(address) => {
-            packet.push(0x01);
-            packet.extend_from_slice(&address.ip().octets());
-        }
-        SocketAddr::V6(address) => {
-            packet.push(0x04);
-            packet.extend_from_slice(&address.ip().octets());
-        }
-    }
-    packet.extend_from_slice(&destination.port().to_be_bytes());
-    packet.extend_from_slice(payload);
-}
-
-fn decode_socks_udp(packet: &[u8]) -> Result<(SocketAddr, &[u8]), String> {
-    if packet.len() < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
-        return Err("invalid SOCKS5 UDP packet".into());
-    }
-    match packet[3] {
-        0x01 if packet.len() >= 10 => {
-            let source = SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(packet[4], packet[5], packet[6], packet[7]),
-                u16::from_be_bytes([packet[8], packet[9]]),
-            ));
-            Ok((source, &packet[10..]))
-        }
-        0x04 if packet.len() >= 22 => {
-            let mut octets = [0_u8; 16];
-            octets.copy_from_slice(&packet[4..20]);
-            let source = SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(octets),
-                u16::from_be_bytes([packet[20], packet[21]]),
-                0,
-                0,
-            ));
-            Ok((source, &packet[22..]))
-        }
-        0x03 => Err("SOCKS5 UDP response uses an unsupported domain address".into()),
-        _ => Err("invalid SOCKS5 UDP response address".into()),
     }
 }
 
@@ -1637,71 +1497,13 @@ async fn send_spoofed_udp(
     Ok(())
 }
 
-async fn connect_tcp_outbound(outbound: &OutboundProxy, destination: SocketAddr) -> Result<TcpStream, String> {
-    match outbound {
-        OutboundProxy::Direct => {
-            let stream = TcpStream::connect(destination).await.map_err(io_message)?;
-            stream.set_nodelay(true).map_err(io_message)?;
-            Ok(stream)
-        }
-        OutboundProxy::Socks5 { host, port } => {
-            let mut stream = TcpStream::connect((host.as_str(), *port)).await.map_err(io_message)?;
-            stream.set_nodelay(true).map_err(io_message)?;
-            socks5_connect(&mut stream, destination).await?;
-            Ok(stream)
-        }
-    }
-}
-
-async fn socks5_connect(stream: &mut TcpStream, destination: SocketAddr) -> Result<(), String> {
-    stream.write_all(&[0x05, 0x01, 0x00]).await.map_err(io_message)?;
-    let mut greeting = [0_u8; 2];
-    stream.read_exact(&mut greeting).await.map_err(io_message)?;
-    if greeting != [0x05, 0x00] {
-        return Err("SOCKS5 proxy requires unsupported authentication".into());
-    }
-    let mut request = vec![0x05, 0x01, 0x00];
-    match destination {
-        SocketAddr::V4(address) => {
-            request.push(0x01);
-            request.extend_from_slice(&address.ip().octets());
-        }
-        SocketAddr::V6(address) => {
-            request.push(0x04);
-            request.extend_from_slice(&address.ip().octets());
-        }
-    }
-    request.extend_from_slice(&destination.port().to_be_bytes());
-    stream.write_all(&request).await.map_err(io_message)?;
-    let mut reply = [0_u8; 4];
-    stream.read_exact(&mut reply).await.map_err(io_message)?;
-    if reply[0] != 0x05 || reply[1] != 0x00 {
-        return Err(format!("SOCKS5 CONNECT failed with code {}", reply[1]));
-    }
-    discard_socks_address(stream, reply[3]).await
-}
-
-async fn discard_socks_address(stream: &mut TcpStream, atyp: u8) -> Result<(), String> {
-    let address_len = match atyp {
-        0x01 => 4,
-        0x04 => 16,
-        0x03 => {
-            let mut length = [0_u8; 1];
-            stream.read_exact(&mut length).await.map_err(io_message)?;
-            usize::from(length[0])
-        }
-        _ => return Err("invalid SOCKS5 CONNECT response".into()),
-    };
-    let mut discard = vec![0_u8; address_len + 2];
-    stream.read_exact(&mut discard).await.map_err(io_message)?;
-    Ok(())
-}
-
-fn unspecified_for(address: SocketAddr) -> SocketAddr {
-    match address {
-        SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-        SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
-    }
+async fn connect_tcp_outbound(
+    outbound: &Outbound,
+    destination: SocketAddr,
+) -> Result<TcpStream, String> {
+    outbound::connect_tcp_addr(outbound, destination)
+        .await
+        .map_err(io_message)
 }
 
 fn raw_socket_v4(address: libc::sockaddr_in) -> io::Result<SocketAddrV4> {

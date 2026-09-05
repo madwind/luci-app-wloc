@@ -7,13 +7,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::client_hello::peek_sni;
-use crate::config::{LocationRule, MacAddress, OutboundProxy};
+use crate::config::{LocationRule, MacAddress, Outbound};
 use crate::network_source::HostapdNetworkSource;
+use crate::outbound;
 use crate::status::Status;
 use crate::wloc::{
     patch_response_following, valid_request, LocationFollower, PatchTarget,
@@ -420,7 +420,7 @@ impl Proxy {
         ip: IpAddr,
         hostname: &str,
         connection_id: u32,
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
         follower: Arc<tokio::sync::Mutex<LocationFollower>>,
     ) -> Result<(), ProxyError> {
         let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(stream))
@@ -492,7 +492,7 @@ impl Proxy {
         client: &str,
         ip: IpAddr,
         connection_id: u32,
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
     ) -> Result<(), ProxyError> {
         let monitored = request.uri().authority().is_some_and(|authority| {
             crate::approved_host(authority.host(), &self.domains)
@@ -616,7 +616,7 @@ impl Proxy {
     async fn tunnel(
         &self,
         mut client: TcpStream,
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
     ) -> Result<(), ProxyError> {
         let destination = passthrough_destination(&client).map_err(ProxyError::io)?;
         if destination.port() == self.listen_port || destination.ip().is_unspecified() {
@@ -645,7 +645,7 @@ impl Proxy {
         client: &str,
         ip: IpAddr,
         connection_id: u32,
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
             .uri()
@@ -760,7 +760,7 @@ impl Proxy {
         headers: &HeaderMap,
         hostname: &str,
         body: &[u8],
-        outbound: &OutboundProxy,
+        outbound: &Outbound,
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
         let pool_key = outbound.pool_key(hostname);
         if let Some(entry) = self.h2_pool_entry(&pool_key).await {
@@ -929,117 +929,20 @@ fn retryable_upstream_request_error(error: &ProxyError) -> Option<&'static str> 
 }
 
 fn upstream_peer_addresses(
-    outbound: &OutboundProxy,
+    _outbound: &Outbound,
     stream: &TcpStream,
 ) -> (Option<IpAddr>, Option<IpAddr>) {
-    let peer_ip = stream.peer_addr().ok().map(|address| address.ip());
-    match outbound {
-        OutboundProxy::Direct => (peer_ip, None),
-        OutboundProxy::Socks5 { .. } => (None, peer_ip),
-    }
+    (stream.peer_addr().ok().map(|address| address.ip()), None)
 }
 
 async fn connect_outbound(
-    outbound: &OutboundProxy,
+    outbound: &Outbound,
     destination: &str,
     port: u16,
 ) -> Result<TcpStream, ProxyError> {
-    match outbound {
-        OutboundProxy::Direct => {
-            let stream = TcpStream::connect((destination, port))
-                .await
-                .map_err(ProxyError::io)?;
-            stream.set_nodelay(true).map_err(ProxyError::io)?;
-            Ok(stream)
-        }
-        OutboundProxy::Socks5 {
-            host,
-            port: proxy_port,
-        } => {
-            let mut stream = TcpStream::connect((host.as_str(), *proxy_port))
-                .await
-                .map_err(ProxyError::io)?;
-            stream.set_nodelay(true).map_err(ProxyError::io)?;
-            socks5_connect(&mut stream, destination, port).await?;
-            Ok(stream)
-        }
-    }
-}
-
-async fn socks5_connect(
-    stream: &mut TcpStream,
-    destination: &str,
-    port: u16,
-) -> Result<(), ProxyError> {
-    stream
-        .write_all(&[0x05, 0x01, 0x00])
+    outbound::connect_tcp_host(outbound, destination, port)
         .await
-        .map_err(ProxyError::io)?;
-    let mut greeting = [0_u8; 2];
-    stream
-        .read_exact(&mut greeting)
-        .await
-        .map_err(ProxyError::io)?;
-    if greeting != [0x05, 0x00] {
-        return Err(ProxyError::Upstream(
-            "SOCKS5 proxy requires unsupported authentication".into(),
-        ));
-    }
-
-    let mut request = vec![0x05, 0x01, 0x00];
-    match destination.parse::<IpAddr>() {
-        Ok(IpAddr::V4(address)) => {
-            request.push(0x01);
-            request.extend_from_slice(&address.octets());
-        }
-        Ok(IpAddr::V6(address)) => {
-            request.push(0x04);
-            request.extend_from_slice(&address.octets());
-        }
-        Err(_) => {
-            let name = destination.as_bytes();
-            if name.is_empty() || name.len() > u8::MAX as usize {
-                return Err(ProxyError::Upstream(
-                    "destination hostname is invalid for SOCKS5".into(),
-                ));
-            }
-            request.extend_from_slice(&[0x03, name.len() as u8]);
-            request.extend_from_slice(name);
-        }
-    }
-    request.extend_from_slice(&port.to_be_bytes());
-    stream.write_all(&request).await.map_err(ProxyError::io)?;
-
-    let mut reply = [0_u8; 4];
-    stream
-        .read_exact(&mut reply)
-        .await
-        .map_err(ProxyError::io)?;
-    if reply[0] != 0x05 || reply[1] != 0x00 {
-        return Err(ProxyError::Upstream(format!(
-            "SOCKS5 proxy CONNECT failed with code {}",
-            reply[1]
-        )));
-    }
-    let address_len = match reply[3] {
-        0x01 => 4,
-        0x04 => 16,
-        0x03 => {
-            let mut length = [0_u8; 1];
-            stream
-                .read_exact(&mut length)
-                .await
-                .map_err(ProxyError::io)?;
-            usize::from(length[0])
-        }
-        _ => return Err(ProxyError::Upstream("invalid SOCKS5 proxy response".into())),
-    };
-    let mut bound_address_and_port = vec![0_u8; address_len + 2];
-    stream
-        .read_exact(&mut bound_address_and_port)
-        .await
-        .map_err(ProxyError::io)?;
-    Ok(())
+        .map_err(ProxyError::io)
 }
 
 async fn remove_h2_generation(

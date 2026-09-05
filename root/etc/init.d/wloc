@@ -15,13 +15,14 @@ START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
 wifi_sections=''
+tproxy_marks=''
 
 collect_wifi() {
     wifi_sections="$wifi_sections $1"
 }
 
 validate_wifi() {
-    local section enabled name iface latitude longitude proxy_type proxy_host proxy_port
+    local section enabled name iface latitude longitude proxy_type proxy_port proxy_mark mark_value mark_digits seen_mark
     section="$1"
     config_get_bool enabled "$section" enabled 1
     [ "$enabled" -eq 1 ] || return 0
@@ -30,8 +31,8 @@ validate_wifi() {
     config_get latitude "$section" latitude
     config_get longitude "$section" longitude
     config_get proxy_type "$section" proxy_type direct
-    config_get proxy_host "$section" proxy_host
     config_get proxy_port "$section" proxy_port
+    config_get proxy_mark "$section" proxy_mark
     [ -n "$latitude" ] && [ -n "$longitude" ] || {
         rule_error="incomplete location parameters for AP: $name"; return 0;
     }
@@ -41,22 +42,36 @@ validate_wifi() {
     fi
     case "$proxy_type" in
         direct) ;;
-        socks5)
-            [ -n "$proxy_host" ] && [ -n "$proxy_port" ] || {
-                rule_error="incomplete SOCKS5 proxy for AP: $name"; return 0;
-            }
-            case "$proxy_port" in *[!0-9]*|'') rule_error="invalid proxy port for AP: $name"; return 0;; esac
+        tproxy)
+            case "$proxy_port" in *[!0-9]*|'') rule_error="invalid TPROXY port for AP: $name"; return 0;; esac
             [ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
-                rule_error="invalid proxy port for AP: $name"; return 0;
+                rule_error="invalid TPROXY port for AP: $name"; return 0;
             }
+            case "$proxy_mark" in
+                0x*|0X*)
+                    mark_digits="${proxy_mark#0x}"; mark_digits="${mark_digits#0X}"
+                    case "$mark_digits" in ''|*[!0-9A-Fa-f]*) rule_error="invalid TPROXY mark for AP: $name"; return 0;; esac
+                    ;;
+                ''|*[!0-9]*) rule_error="invalid TPROXY mark for AP: $name"; return 0;;
+            esac
+            mark_value=$((proxy_mark))
+            [ "$mark_value" -gt 0 ] 2>/dev/null && [ "$mark_value" -le 4294967295 ] 2>/dev/null || {
+                rule_error="invalid TPROXY mark for AP: $name"; return 0;
+            }
+            [ $((mark_value & 0xc0010000)) -eq 0 ] || {
+                rule_error="TPROXY mark uses WLOC reserved bits for AP: $name"; return 0;
+            }
+            seen_mark=" $mark_value "
+            case " $tproxy_marks " in *"$seen_mark"*) rule_error="duplicate TPROXY mark for AP: $name"; return 0;; esac
+            tproxy_marks="$tproxy_marks $mark_value"
             ;;
-        *) rule_error="invalid outbound type for AP: $name (use direct or socks5)"; return 0;;
+        *) rule_error="invalid outbound type for AP: $name (use direct or tproxy)"; return 0;;
     esac
     rule_count=$((rule_count + 1))
 }
 
 append_rule_for_wifi() {
-    local section enabled name iface latitude longitude proxy_type proxy_host proxy_port
+    local section enabled name iface latitude longitude proxy_type proxy_port proxy_mark
     section="$1"
     config_get_bool enabled "$section" enabled 1
     [ "$enabled" -eq 1 ] || return 0
@@ -65,12 +80,12 @@ append_rule_for_wifi() {
     config_get latitude "$section" latitude
     config_get longitude "$section" longitude
     config_get proxy_type "$section" proxy_type direct
-    config_get proxy_host "$section" proxy_host
     config_get proxy_port "$section" proxy_port
+    config_get proxy_mark "$section" proxy_mark
     procd_append_param command --rule "$section" "$iface" "$latitude" "$longitude"
     procd_append_param command --rule-name "$section" "$name"
-    [ "$proxy_type" = direct ] || \
-        procd_append_param command --rule-proxy "$section" "$proxy_type" "$proxy_host" "$proxy_port"
+    [ "$proxy_type" = tproxy ] && \
+        procd_append_param command --rule-tproxy "$section" "$proxy_port" "$proxy_mark"
 }
 
 startup_failure() {
@@ -133,6 +148,7 @@ start_service() {
     rule_count=0
     rule_error=''
     wifi_sections=''
+    tproxy_marks=''
     config_foreach collect_wifi wifi
     for wifi in $wifi_sections; do
         validate_wifi "$wifi"

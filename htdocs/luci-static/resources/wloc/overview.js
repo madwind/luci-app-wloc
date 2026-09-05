@@ -332,28 +332,53 @@ return baseclass.extend({
         var proxyTypeOption = wifiSections.option(form.ListValue, 'proxy_type', _('Outbound'));
         proxyTypeOption.modalonly = true;
         proxyTypeOption.value('direct', _('Direct'));
-        proxyTypeOption.value('socks5', _('SOCKS5 proxy'));
+        proxyTypeOption.value('tproxy', _('TPROXY port'));
         proxyTypeOption.default = 'direct';
         proxyTypeOption.rmempty = false;
 
-        var proxyHostOption = wifiSections.option(form.Value, 'proxy_host', _('Proxy host'));
-        proxyHostOption.modalonly = true;
-        proxyHostOption.rmempty = false;
-        proxyHostOption.placeholder = '127.0.0.1';
-        proxyHostOption.description = _('Hostname or IP address of the SOCKS5 proxy.');
-        proxyHostOption.depends('proxy_type', 'socks5');
-        proxyHostOption.validate = function(sectionId, value) {
-            return value && value.length <= 253 && !/[\s\x00-\x1f\x7f]/.test(value)
-                ? true : _('Enter a valid proxy hostname or IP address.');
-        };
+        function tproxySuggestion(sectionId) {
+            var sections = uci.sections('wloc', 'wifi');
+            var index = Math.max(0, sections.findIndex(function(section) {
+                return section['.name'] === sectionId;
+            }));
+            return {
+                port: String(Math.min(65535, 12345 + index)),
+                mark: '0x' + (((index << 8) | 1) >>> 0).toString(16)
+            };
+        }
 
-        var proxyPortOption = wifiSections.option(form.Value, 'proxy_port', _('Proxy port'));
+        var proxyPortOption = wifiSections.option(form.Value, 'proxy_port', _('TPROXY port'));
         proxyPortOption.modalonly = true;
         proxyPortOption.rmempty = false;
         proxyPortOption.datatype = 'port';
-        proxyPortOption.placeholder = '1080';
-        proxyPortOption.depends('proxy_type', 'socks5');
-        proxyPortOption.description = _('Use an unauthenticated SOCKS5 proxy with TCP CONNECT and UDP ASSOCIATE support.');
+        proxyPortOption.depends('proxy_type', 'tproxy');
+        proxyPortOption.cfgvalue = function(sectionId) {
+            return String(uci.get('wloc', sectionId, 'proxy_port') || tproxySuggestion(sectionId).port);
+        };
+        proxyPortOption.description = _('Destination TPROXY listener port. The suggested value starts at 12345 and increments per rule.');
+
+        var proxyMarkOption = wifiSections.option(form.Value, 'proxy_mark', _('TPROXY mark'));
+        proxyMarkOption.modalonly = true;
+        proxyMarkOption.rmempty = false;
+        proxyMarkOption.depends('proxy_type', 'tproxy');
+        proxyMarkOption.cfgvalue = function(sectionId) {
+            return String(uci.get('wloc', sectionId, 'proxy_mark') || tproxySuggestion(sectionId).mark);
+        };
+        proxyMarkOption.description = _('Socket mark used internally to re-enter nftables. Suggested marks are 0x1, 0x101, 0x201, and so on. WLOC reserves 0x80000000, 0x40000000, and 0x00010000.');
+        proxyMarkOption.validate = function(sectionId, value) {
+            value = String(value || '').trim();
+            if (!/^(?:0[xX][0-9A-Fa-f]+|[0-9]+)$/.test(value))
+                return _('Enter a decimal or hexadecimal mark such as 0x101.');
+            var mark = Number(value);
+            if (!isFinite(mark) || mark < 1 || mark > 0xffffffff || (mark & 0xc0010000) !== 0)
+                return _('Mark must be non-zero and must not use WLOC reserved bits.');
+            var duplicate = uci.sections('wloc', 'wifi').some(function(section) {
+                if (section['.name'] === sectionId || String(section.proxy_type || 'direct') !== 'tproxy')
+                    return false;
+                return Number(String(section.proxy_mark || '').trim()) === mark;
+            });
+            return duplicate ? _('Each TPROXY rule must use a unique mark.') : true;
+        };
 
         var lastUpdatedOption = wifiSections.option(form.DummyValue, '_last_updated', _('Last updated'));
         lastUpdatedOption.modalonly = false;
