@@ -17,8 +17,8 @@ const LOCATION_SET4 = 'location_v4';
 const LOCATION_SET6 = 'location_v6';
 const AP_TPROXY_CHAIN = 'ap_tproxy_dispatch';
 const OUTBOUND_CHAIN = 'outbound_prerouting';
-const XRAY_ROUTE_MARK = 0x00000001;
-const WLOC_ROUTE_MARK = 0x00000002;
+const XRAY_ROUTE_MARK = 0x1;
+const WLOC_ROUTE_MARK = 0x2;
 const PROFILE_SHIFT = 8;
 const MAX_PROFILE = 0xff;
 
@@ -62,7 +62,7 @@ function number(value) {
     let result = +text;
     return result == result ? result : null;
 }
-function hex32(value) { return sprintf('0x%08x', value); }
+function hex(value) { return sprintf('0x%x', value); }
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function valid_port(value) {
     let port = number(value);
@@ -163,13 +163,13 @@ function sync_runtime_rules(configured) {
         let profile_mark = outbound.profile << PROFILE_SHIFT;
         let outbound_mark = profile_mark | WLOC_ROUTE_MARK;
         let ap = add_rule(BRIDGE_FAMILY, AP_MARK_CHAIN,
-            `iifname ${q(outbound.iface)} meta mark set ${hex32(profile_mark)} return comment ${q(`wloc ap mark ${outbound.profile}`)}`);
+            `iifname ${q(outbound.iface)} meta mark set ${hex(profile_mark)} return comment ${q(`wloc ap mark ${outbound.profile}`)}`);
         if (!ap.ok) { clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN); return ap; }
         let dispatch = add_rule('inet', AP_TPROXY_CHAIN,
-            `meta mark ${hex32(profile_mark)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc ap tproxy ${outbound.profile}`)}`);
+            `meta mark ${hex(profile_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc ap tproxy ${outbound.profile}`)}`);
         if (!dispatch.ok) { clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN); clear_chain('inet', AP_TPROXY_CHAIN); return dispatch; }
         let outbound_rule = add_rule('inet', OUTBOUND_CHAIN,
-            `meta mark ${hex32(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex32(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc outbound ${outbound.profile}`)}`);
+            `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment ${q(`wloc outbound ${outbound.profile}`)}`);
         if (!outbound_rule.ok) {
             clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN);
             clear_chain('inet', AP_TPROXY_CHAIN);
