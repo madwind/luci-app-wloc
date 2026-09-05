@@ -51,57 +51,30 @@ fn log_peek_result(stream: &TcpStream, result: &Result<Option<String>, HelloErro
     }
 }
 
-/// Parse SNI from the first TLS ClientHello without consuming stream bytes.
-pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
-    let mut handshake = Vec::new();
-    let mut offset = 0_usize;
-    let expected = loop {
-        if bytes.len().saturating_sub(offset) < 5 {
-            return Err(HelloError::Incomplete);
-        }
-        if bytes[offset] != 22 {
-            return Err(if offset == 0 {
-                HelloError::NotTls
-            } else {
-                HelloError::Malformed
-            });
-        }
-        let record_len = be16(bytes, offset + 3)?;
-        if record_len > MAX_CLIENT_HELLO {
-            return Err(HelloError::Malformed);
-        }
-        let start = offset + 5;
-        let end = start.checked_add(record_len).ok_or(HelloError::Malformed)?;
-        if end > bytes.len() {
-            return Err(HelloError::Incomplete);
-        }
-        handshake.extend_from_slice(&bytes[start..end]);
-        if handshake.len() > MAX_CLIENT_HELLO {
-            return Err(HelloError::Malformed);
-        }
-        if handshake.len() >= 4 {
-            if handshake[0] != 1 {
-                return Err(HelloError::NotTls);
-            }
-            let length = (usize::from(handshake[1]) << 16)
-                | (usize::from(handshake[2]) << 8)
-                | usize::from(handshake[3]);
-            let expected = 4_usize.checked_add(length).ok_or(HelloError::Malformed)?;
-            if expected > MAX_CLIENT_HELLO {
-                return Err(HelloError::Malformed);
-            }
-            if handshake.len() >= expected {
-                break expected;
-            }
-        }
-        offset = end;
-    };
-    let bytes = &handshake[..expected];
-    let mut p = 0;
-    if *bytes.get(p).ok_or(HelloError::Incomplete)? != 1 {
+fn client_hello_len(bytes: &[u8]) -> Result<usize, HelloError> {
+    if bytes.len() < 4 {
+        return Err(HelloError::Incomplete);
+    }
+    if bytes[0] != 1 {
         return Err(HelloError::NotTls);
     }
-    p += 4; // handshake type + u24 length
+    let length = (usize::from(bytes[1]) << 16)
+        | (usize::from(bytes[2]) << 8)
+        | usize::from(bytes[3]);
+    let expected = 4_usize.checked_add(length).ok_or(HelloError::Malformed)?;
+    if expected > MAX_CLIENT_HELLO {
+        return Err(HelloError::Malformed);
+    }
+    Ok(expected)
+}
+
+fn parse_client_hello(bytes: &[u8]) -> Result<Option<String>, HelloError> {
+    let expected = client_hello_len(bytes)?;
+    if bytes.len() < expected {
+        return Err(HelloError::Incomplete);
+    }
+    let bytes = &bytes[..expected];
+    let mut p = 4; // handshake type + u24 length
     p += 2 + 32; // version + random
     let sid = *bytes.get(p).ok_or(HelloError::Incomplete)? as usize;
     p += 1 + sid;
@@ -158,6 +131,69 @@ pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
         p = end;
     }
     Ok(None)
+}
+
+/// Parse SNI from the first TLS ClientHello without consuming stream bytes.
+pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
+    if bytes.len() < 5 {
+        return Err(HelloError::Incomplete);
+    }
+    if bytes[0] != 22 {
+        return Err(HelloError::NotTls);
+    }
+    let first_record_len = be16(bytes, 3)?;
+    if first_record_len > MAX_CLIENT_HELLO {
+        return Err(HelloError::Malformed);
+    }
+    let first_start = 5;
+    let first_end = first_start
+        .checked_add(first_record_len)
+        .ok_or(HelloError::Malformed)?;
+    if first_end > bytes.len() {
+        return Err(HelloError::Incomplete);
+    }
+    let first_record = &bytes[first_start..first_end];
+    if let Ok(expected) = client_hello_len(first_record) {
+        if first_record.len() >= expected {
+            return parse_client_hello(&first_record[..expected]);
+        }
+    }
+
+    let mut handshake = Vec::with_capacity(first_record_len.min(MAX_CLIENT_HELLO));
+    let mut offset = 0_usize;
+    let expected = loop {
+        if bytes.len().saturating_sub(offset) < 5 {
+            return Err(HelloError::Incomplete);
+        }
+        if bytes[offset] != 22 {
+            return Err(if offset == 0 {
+                HelloError::NotTls
+            } else {
+                HelloError::Malformed
+            });
+        }
+        let record_len = be16(bytes, offset + 3)?;
+        if record_len > MAX_CLIENT_HELLO {
+            return Err(HelloError::Malformed);
+        }
+        let start = offset + 5;
+        let end = start.checked_add(record_len).ok_or(HelloError::Malformed)?;
+        if end > bytes.len() {
+            return Err(HelloError::Incomplete);
+        }
+        handshake.extend_from_slice(&bytes[start..end]);
+        if handshake.len() > MAX_CLIENT_HELLO {
+            return Err(HelloError::Malformed);
+        }
+        if handshake.len() >= 4 {
+            let expected = client_hello_len(&handshake)?;
+            if handshake.len() >= expected {
+                break expected;
+            }
+        }
+        offset = end;
+    };
+    parse_client_hello(&handshake[..expected])
 }
 
 pub async fn peek_sni(stream: &TcpStream) -> Result<Option<String>, HelloError> {
