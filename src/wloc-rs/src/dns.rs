@@ -357,7 +357,7 @@ fn recv_original_datagram_v4_now(
     message.msg_iov = &mut iovec;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    message.msg_controllen = control.len() as _;
     let size = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_DONTWAIT) };
     if size < 0 {
         return Err(io::Error::last_os_error());
@@ -404,7 +404,7 @@ fn recv_original_datagram_v6_now(
     message.msg_iov = &mut iovec;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    message.msg_controllen = control.len() as _;
     let size = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_DONTWAIT) };
     if size < 0 {
         return Err(io::Error::last_os_error());
