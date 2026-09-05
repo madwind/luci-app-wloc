@@ -145,7 +145,7 @@ pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
     if first_record_len > MAX_CLIENT_HELLO {
         return Err(HelloError::Malformed);
     }
-    let first_start = 5;
+    let first_start = 5_usize;
     let first_end = first_start
         .checked_add(first_record_len)
         .ok_or(HelloError::Malformed)?;
