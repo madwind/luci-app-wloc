@@ -35,7 +35,7 @@ pub async fn resolve_location_targets(rules: &[LocationRule], domains: &[String]
 
     let addresses = addresses.into_iter().collect::<Vec<_>>();
     Resolution {
-        complete: errors.is_empty() && !addresses.is_empty(),
+        complete: errors.is_empty(),
         addresses,
         errors,
     }

@@ -16,6 +16,9 @@ const STATUS = '/var/run/wloc/status.json';
 const MAX_BYTES = 1024 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
+const RESERVED_MARK_MASK = 0xc0010000;
+const INGRESS_MARK = 0x80000000;
+const HANDLED_MARK = 0x00010000;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -308,7 +311,24 @@ function listen_port() {
         return `${ctx.get('wloc', 'main', 'listen_port') || '61520'}`;
     } catch (e) { return '61520'; }
 }
+function number(value) {
+    if (value == null) return null;
+    let text = `${value}`;
+    if (match(text, /^0[xX][0-9A-Fa-f]+$/)) return int(substr(text, 2), 16);
+    if (!match(text, /^[0-9]+$/)) return null;
+    let result = +text;
+    return result == result ? result : null;
+}
+function hex32(value) { return sprintf('0x%08x', value); }
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
+function valid_port(value) {
+    let port = number(value);
+    return port != null && port >= 1 && port <= 65535;
+}
+function valid_mark(value) {
+    let mark = number(value);
+    return mark != null && mark >= 1 && mark <= 0xffffffff && (mark & RESERVED_MARK_MASK) == 0;
+}
 function valid_ipv4(value) {
     let fields = split(`${value ?? ''}`, '.');
     if (length(fields) != 4) return false;
@@ -316,21 +336,39 @@ function valid_ipv4(value) {
         if (!match(field, /^[0-9]{1,3}$/) || int(field) < 0 || int(field) > 255) return false;
     return true;
 }
-function configured_ap_interfaces() {
-    let values = [], seen = {}, error = null;
+function suggested_outbound(index) {
+    return {
+        port: 12345 + index,
+        mark: 1 + ((index & 0xff) * 0x100) + (int(index / 0x100) * 0x20000)
+    };
+}
+function configured_firewall() {
+    let interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
     try {
         let ctx = cursor();
         ctx.foreach('wloc', 'wifi', function(section) {
+            index++;
             if (error) return;
             let enabled = section.enabled == null ? true : (`${section.enabled}` == '1' || section.enabled === true);
             if (!enabled) return;
             let iface = `${section.iface || ''}`;
             if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
-            if (!seen[iface]) { seen[iface] = true; push(values, `"${iface}"`); }
+            if (!seen_ifaces[iface]) { seen_ifaces[iface] = true; push(interfaces, `"${iface}"`); }
+            let outbound = `${section.outbound || 'direct'}`;
+            if (outbound == 'direct') return;
+            if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
+            let suggested = suggested_outbound(index);
+            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? suggested.port : number(section.tproxy_port);
+            let mark = section.tproxy_mark == null || `${section.tproxy_mark}` == '' ? suggested.mark : number(section.tproxy_mark);
+            if (!valid_port(port) || !valid_mark(mark)) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
+            if (seen_marks[`${mark}`]) { error = `duplicate TPROXY mark ${mark}`; return; }
+            seen_marks[`${mark}`] = true;
+            push(outbounds, { iface, port, mark });
         });
     } catch (e) { return { ok: false, error: `${e}` }; }
-    return error ? { ok: false, error } : { ok: true, values };
+    return error ? { ok: false, error } : { ok: true, interfaces, outbounds };
 }
+function render_rules(values) { return length(values) ? join('\n        ', values) : ''; }
 function runtime_location_targets() {
     let raw = read_text(LOCATION_STATE);
     if (!raw) return { ok: true, v4: [], v6: [] };
@@ -355,23 +393,31 @@ function compile_runtime(raw) {
     if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
     let port = int(port_text);
     if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
-    let interfaces = configured_ap_interfaces();
-    if (!interfaces.ok) return interfaces;
+    let configured = configured_firewall();
+    if (!configured.ok) return configured;
     let locations = runtime_location_targets();
     if (!locations.ok) return locations;
     let compiled = replace(raw, /%port%/g, `${port}`);
-    if (length(interfaces.values)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', interfaces.values));
+    if (length(configured.interfaces)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', configured.interfaces));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
     if (length(locations.v4)) compiled = replace(compiled, /%location_ipv4%/g, join(', ', locations.v4));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
     if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
+    let ap_marks = [], ap_dispatch = [], outbound_dispatch = [];
+    for (let outbound in configured.outbounds) {
+        let ingress = INGRESS_MARK | outbound.mark;
+        let handled = HANDLED_MARK | outbound.mark;
+        push(ap_marks, `iifname "${outbound.iface}" meta mark set ${hex32(ingress)} return comment "wloc ap mark ${outbound.mark}"`);
+        push(ap_dispatch, `meta mark ${hex32(ingress)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.mark}"`);
+        push(outbound_dispatch, `meta mark ${hex32(outbound.mark)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.mark}"`);
+    }
+    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, render_rules(ap_marks));
+    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, render_rules(ap_dispatch));
+    compiled = replace(compiled, /%outbound_tproxy_rules%/g, render_rules(outbound_dispatch));
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%location_ipv4%/g, '');
     compiled = replace(compiled, /%location_ipv6%/g, '');
-    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, '');
-    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, '');
-    compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
     return { ok: true, source: raw, compiled };
 }
 function prepare(raw) {
@@ -457,22 +503,11 @@ function apply(raw) {
     fs.chmod(APPLIED, 0o600);
 
     let recovering = false, warning = '';
-    if (daemon_ready()) {
-        let port = listen_port();
-        let reconciled = port ? rules('reconcile', [ port ]) : { ok: false, error: 'the WLOC listen port is empty' };
-        if (!reconciled.ok) {
-            let cleaned = rules('cleanup', []);
-            recovering = true;
-            warning = cleaned.ok
-                ? 'Runtime rule refresh failed; WLOC will retry automatically.'
-                : 'Runtime rule refresh failed and fail-open cleanup also failed; WLOC will retry automatically.';
-        }
-    } else {
+    if (!daemon_ready()) {
         let cleaned = rules('cleanup', []);
-        recovering = true;
         warning = cleaned.ok
-            ? 'Runtime dynamic sets are waiting for the WLOC listener; WLOC will retry automatically.'
-            : 'WLOC listener is not ready and fail-open cleanup failed; WLOC will retry automatically.';
+            ? 'WLOC is not running; interception remains disabled.'
+            : 'WLOC is not running and fail-open cleanup failed.';
     }
 
     return {

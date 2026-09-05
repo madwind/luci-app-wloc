@@ -6,7 +6,6 @@ macro_rules! eprintln {
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,6 +21,7 @@ const TCP_CONNECTION_LIMIT_MAX: usize = 1024;
 const TCP_CONNECTION_MEMORY_KIB: usize = 256;
 const TCP_FD_RESERVE: usize = 384;
 const TOKIO_WORKER_STACK_SIZE: usize = 1024 * 1024;
+const LOCATION_DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 fn total_memory_kib() -> Option<usize> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -91,19 +91,13 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16, targets: &[IpAddr]) -> Result<(), String> {
-    let mut selectors = Vec::with_capacity(targets.len() + 1);
-    selectors.push(port.to_string());
-    selectors.extend(targets.iter().map(ToString::to_string));
-    run_rules(helper, "reconcile", &selectors)
+fn update_location_targets(helper: &Path, targets: &[IpAddr]) -> Result<(), String> {
+    let selectors = targets.iter().map(ToString::to_string).collect::<Vec<_>>();
+    run_rules(helper, "update-targets", &selectors)
 }
 
-async fn reconcile_rules_async(
-    helper: PathBuf,
-    port: u16,
-    targets: Vec<IpAddr>,
-) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &targets))
+async fn update_location_targets_async(helper: PathBuf, targets: Vec<IpAddr>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || update_location_targets(&helper, &targets))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
@@ -237,7 +231,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             |_| {},
         );
         let bootstrap = bootstrap_rules_async(config.rules_helper.clone(), config.listen_port).await;
-        let resolution = if bootstrap.is_ok() {
+        let bootstrap_ready = bootstrap.is_ok();
+        let resolution = if bootstrap_ready {
             resolver::resolve_location_targets(&config.rules, &config.domains).await
         } else {
             resolver::Resolution {
@@ -280,9 +275,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
             false
         } else {
-            match reconcile_rules_async(
+            match update_location_targets_async(
                 config.rules_helper.clone(),
-                config.listen_port,
                 location_targets.clone(),
             )
             .await
@@ -320,49 +314,66 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             resolution.complete
         );
 
-        let armed = Arc::new(AtomicBool::new(initially_armed));
-        let lease_armed = Arc::clone(&armed);
-        let lease_status = Arc::clone(&status);
-        let lease_helper = config.rules_helper.clone();
-        let lease_port = config.listen_port;
-        let lease_targets = location_targets.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            interval.tick().await;
-            loop {
+        if bootstrap_ready {
+            let refresh_rules = config.rules.clone();
+            let refresh_domains = config.domains.clone();
+            let refresh_helper = config.rules_helper.clone();
+            let refresh_status = Arc::clone(&status);
+            let mut current_targets = location_targets.clone();
+            let mut refresh_armed = initially_armed;
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(LOCATION_DNS_REFRESH_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 interval.tick().await;
-                if lease_targets.is_empty() {
-                    continue;
-                }
-                if let Err(error) = reconcile_rules_async(
-                    lease_helper.clone(),
-                    lease_port,
-                    lease_targets.clone(),
-                )
-                .await
-                {
-                    let was_armed = lease_armed.swap(false, Ordering::SeqCst);
-                    if was_armed {
-                        lease_status.update_detail(
-                            "lease_failed",
-                            "armed=false action=keep-last-routing retry_seconds=10",
-                            Some(&error),
-                            |c| c.armed(false),
-                        );
-                        eprintln!("wlocd: interception=false error=lease_refresh retry_seconds=10");
+                loop {
+                    interval.tick().await;
+                    let refresh = resolver::resolve_location_targets(&refresh_rules, &refresh_domains).await;
+                    for error in &refresh.errors {
+                        eprintln!("wlocd: location_dns_refresh=failed {error}");
                     }
-                } else if !lease_armed.swap(true, Ordering::SeqCst) {
-                    lease_status.update_detail(
-                        "interception_rearmed",
-                        "action=rules_rebuilt recovery=true",
-                        None,
-                        |c| c.armed(true),
-                    );
-                    eprintln!("wlocd: interception=true recovery=rules_rebuilt");
+                    if !refresh.complete {
+                        eprintln!("wlocd: location_dns_refresh=incomplete action=keep_previous_targets");
+                        continue;
+                    }
+                    if refresh.addresses == current_targets {
+                        continue;
+                    }
+                    let next_targets = refresh.addresses;
+                    match update_location_targets_async(refresh_helper.clone(), next_targets.clone()).await {
+                        Ok(()) => {
+                            let previous_count = current_targets.len();
+                            current_targets = next_targets;
+                            refresh_armed = !current_targets.is_empty();
+                            refresh_status.update_detail(
+                                "location_targets_updated",
+                                &format!(
+                                    "previous_targets={} targets={} action=firewall_reloaded",
+                                    previous_count,
+                                    current_targets.len()
+                                ),
+                                None,
+                                |c| c.armed(refresh_armed),
+                            );
+                            eprintln!(
+                                "wlocd: location_targets=updated previous={} current={} interception={}",
+                                previous_count,
+                                current_targets.len(),
+                                refresh_armed
+                            );
+                        }
+                        Err(error) => {
+                            refresh_status.update_detail(
+                                "location_targets_update_failed",
+                                "action=keep_previous_targets",
+                                Some(&error),
+                                |c| c.armed(refresh_armed),
+                            );
+                            eprintln!("wlocd: location_targets=update_failed action=keep_previous_targets error={error}");
+                        }
+                    }
                 }
-            }
-        });
+            });
+        }
 
         let proxy = Arc::new(Proxy::new(
             server,

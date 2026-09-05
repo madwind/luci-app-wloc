@@ -10,7 +10,6 @@ const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const OUTBOUND_STATE = `${RUNTIME}/outbound.rules`;
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
-const RUNTIME_STATE = `${RUNTIME}/runtime.rules`;
 const BRIDGE_FAMILY = 'bridge';
 const TABLE = 'wloc';
 const INGRESS_SET = 'ap_interfaces';
@@ -20,11 +19,8 @@ const LOCATION_SET6 = 'location_v6';
 const AP_TPROXY_CHAIN = 'ap_tproxy_dispatch';
 const OUTBOUND_CHAIN = 'outbound_prerouting';
 const RESERVED_MARK_MASK = 0xc0010000;
-const INGRESS_MARK = 0x80000000;
-const HANDLED_MARK = 0x00010000;
 const OUTBOUND_POLICY_MASK = 0xfffeffff;
 const OUTBOUND_RULE_PRIORITY = 90;
-let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\''`)}'`; }
 function capture(command) {
@@ -161,83 +157,6 @@ function configured_rules() {
     if (!length(interfaces)) return { ok: false, error: 'no enabled ingress interfaces are configured' };
     return { ok: true, interfaces, outbounds };
 }
-function runtime_signature(configured, targets) {
-    let lines = [];
-    for (let iface in configured.interfaces) push(lines, `iface ${iface}`);
-    for (let outbound in configured.outbounds) push(lines, `outbound ${outbound.iface} ${outbound.port} ${outbound.mark}`);
-    for (let target in targets.v4) push(lines, `v4 ${target}`);
-    for (let target in targets.v6) push(lines, `v6 ${lc(target)}`);
-    return join('\n', lines) + '\n';
-}
-function chain_comment_count(family, chain, prefix) {
-    let result = capture(`nft list chain ${family} ${TABLE} ${chain}`);
-    if (!result.ok) return -1;
-    let count = 0;
-    for (let line in split(result.output || '', '\n')) if (index(line, `comment "${prefix}`) >= 0) count++;
-    return count;
-}
-function set_contains(family, name, values) {
-    let result = capture(`nft list set ${family} ${TABLE} ${name}`);
-    if (!result.ok) return false;
-    for (let value in values) if (index(result.output || '', value) < 0) return false;
-    return true;
-}
-function set_element_count(family, name) {
-    let result = capture(`nft list set ${family} ${TABLE} ${name}`);
-    if (!result.ok) return -1;
-    let found = match(result.output || '', /elements\s*=\s*\{([^}]*)\}/);
-    if (!found) return 0;
-    let count = 0;
-    for (let item in split(found[1] || '', ',')) if (trim(item || '')) count++;
-    return count;
-}
-function firewall_sets_match(configured, targets) {
-    return set_contains(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)
-        && set_element_count(BRIDGE_FAMILY, INGRESS_SET) == length(configured.interfaces)
-        && set_contains('inet', LOCATION_SET4, targets.v4)
-        && set_contains('inet', LOCATION_SET6, targets.v6);
-}
-function runtime_matches(configured, targets) {
-    if (fs.readfile(RUNTIME_STATE) != runtime_signature(configured, targets)) return false;
-    if (!firewall_sets_match(configured, targets)) return false;
-    if (chain_comment_count(BRIDGE_FAMILY, AP_MARK_CHAIN, 'wloc ap mark ') != length(configured.outbounds)) return false;
-    if (chain_comment_count('inet', AP_TPROXY_CHAIN, 'wloc ap tproxy ') != length(configured.outbounds)) return false;
-    return true;
-}
-function sync_runtime(configured, targets) {
-    if (runtime_matches(configured, targets)) return { ok: true, changed: false };
-    if (!resource_present(`nft list set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}`)) return { ok: false, error: 'AP interface set is missing' };
-    if (!resource_present(`nft list chain ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN}`)) return { ok: false, error: 'AP TPROXY mark chain is missing' };
-    if (!resource_present(`nft list set inet ${TABLE} ${LOCATION_SET4}`) || !resource_present(`nft list set inet ${TABLE} ${LOCATION_SET6}`)) return { ok: false, error: 'location target set is missing' };
-    if (!resource_present(`nft list chain inet ${TABLE} ${AP_TPROXY_CHAIN}`)) return { ok: false, error: 'AP TPROXY dispatch chain is missing' };
-    if (!quiet(`mkdir -p ${q(RUNTIME)}`)) return { ok: false, error: 'unable to create WLOC runtime directory' };
-    sequence++;
-    let path = `${RUNTIME}/runtime-rules.${time()}.${sequence}.nft`;
-    let lines = [
-        `flush chain ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN}`,
-        `flush chain inet ${TABLE} ${AP_TPROXY_CHAIN}`
-    ];
-    for (let outbound in configured.outbounds) {
-        let ingress = INGRESS_MARK | outbound.mark;
-        push(lines, `add rule ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN} iifname "${outbound.iface}" meta mark set ${hex32(ingress)} return comment "wloc ap mark ${outbound.mark}"`);
-    }
-    for (let outbound in configured.outbounds) {
-        let ingress = INGRESS_MARK | outbound.mark;
-        let handled = HANDLED_MARK | outbound.mark;
-        push(lines, `add rule inet ${TABLE} ${AP_TPROXY_CHAIN} meta mark ${hex32(ingress)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.mark}"`);
-    }
-    let content = join('\n', lines) + '\n';
-    let written = fs.writefile(path, content);
-    if (written == null || written != length(content)) { fs.unlink(path); return { ok: false, error: 'unable to stage WLOC runtime rules' }; }
-    fs.chmod(path, 0o600);
-    let applied = capture(`nft --file ${q(path)}`);
-    fs.unlink(path);
-    if (!applied.ok) return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC runtime rules' };
-    let signature = runtime_signature(configured, targets);
-    if (fs.writefile(RUNTIME_STATE, signature) != length(signature)) return { ok: false, error: 'unable to save WLOC runtime rule state' };
-    fs.chmod(RUNTIME_STATE, 0o600);
-    return { ok: true, changed: true };
-}
 function policy_rule_present(family, mark, mask, table) {
     let result = capture(`ip -${family} rule show`);
     if (!result.ok) return false;
@@ -308,58 +227,21 @@ function outbound_state_matches(outbounds, table, ipv6) {
     }
     return true;
 }
-function outbound_chain_matches(outbounds) {
-    let result = capture(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`);
-    if (!result.ok) return false;
-    let found = {}, count = 0;
-    for (let line in split(result.output || '', '\n')) {
-        let comment = match(line, /comment "wloc outbound ([0-9]+)"/);
-        if (!comment) continue;
-        let port_match = match(line, /tproxy to :([0-9]+)/);
-        if (!port_match) return false;
-        let mark = number(comment[1]), port = number(port_match[1]);
-        if (mark == null || port == null || found[`${mark}`] != null) return false;
-        found[`${mark}`] = port;
-        count++;
-    }
-    if (count != length(outbounds)) return false;
-    for (let outbound in outbounds) if (found[`${outbound.mark}`] != outbound.port) return false;
-    return true;
-}
 function sync_outbound(configured, route) {
     let table = number(route.routing_table);
     if (table == null) return { ok: false, error: 'TPROXY routing table is unavailable' };
     let ipv6 = route.ipv6_enabled === true;
-    if (outbound_state_matches(configured.outbounds, table, ipv6) && outbound_chain_matches(configured.outbounds)) return { ok: true, changed: false };
+    if (outbound_state_matches(configured.outbounds, table, ipv6)) return { ok: true, changed: false };
     let removed = remove_outbound_policy();
     if (!removed.ok) return removed;
-    let cleared = clear_chain('inet', OUTBOUND_CHAIN);
-    if (!cleared.ok) return cleared;
     if (!length(configured.outbounds)) return { ok: true, changed: true };
-    if (!resource_present(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`)) return { ok: false, error: 'WLOC outbound dispatch chain is missing' };
-    sequence++;
-    let path = `${RUNTIME}/outbound-chain.${time()}.${sequence}.nft`;
-    let lines = [ `flush chain inet ${TABLE} ${OUTBOUND_CHAIN}` ];
-    for (let outbound in configured.outbounds) {
-        let handled = HANDLED_MARK | outbound.mark;
-        push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta mark ${hex32(outbound.mark)} meta l4proto { tcp, udp } ct mark set ct mark | ${hex32(HANDLED_MARK)} meta mark set ${hex32(handled)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.mark}"`);
-    }
-    let content = join('\n', lines) + '\n';
-    let written = fs.writefile(path, content);
-    if (written == null || written != length(content)) { fs.unlink(path); return { ok: false, error: 'unable to stage WLOC outbound dispatch rules' }; }
-    fs.chmod(path, 0o600);
-    let applied = capture(`nft --file ${q(path)}`);
-    fs.unlink(path);
-    if (!applied.ok) return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC outbound dispatch rules' };
     let installed = [];
     for (let outbound in configured.outbounds) {
         if (!quiet(`ip -4 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
-            clear_chain('inet', OUTBOUND_CHAIN);
             for (let item in installed) delete_policy_rule('4', item.mark, table);
             return { ok: false, error: `unable to install IPv4 outbound policy for mark ${outbound.mark}` };
         }
         if (ipv6 && !quiet(`ip -6 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/${hex32(OUTBOUND_POLICY_MASK)} lookup ${table}`)) {
-            clear_chain('inet', OUTBOUND_CHAIN);
             delete_policy_rule('4', outbound.mark, table);
             for (let item in installed) { delete_policy_rule('4', item.mark, table); delete_policy_rule('6', item.mark, table); }
             return { ok: false, error: `unable to install IPv6 outbound policy for mark ${outbound.mark}` };
@@ -368,7 +250,6 @@ function sync_outbound(configured, route) {
     }
     let saved = write_outbound_state(configured.outbounds, table, ipv6);
     if (!saved.ok) {
-        clear_chain('inet', OUTBOUND_CHAIN);
         for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
         return saved;
     }
@@ -383,39 +264,35 @@ function location_state_text(targets) {
 function location_state_matches(targets) {
     return `${fs.readfile(LOCATION_STATE) || ''}` == location_state_text(targets);
 }
-function reconcile_with_targets(port, target_args, save_targets) {
+function update_targets(target_args) {
+    let targets = target_sets(target_args);
+    if (!targets.ok) return targets;
+    if (location_state_matches(targets)) return { ok: true, changed: false, location_count: length(targets.v4) + length(targets.v6) };
+    let previous = target_sets(read_location_targets());
+    if (!previous.ok) return previous;
+    let saved = write_location_targets(targets);
+    if (!saved.ok) return saved;
+    let refreshed = run_firewall('refresh-runtime');
+    if (!refreshed.ok) {
+        let restored_state = write_location_targets(previous);
+        let restored_firewall = restored_state.ok ? run_firewall('refresh-runtime') : { ok: false, error: restored_state.error };
+        let rollback = restored_firewall.ok ? '' : `; rollback failed: ${restored_firewall.error || 'unable to restore previous firewall'}`;
+        return { ok: false, error: `firewall target refresh failed: ${refreshed.error || 'unable to render location targets'}${rollback}` };
+    }
+    return { ok: true, changed: true, location_count: length(targets.v4) + length(targets.v6) };
+}
+function bootstrap(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
     let configured = configured_rules();
     if (!configured.ok) return configured;
-    let targets = target_sets(target_args);
-    if (!targets.ok) return targets;
-    let locations_changed = save_targets && !location_state_matches(targets);
-    if (save_targets) {
-        let saved = write_location_targets(targets);
-        if (!saved.ok) return saved;
-    }
-    if (locations_changed || !firewall_sets_match(configured, targets)) {
-        let refreshed = run_firewall('refresh-runtime');
-        if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render dynamic sets'}` };
-        if (!firewall_sets_match(configured, targets)) return { ok: false, error: 'firewall placeholder refresh did not apply the expected dynamic sets' };
-    }
-    let route = run_routing('apply-effective');
-    if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
-    let runtime = sync_runtime(configured, targets);
-    if (!runtime.ok) return { ok: false, error: `runtime rule reconciliation failed: ${runtime.error}` };
-    let outbound = sync_outbound(configured, route);
-    if (!outbound.ok) return { ok: false, error: `outbound reconciliation failed: ${outbound.error}` };
-    return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: length(targets.v4) + length(targets.v6) };
-}
-function reconcile(port, target_args) {
-    let targets = length(target_args) ? target_args : read_location_targets();
-    return reconcile_with_targets(port, targets, length(target_args) > 0);
-}
-function bootstrap(port) {
     fs.unlink(LOCATION_STATE);
     let refreshed = run_firewall('refresh-runtime');
-    if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to clear dynamic location sets'}` };
-    return reconcile_with_targets(port, [], false);
+    if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render startup firewall'}` };
+    let route = run_routing('apply-effective');
+    if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
+    let outbound = sync_outbound(configured, route);
+    if (!outbound.ok) return { ok: false, error: `outbound policy setup failed: ${outbound.error}` };
+    return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
 }
 function cleanup(reset) {
     let errors = [];
@@ -427,7 +304,6 @@ function cleanup(reset) {
         clear_chain('inet', AP_TPROXY_CHAIN),
         clear_chain('inet', OUTBOUND_CHAIN)
     ]) if (!item.ok) push(errors, item.error);
-    fs.unlink(RUNTIME_STATE);
     fs.unlink(LOCATION_STATE);
     let outbound_policy = remove_outbound_policy();
     if (!outbound_policy.ok) push(errors, outbound_policy.error);
@@ -437,7 +313,7 @@ function cleanup(reset) {
 }
 function dispatch(command, args) {
     if (command == 'bootstrap') return bootstrap(args[0]);
-    if (command == 'reconcile') return reconcile(args[0], slice(args, 1));
+    if (command == 'update-targets') return update_targets(args);
     if (command == 'cleanup') return cleanup(false);
     if (command == 'reset') return cleanup(true);
     return { ok: false, error: `unsupported rules command: ${command}` };
