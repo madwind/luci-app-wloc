@@ -76,7 +76,7 @@ function suggested_outbound(index) {
     };
 }
 function configured_rules() {
-    let ctx = cursor(), interfaces = [], outbounds = [], slots = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
+    let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
     try {
         ctx.foreach('wloc', 'wifi', function(section) {
             index++;
@@ -87,10 +87,7 @@ function configured_rules() {
             if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
             if (!seen_ifaces[iface]) { seen_ifaces[iface] = true; push(interfaces, iface); }
             let outbound = `${section.outbound || 'direct'}`;
-            if (outbound == 'direct') {
-                push(slots, { slot: index + 1, iface, type: 'direct' });
-                return;
-            }
+            if (outbound == 'direct') return;
             if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
             let suggested = suggested_outbound(index);
             let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? suggested.port : number(section.tproxy_port);
@@ -98,14 +95,12 @@ function configured_rules() {
             if (!valid_port(port) || !valid_mark(mark)) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
             if (seen_marks[`${mark}`]) { error = `duplicate TPROXY mark ${mark}`; return; }
             seen_marks[`${mark}`] = true;
-            let entry = { slot: index + 1, iface, type: 'tproxy', port, mark };
-            push(slots, entry);
-            push(outbounds, entry);
+            push(outbounds, { port, mark });
         });
     } catch (e) { return { ok: false, error: `${e}` }; }
     if (error) return { ok: false, error };
     if (!length(interfaces)) return { ok: false, error: 'no enabled ingress interfaces are configured' };
-    return { ok: true, interfaces, outbounds, slots };
+    return { ok: true, interfaces, outbounds };
 }
 function sync_ingress(configured) {
     if (!quiet(`nft list set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}`)) return { ok: false, error: 'target ingress interface set is missing' };
@@ -199,20 +194,12 @@ function outbound_state_matches(outbounds, table, ipv6) {
     }
     return true;
 }
-function outbound_chain_matches(configured) {
+function outbound_chain_matches(outbounds) {
     let result = capture(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`);
     if (!result.ok) return false;
-    let found = {}, found_slots = {};
-    let count = 0, slot_count = 0;
+    let found = {};
+    let count = 0;
     for (let line in split(result.output || '', '\n')) {
-        let slot_match = match(line, /comment "wloc outbound slot ([0-9]+) (direct|tproxy) iface=([A-Za-z0-9_.-]+)"/);
-        if (slot_match) {
-            let slot = number(slot_match[1]);
-            if (slot == null || found_slots[`${slot}`] != null) return false;
-            found_slots[`${slot}`] = `${slot_match[2]}|${slot_match[3]}`;
-            slot_count++;
-            continue;
-        }
         if (index(line, 'comment "wloc outbound"') < 0) continue;
         let mark_match = match(line, /meta mark (\S+)/);
         let port_match = match(line, /tproxy to :([0-9]+)/);
@@ -222,34 +209,29 @@ function outbound_chain_matches(configured) {
         found[`${mark}`] = port;
         count++;
     }
-    if (slot_count != length(configured.slots) || count != length(configured.outbounds)) return false;
-    for (let slot in configured.slots)
-        if (found_slots[`${slot.slot}`] != `${slot.type}|${slot.iface}`) return false;
-    for (let outbound in configured.outbounds)
-        if (found[`${outbound.mark}`] != outbound.port) return false;
+    if (count != length(outbounds)) return false;
+    for (let outbound in outbounds) if (found[`${outbound.mark}`] != outbound.port) return false;
     return true;
 }
 function sync_outbound(configured, route) {
     let table = number(route.routing_table);
     if (table == null) return { ok: false, error: 'TPROXY routing table is unavailable' };
     let ipv6 = route.ipv6_enabled === true;
-    if (outbound_state_matches(configured.outbounds, table, ipv6) && outbound_chain_matches(configured))
+    if (outbound_state_matches(configured.outbounds, table, ipv6) && outbound_chain_matches(configured.outbounds))
         return { ok: true, changed: false };
 
     let removed = remove_outbound_policy();
     if (!removed.ok) return removed;
     let cleared = clear_outbound_chain();
     if (!cleared.ok) return cleared;
+    if (!length(configured.outbounds)) return { ok: true, changed: true };
     if (!quiet(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`)) return { ok: false, error: 'WLOC outbound dispatch chain is missing' };
 
     sequence++;
     let path = `${RUNTIME}/outbound-chain.${time()}.${sequence}.nft`;
     let lines = [ `flush chain inet ${TABLE} ${OUTBOUND_CHAIN}` ];
-    for (let slot in configured.slots) {
-        push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta l4proto { tcp, udp } comment "wloc outbound slot ${slot.slot} ${slot.type} iface=${slot.iface}"`);
-        if (slot.type == 'tproxy')
-            push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta mark ${slot.mark} meta l4proto { tcp, udp } counter tproxy to :${slot.port} accept comment "wloc outbound"`);
-    }
+    for (let outbound in configured.outbounds)
+        push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta mark ${outbound.mark} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound"`);
     let content = join('\n', lines) + '\n';
     let written = fs.writefile(path, content);
     if (written == null || written != length(content)) { fs.unlink(path); return { ok: false, error: 'unable to stage WLOC outbound dispatch transaction' }; }
@@ -257,7 +239,6 @@ function sync_outbound(configured, route) {
     let applied = capture(`nft --file ${q(path)}`);
     fs.unlink(path);
     if (!applied.ok) return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC outbound dispatch rules' };
-    if (!length(configured.outbounds)) return { ok: true, changed: true };
 
     let installed = [];
     for (let outbound in configured.outbounds) {

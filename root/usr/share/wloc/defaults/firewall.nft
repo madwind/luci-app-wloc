@@ -2,6 +2,7 @@ table bridge wloc {
     set target_ingress_interfaces {
         type ifname
         flags timeout
+        elements = { %target_ingress_interfaces% }
     }
 
     chain mark_prerouting {
