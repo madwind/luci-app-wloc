@@ -293,27 +293,28 @@ impl Proxy {
     }
 
     pub async fn handle(&self, stream: TcpStream) -> Result<(), ProxyError> {
+        stream.set_nodelay(true).map_err(ProxyError::io)?;
         let peer_address = stream.peer_addr().map_err(ProxyError::io)?;
         let rule = match self.target_for(peer_address.ip()).await {
-            Ok(rule) => rule,
+            Ok(Some(rule)) => rule,
+            Ok(None) => {
+                self.status.update_detail(
+                    "rule_unmatched",
+                    &format!("matched=false ip={} action=drop", peer_address.ip()),
+                    Some("no matching WLOC rule"),
+                    |_| {},
+                );
+                return Err(ProxyError::Protocol("no_matching_rule".into()));
+            }
             Err(error) => {
                 self.status.update_detail(
                     "rule_lookup_failed",
                     &unmatched_context(None, None, peer_address.ip(), "hostapd"),
                     Some(&error),
-                    |c| c.passthrough(),
+                    |_| {},
                 );
-                None
+                return Err(ProxyError::Protocol(format!("rule_lookup_failed: {error}")));
             }
-        };
-        let Some(rule) = rule else {
-            self.status.update_detail(
-                "rule_passthrough",
-                &format!("matched=false ip={} action=passthrough", peer_address.ip()),
-                None,
-                |c| c.passthrough(),
-            );
-            return self.tunnel(stream, &OutboundProxy::Direct).await;
         };
         self.handle_target(stream, rule, peer_address.ip()).await
     }
@@ -620,13 +621,9 @@ impl Proxy {
         )
         .await
         .map_err(|_| ProxyError::Upstream("passthrough_connect_timeout".into()))??;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            tokio::io::copy_bidirectional(&mut client, &mut upstream),
-        )
-        .await
-        .map_err(|_| ProxyError::Upstream("passthrough_timeout".into()))?
-        .map_err(ProxyError::io)?;
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .map_err(ProxyError::io)?;
         Ok(())
     }
 
@@ -941,9 +938,13 @@ async fn connect_outbound(
     port: u16,
 ) -> Result<TcpStream, ProxyError> {
     match outbound {
-        OutboundProxy::Direct => TcpStream::connect((destination, port))
-            .await
-            .map_err(ProxyError::io),
+        OutboundProxy::Direct => {
+            let stream = TcpStream::connect((destination, port))
+                .await
+                .map_err(ProxyError::io)?;
+            stream.set_nodelay(true).map_err(ProxyError::io)?;
+            Ok(stream)
+        }
         OutboundProxy::Socks5 {
             host,
             port: proxy_port,
@@ -951,6 +952,7 @@ async fn connect_outbound(
             let mut stream = TcpStream::connect((host.as_str(), *proxy_port))
                 .await
                 .map_err(ProxyError::io)?;
+            stream.set_nodelay(true).map_err(ProxyError::io)?;
             socks5_connect(&mut stream, destination, port).await?;
             Ok(stream)
         }
