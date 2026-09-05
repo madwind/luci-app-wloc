@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use tokio::net::TcpStream;
 
 const INITIAL_CLIENT_HELLO_BUFFER: usize = 4 * 1024;
@@ -17,7 +19,8 @@ fn be16(bytes: &[u8], at: usize) -> Result<usize, HelloError> {
 }
 
 fn debug_logging_enabled() -> bool {
-    std::env::var("WLOC_DEBUG_LOG").as_deref() == Ok("1")
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("WLOC_DEBUG_LOG").as_deref() == Ok("1"))
 }
 
 fn log_peek_result(stream: &TcpStream, result: &Result<Option<String>, HelloError>) {
