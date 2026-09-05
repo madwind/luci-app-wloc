@@ -1,15 +1,15 @@
 table bridge wloc {
-    set target_ingress_interfaces {
+    set ap_interfaces {
         type ifname
         flags timeout
-        elements = { %target_ingress_interfaces% }
+        elements = { %ap_interfaces% }
     }
 
     chain mark_prerouting {
         type filter hook prerouting priority dstnat - 1;
         policy accept;
 
-        iifname @target_ingress_interfaces meta l4proto { tcp, udp } counter meta mark set meta mark | 0x80000000 comment "wloc ingress"
+        iifname @ap_interfaces meta l4proto { tcp, udp } counter meta mark set meta mark | 0x80000000 comment "wloc ingress"
     }
 }
 
