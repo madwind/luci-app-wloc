@@ -1,0 +1,46 @@
+name: Firewall set placeholders diag
+
+on:
+  push:
+    branches:
+      - firewall-set-placeholders-r65
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Diagnose patch patterns
+        shell: bash
+        run: |
+          set -eu
+          git fetch origin master
+          git checkout -B firewall-set-placeholders-r65 origin/master
+          python3 - <<'PY' > patch-diag.txt
+          from pathlib import Path
+          import re
+          firewall = Path('root/usr/libexec/wloc/firewall.uc').read_text()
+          rules = Path('root/usr/libexec/wloc/rules.uc').read_text()
+          checks = {
+              'compile_runtime': len(re.findall(r'function compile_runtime\(raw\) \{.*?\n\}\nfunction prepare', firewall, flags=re.S)),
+              'save': len(re.findall(r'function save', firewall)),
+              'remove_runtime_dispatch': firewall.count("if (command == 'remove-runtime') return remove_runtime();"),
+              'run_routing': rules.count('function run_routing(command) {'),
+              'number': rules.count('function number(value) {'),
+              'set_contains': len(re.findall(r'function set_contains\(family, name, values\) \{.*?\n\}\nfunction runtime_matches', rules, flags=re.S)),
+              'runtime_set_lines': rules.count("if (!set_contains(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)) return false;"),
+              'sync_runtime_sync_ingress': len(re.findall(r'function sync_runtime\(configured, targets\) \{.*?\n\}\nfunction sync_ingress\(configured\) \{.*?\n\}\nfunction policy_rule_present', rules, flags=re.S)),
+              'reconcile': len(re.findall(r'function reconcile_with_targets\(port, target_args, save_targets\) \{.*?\n\}\nfunction reconcile\(port, target_args\) \{.*?\n\}\nfunction bootstrap\(port\) \{.*?\n\}\nfunction cleanup', rules, flags=re.S)),
+              'sync_ingress_dispatch': len(re.findall(r"\n    if \(command == 'sync-ingress'\) \{.*?\n    \}\n", rules, flags=re.S)),
+          }
+          for key, value in checks.items():
+              print(f'{key}={value}')
+          PY
+          git add patch-diag.txt
+          git commit -m 'Record firewall placeholder patch diagnostics'
+          git push --force origin HEAD:firewall-set-placeholders-r65
