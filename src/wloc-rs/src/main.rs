@@ -4,9 +4,7 @@ macro_rules! eprintln {
     }};
 }
 
-mod transparent;
-
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,6 +14,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use wloc_rs::ca::{default_profile_path, write_mobileconfig, CaBundle};
 use wloc_rs::config::Config;
 use wloc_rs::proxy::Proxy;
+use wloc_rs::resolver;
 use wloc_rs::status::Status;
 
 const TCP_CONNECTION_LIMIT_MIN: usize = 64;
@@ -92,12 +91,25 @@ fn run_rules(helper: &Path, action: &str, selectors: &[String]) -> Result<(), St
     }
 }
 
-fn reconcile_rules(helper: &Path, port: u16) -> Result<(), String> {
-    run_rules(helper, "reconcile", &[port.to_string()])
+fn reconcile_rules(helper: &Path, port: u16, targets: &[IpAddr]) -> Result<(), String> {
+    let mut selectors = Vec::with_capacity(targets.len() + 1);
+    selectors.push(port.to_string());
+    selectors.extend(targets.iter().map(ToString::to_string));
+    run_rules(helper, "reconcile", &selectors)
 }
 
-async fn reconcile_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port))
+async fn reconcile_rules_async(
+    helper: PathBuf,
+    port: u16,
+    targets: Vec<IpAddr>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reconcile_rules(&helper, port, &targets))
+        .await
+        .map_err(|error| format!("rules task failed: {error}"))?
+}
+
+async fn bootstrap_rules_async(helper: PathBuf, port: u16) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || run_rules(&helper, "bootstrap", &[port.to_string()]))
         .await
         .map_err(|error| format!("rules task failed: {error}"))?
 }
@@ -106,12 +118,6 @@ async fn cleanup_rules_async(helper: PathBuf) -> Result<(), String> {
     tokio::task::spawn_blocking(move || run_rules(&helper, "cleanup", &[]))
         .await
         .map_err(|error| format!("cleanup rules task failed: {error}"))?
-}
-
-fn cleanup_recovery_should_report(was_armed: bool, cleanup_was_failed: &mut bool) -> bool {
-    let should_report = was_armed || *cleanup_was_failed;
-    *cleanup_was_failed = false;
-    should_report
 }
 
 fn record_startup_error(error: &str) {
@@ -200,8 +206,6 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     runtime.block_on(async move {
         let transparent_tcp_listener_v4 = listener_v4(config.listen_port, tcp_listen_backlog)?;
         let transparent_tcp_listener_v6 = listener_v6(config.listen_port, tcp_listen_backlog)?;
-        let (transparent_udp_listener_v4, transparent_udp_listener_v6) =
-            transparent::udp_listeners(config.listen_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
@@ -226,140 +230,137 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         status.update_detail(
             "listener_ready",
             &format!(
-                "transparent_tcp_udp=0.0.0.0,[::]:{} dual_stack=true tcp_limit={} backlog={}",
+                "transparent_tcp=0.0.0.0,[::]:{} dual_stack=true tcp_limit={} backlog={}",
                 config.listen_port, tcp_connection_limit, tcp_listen_backlog
             ),
             None,
             |_| {},
         );
-        let mut cleanup_was_failed = false;
-        let initially_armed = match reconcile_rules_async(
-            config.rules_helper.clone(),
-            config.listen_port,
-        )
-        .await
-        {
-            Ok(()) => {
-                status.update_detail(
-                    "interception_armed",
-                    &format!(
-                        "rules={} hosts={} protocol=tcp,udp mode=global-transparent listen_port={}",
-                        config.rules.len(),
-                        config.domains.join(","),
-                        config.listen_port
-                    ),
-                    None,
-                    |c| c.armed(true),
-                );
-                true
-            }
-            Err(error) => {
-                match cleanup_rules_async(config.rules_helper.clone()).await {
-                    Ok(()) => status.update_detail(
-                        "lease_failed",
-                        "action=rules_removed fail_open=true retry_seconds=10 phase=initial_start",
-                        Some(&error),
-                        |c| c.armed(false),
-                    ),
-                    Err(cleanup_error) => {
-                        cleanup_was_failed = true;
-                        let detail = format!(
-                            "initial rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
-                        );
-                        status.update_detail(
-                            "cleanup_failed",
-                            "armed=false retry_seconds=10 phase=initial_start",
-                            Some(&detail),
-                            |c| c.armed(false),
-                        );
-                    }
-                }
-                eprintln!(
-                    "wlocd: daemon=ready interception=false error=initial_rules phase=start retry_seconds=10 ca_generated={generated}"
-                );
-                false
+        let bootstrap = bootstrap_rules_async(config.rules_helper.clone(), config.listen_port).await;
+        let resolution = if bootstrap.is_ok() {
+            resolver::resolve_location_targets(&config.rules, &config.domains).await
+        } else {
+            resolver::Resolution {
+                addresses: Vec::new(),
+                complete: false,
+                errors: vec!["runtime bootstrap failed before DNS resolution".into()],
             }
         };
-        if initially_armed {
-            eprintln!("wlocd: daemon=ready interception=true ca_generated={generated}");
+        for error in &resolution.errors {
+            eprintln!("wlocd: location_dns=failed {error}");
         }
+        let location_targets = resolution.addresses;
+        let initially_armed = if let Err(error) = bootstrap {
+            match cleanup_rules_async(config.rules_helper.clone()).await {
+                Ok(()) => status.update_detail(
+                    "lease_failed",
+                    "action=rules_removed fail_open=true phase=initial_start",
+                    Some(&error),
+                    |c| c.armed(false),
+                ),
+                Err(cleanup_error) => {
+                    let detail = format!(
+                        "initial rules bootstrap failed: {error}; cleanup failed: {cleanup_error}"
+                    );
+                    status.update_detail(
+                        "cleanup_failed",
+                        "armed=false phase=initial_start",
+                        Some(&detail),
+                        |c| c.armed(false),
+                    );
+                }
+            }
+            false
+        } else if location_targets.is_empty() {
+            status.update_detail(
+                "location_resolution_failed",
+                "armed=false targets=0 action=tproxy-pass-through",
+                Some("No location-service IP addresses were resolved at startup."),
+                |c| c.armed(false),
+            );
+            false
+        } else {
+            match reconcile_rules_async(
+                config.rules_helper.clone(),
+                config.listen_port,
+                location_targets.clone(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    status.update_detail(
+                        "interception_armed",
+                        &format!(
+                            "rules={} hosts={} targets={} protocol=tcp mode=targeted-ip listen_port={}",
+                            config.rules.len(),
+                            config.domains.join(","),
+                            location_targets.len(),
+                            config.listen_port
+                        ),
+                        None,
+                        |c| c.armed(true),
+                    );
+                    true
+                }
+                Err(error) => {
+                    status.update_detail(
+                        "lease_failed",
+                        "armed=false action=tproxy-pass-through phase=target_apply",
+                        Some(&error),
+                        |c| c.armed(false),
+                    );
+                    false
+                }
+            }
+        };
+        eprintln!(
+            "wlocd: daemon=ready interception={} targets={} dns_complete={} ca_generated={generated}",
+            initially_armed,
+            location_targets.len(),
+            resolution.complete
+        );
 
         let armed = Arc::new(AtomicBool::new(initially_armed));
         let lease_armed = Arc::clone(&armed);
         let lease_status = Arc::clone(&status);
         let lease_helper = config.rules_helper.clone();
         let lease_port = config.listen_port;
+        let lease_targets = location_targets.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             interval.tick().await;
             loop {
                 interval.tick().await;
+                if lease_targets.is_empty() {
+                    continue;
+                }
                 if let Err(error) = reconcile_rules_async(
                     lease_helper.clone(),
                     lease_port,
+                    lease_targets.clone(),
                 )
                 .await
                 {
                     let was_armed = lease_armed.swap(false, Ordering::SeqCst);
-                    match cleanup_rules_async(lease_helper.clone()).await {
-                        Ok(()) => {
-                            if cleanup_recovery_should_report(was_armed, &mut cleanup_was_failed) {
-                                lease_status.update_detail(
-                                    "lease_failed",
-                                    "action=rules_removed fail_open=true retry_seconds=10",
-                                    Some(&error),
-                                    |c| c.armed(false),
-                                );
-                                eprintln!(
-                                    "wlocd: interception=false error=lease_refresh retry_seconds=10"
-                                );
-                            }
-                        }
-                        Err(cleanup_error) => {
-                            if !cleanup_was_failed {
-                                let detail = format!(
-                                    "rules reconcile failed: {error}; cleanup failed: {cleanup_error}"
-                                );
-                                lease_status.update_detail(
-                                    "cleanup_failed",
-                                    "armed=false retry_seconds=10",
-                                    Some(&detail),
-                                    |c| c.armed(false),
-                                );
-                                eprintln!(
-                                    "wlocd: interception=false error=cleanup_failed retry_seconds=10"
-                                );
-                            }
-                            cleanup_was_failed = true;
-                        }
-                    }
-                } else {
-                    cleanup_was_failed = false;
-                    if !lease_armed.swap(true, Ordering::SeqCst) {
+                    if was_armed {
                         lease_status.update_detail(
-                            "interception_rearmed",
-                            "action=rules_rebuilt recovery=true",
-                            None,
-                            |c| c.armed(true),
+                            "lease_failed",
+                            "armed=false action=keep-last-routing retry_seconds=10",
+                            Some(&error),
+                            |c| c.armed(false),
                         );
-                        eprintln!("wlocd: interception=true recovery=rules_rebuilt");
+                        eprintln!("wlocd: interception=false error=lease_refresh retry_seconds=10");
                     }
+                } else if !lease_armed.swap(true, Ordering::SeqCst) {
+                    lease_status.update_detail(
+                        "interception_rearmed",
+                        "action=rules_rebuilt recovery=true",
+                        None,
+                        |c| c.armed(true),
+                    );
+                    eprintln!("wlocd: interception=true recovery=rules_rebuilt");
                 }
-            }
-        });
-
-        let relay = Arc::new(transparent::TransparentProxy::new(config.rules.clone()));
-        let udp_relay_v4 = Arc::clone(&relay);
-        tokio::spawn(async move {
-            if let Err(error) = udp_relay_v4.run_udp(transparent_udp_listener_v4).await {
-                eprintln!("wlocd: udp_listener=failed family=ipv4 error={error}");
-            }
-        });
-        let udp_relay_v6 = Arc::clone(&relay);
-        tokio::spawn(async move {
-            if let Err(error) = udp_relay_v6.run_udp(transparent_udp_listener_v6).await {
-                eprintln!("wlocd: udp_listener=failed family=ipv6 error={error}");
             }
         });
 
@@ -382,34 +383,20 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             accepted = transparent_tcp_listener_v4.accept() => accepted?,
             accepted = transparent_tcp_listener_v6.accept() => accepted?,
         };
-            let destination_port = match stream.local_addr() {
-                Ok(destination) => destination.port(),
-                Err(error) => {
-                    eprintln!("wlocd: tcp_destination=failed error={error}");
-                    continue;
-                }
-            };
             let proxy = Arc::clone(&proxy);
-            let relay = Arc::clone(&relay);
             let status = Arc::clone(&status);
             tokio::spawn(async move {
                 let _permit = permit;
-                if destination_port == 443 {
-                    if let Err(error) = proxy.handle(stream).await {
-                        let category = error.category();
-                        let detail = error.to_string();
-                        status.update_detail(
-                            "connection_failed",
-                            &format!("category={category}"),
-                            Some(&detail),
-                            |_| {},
-                        );
-                        eprintln!("wlocd: request=failed category={category} error={detail}");
-                    }
-                } else if let Err(error) = relay.handle_tcp(stream).await {
-                    eprintln!(
-                        "wlocd: tcp_relay=failed destination_port={destination_port} error={error}"
+                if let Err(error) = proxy.handle(stream).await {
+                    let category = error.category();
+                    let detail = error.to_string();
+                    status.update_detail(
+                        "connection_failed",
+                        &format!("category={category}"),
+                        Some(&detail),
+                        |_| {},
                     );
+                    eprintln!("wlocd: request=failed category={category} error={detail}");
                 }
             });
         }

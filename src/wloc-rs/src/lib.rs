@@ -12,6 +12,7 @@ pub mod logging;
 pub mod network_source;
 pub mod outbound;
 pub mod proxy;
+pub mod resolver;
 pub mod status;
 pub mod wloc;
 
