@@ -1,0 +1,35 @@
+name: DNS interception patch
+
+on:
+  push:
+    branches:
+      - dns-intercept-r67-run
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build clean commits
+        shell: bash
+        run: |
+          set -eu
+          cp .github/patch-dns-intercept.py /tmp/patch-dns-intercept.py
+          git fetch origin master
+          git checkout -B dns-intercept-r67 origin/master
+          git config user.name "IvonWei"
+          git config user.email "madwind.cn@gmail.com"
+          python3 /tmp/patch-dns-intercept.py
+          git diff --check
+          git add root/usr/share/wloc/defaults/firewall.nft src/wloc-rs/src/lib.rs src/wloc-rs/src/dns.rs src/wloc-rs/src/proxy.rs src/wloc-rs/src/main.rs src/wloc-rs/src/resolver.rs
+          git commit -m 'Learn location targets from intercepted DNS'
+          sed -i 's/^WLOC_RELEASE=66$/WLOC_RELEASE=67/' version.env
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r67'
+          git push --force origin HEAD:dns-intercept-r67
