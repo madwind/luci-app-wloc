@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { cursor } from 'uci';
 
 const ROUTING = '/usr/libexec/wloc/routing.uc';
+const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const OUTBOUND_STATE = `${RUNTIME}/outbound.rules`;
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
@@ -49,6 +50,12 @@ function run_routing(command) {
     let result = capture(`/usr/bin/ucode ${q(ROUTING)} ${q(command)}`);
     let parsed = parse_result(result.output || '');
     if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'routing controller failed' };
+    return parsed;
+}
+function run_firewall(command) {
+    let result = capture(`/usr/bin/ucode ${q(FIREWALL)} ${q(command)}`);
+    let parsed = parse_result(result.output || '');
+    if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'firewall controller failed' };
     return parsed;
 }
 function number(value) {
@@ -175,10 +182,24 @@ function set_contains(family, name, values) {
     for (let value in values) if (index(result.output || '', value) < 0) return false;
     return true;
 }
+function set_element_count(family, name) {
+    let result = capture(`nft list set ${family} ${TABLE} ${name}`);
+    if (!result.ok) return -1;
+    let found = match(result.output || '', /elements\s*=\s*\{([^}]*)\}/);
+    if (!found) return 0;
+    let count = 0;
+    for (let item in split(found[1] || '', ',')) if (trim(item || '')) count++;
+    return count;
+}
+function firewall_sets_match(configured, targets) {
+    return set_contains(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)
+        && set_element_count(BRIDGE_FAMILY, INGRESS_SET) == length(configured.interfaces)
+        && set_contains('inet', LOCATION_SET4, targets.v4)
+        && set_contains('inet', LOCATION_SET6, targets.v6);
+}
 function runtime_matches(configured, targets) {
     if (fs.readfile(RUNTIME_STATE) != runtime_signature(configured, targets)) return false;
-    if (!set_contains(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)) return false;
-    if (!set_contains('inet', LOCATION_SET4, targets.v4) || !set_contains('inet', LOCATION_SET6, targets.v6)) return false;
+    if (!firewall_sets_match(configured, targets)) return false;
     if (chain_comment_count(BRIDGE_FAMILY, AP_MARK_CHAIN, 'wloc ap mark ') != length(configured.outbounds)) return false;
     if (chain_comment_count('inet', AP_TPROXY_CHAIN, 'wloc ap tproxy ') != length(configured.outbounds)) return false;
     return true;
@@ -193,19 +214,13 @@ function sync_runtime(configured, targets) {
     sequence++;
     let path = `${RUNTIME}/runtime-rules.${time()}.${sequence}.nft`;
     let lines = [
-        `flush set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}`,
         `flush chain ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN}`,
-        `flush set inet ${TABLE} ${LOCATION_SET4}`,
-        `flush set inet ${TABLE} ${LOCATION_SET6}`,
         `flush chain inet ${TABLE} ${AP_TPROXY_CHAIN}`
     ];
-    for (let iface in configured.interfaces) push(lines, `add element ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET} { "${iface}" }`);
     for (let outbound in configured.outbounds) {
         let ingress = INGRESS_MARK | outbound.mark;
         push(lines, `add rule ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN} iifname "${outbound.iface}" meta mark set ${hex32(ingress)} return comment "wloc ap mark ${outbound.mark}"`);
     }
-    for (let target in targets.v4) push(lines, `add element inet ${TABLE} ${LOCATION_SET4} { ${target} }`);
-    for (let target in targets.v6) push(lines, `add element inet ${TABLE} ${LOCATION_SET6} { ${target} }`);
     for (let outbound in configured.outbounds) {
         let ingress = INGRESS_MARK | outbound.mark;
         let handled = HANDLED_MARK | outbound.mark;
@@ -222,21 +237,6 @@ function sync_runtime(configured, targets) {
     if (fs.writefile(RUNTIME_STATE, signature) != length(signature)) return { ok: false, error: 'unable to save WLOC runtime rule state' };
     fs.chmod(RUNTIME_STATE, 0o600);
     return { ok: true, changed: true };
-}
-function sync_ingress(configured) {
-    if (!resource_present(`nft list set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}`)) return { ok: false, error: 'AP interface set is missing' };
-    if (!quiet(`mkdir -p ${q(RUNTIME)}`)) return { ok: false, error: 'unable to create WLOC runtime directory' };
-    sequence++;
-    let path = `${RUNTIME}/ingress-set.${time()}.${sequence}.nft`;
-    let lines = [ `flush set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}` ];
-    for (let iface in configured.interfaces) push(lines, `add element ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET} { "${iface}" }`);
-    let content = join('\n', lines) + '\n';
-    let written = fs.writefile(path, content);
-    if (written == null || written != length(content)) { fs.unlink(path); return { ok: false, error: 'unable to stage WLOC ingress set transaction' }; }
-    fs.chmod(path, 0o600);
-    let applied = capture(`nft --file ${q(path)}`);
-    fs.unlink(path);
-    return applied.ok ? { ok: true } : { ok: false, error: trim(applied.output || '') || 'unable to refresh ingress set' };
 }
 function policy_rule_present(family, mark, mask, table) {
     let result = capture(`ip -${family} rule show`);
@@ -374,22 +374,37 @@ function sync_outbound(configured, route) {
     }
     return { ok: true, changed: true };
 }
+function location_state_text(targets) {
+    let values = [];
+    for (let target in targets.v4) push(values, target);
+    for (let target in targets.v6) push(values, target);
+    return length(values) ? join('\n', values) + '\n' : '';
+}
+function location_state_matches(targets) {
+    return `${fs.readfile(LOCATION_STATE) || ''}` == location_state_text(targets);
+}
 function reconcile_with_targets(port, target_args, save_targets) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
     let configured = configured_rules();
     if (!configured.ok) return configured;
     let targets = target_sets(target_args);
     if (!targets.ok) return targets;
+    let locations_changed = save_targets && !location_state_matches(targets);
+    if (save_targets) {
+        let saved = write_location_targets(targets);
+        if (!saved.ok) return saved;
+    }
+    if (locations_changed || !firewall_sets_match(configured, targets)) {
+        let refreshed = run_firewall('refresh-runtime');
+        if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render dynamic sets'}` };
+        if (!firewall_sets_match(configured, targets)) return { ok: false, error: 'firewall placeholder refresh did not apply the expected dynamic sets' };
+    }
     let route = run_routing('apply-effective');
     if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
     let runtime = sync_runtime(configured, targets);
     if (!runtime.ok) return { ok: false, error: `runtime rule reconciliation failed: ${runtime.error}` };
     let outbound = sync_outbound(configured, route);
     if (!outbound.ok) return { ok: false, error: `outbound reconciliation failed: ${outbound.error}` };
-    if (save_targets) {
-        let saved = write_location_targets(targets);
-        if (!saved.ok) return saved;
-    }
     return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: length(targets.v4) + length(targets.v6) };
 }
 function reconcile(port, target_args) {
@@ -398,6 +413,8 @@ function reconcile(port, target_args) {
 }
 function bootstrap(port) {
     fs.unlink(LOCATION_STATE);
+    let refreshed = run_firewall('refresh-runtime');
+    if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to clear dynamic location sets'}` };
     return reconcile_with_targets(port, [], false);
 }
 function cleanup(reset) {
@@ -423,10 +440,6 @@ function dispatch(command, args) {
     if (command == 'reconcile') return reconcile(args[0], slice(args, 1));
     if (command == 'cleanup') return cleanup(false);
     if (command == 'reset') return cleanup(true);
-    if (command == 'sync-ingress') {
-        let configured = configured_rules();
-        return configured.ok ? sync_ingress(configured) : configured;
-    }
     return { ok: false, error: `unsupported rules command: ${command}` };
 }
 

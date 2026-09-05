@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { cursor } from 'uci';
 
 const RUNTIME = '/var/run/wloc';
+const LOCATION_STATE = `${RUNTIME}/location.targets`;
 const SOURCE = '/etc/wloc/firewall.nft';
 const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
@@ -307,16 +308,64 @@ function listen_port() {
         return `${ctx.get('wloc', 'main', 'listen_port') || '61520'}`;
     } catch (e) { return '61520'; }
 }
+function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
+function valid_ipv4(value) {
+    let fields = split(`${value ?? ''}`, '.');
+    if (length(fields) != 4) return false;
+    for (let field in fields)
+        if (!match(field, /^[0-9]{1,3}$/) || int(field) < 0 || int(field) > 255) return false;
+    return true;
+}
+function configured_ap_interfaces() {
+    let values = [], seen = {}, error = null;
+    try {
+        let ctx = cursor();
+        ctx.foreach('wloc', 'wifi', function(section) {
+            if (error) return;
+            let enabled = section.enabled == null ? true : (`${section.enabled}` == '1' || section.enabled === true);
+            if (!enabled) return;
+            let iface = `${section.iface || ''}`;
+            if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
+            if (!seen[iface]) { seen[iface] = true; push(values, `"${iface}"`); }
+        });
+    } catch (e) { return { ok: false, error: `${e}` }; }
+    return error ? { ok: false, error } : { ok: true, values };
+}
+function runtime_location_targets() {
+    let raw = read_text(LOCATION_STATE);
+    if (!raw) return { ok: true, v4: [], v6: [] };
+    let v4 = [], v6 = [], seen = {};
+    for (let line in split(raw, /\r?\n/)) {
+        let value = trim(line || '');
+        if (!value) continue;
+        let family = null;
+        if (valid_ipv4(value)) family = '4';
+        else if (index(value, ':') >= 0 && match(value, /^[0-9A-Fa-f:]+$/)) family = '6';
+        else return { ok: false, error: `invalid runtime location target: ${value}` };
+        let key = `${family}:${lc(value)}`;
+        if (seen[key]) continue;
+        seen[key] = true;
+        push(family == '4' ? v4 : v6, value);
+    }
+    return { ok: true, v4, v6 };
+}
 function compile_runtime(raw) {
     raw = normalize(raw);
     let port_text = listen_port();
     if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
     let port = int(port_text);
     if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
+    let interfaces = configured_ap_interfaces();
+    if (!interfaces.ok) return interfaces;
+    let locations = runtime_location_targets();
+    if (!locations.ok) return locations;
     let compiled = replace(raw, /%port%/g, `${port}`);
-    compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
-    compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
-    compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
+    if (length(interfaces.values)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', interfaces.values));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
+    if (length(locations.v4)) compiled = replace(compiled, /%location_ipv4%/g, join(', ', locations.v4));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
+    if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%location_ipv4%/g, '');
     compiled = replace(compiled, /%location_ipv6%/g, '');
@@ -431,6 +480,17 @@ function apply(raw) {
         recovering, warning, applied_config: checked.config, applied_path: APPLIED
     };
 }
+function refresh_runtime() {
+    let raw = read_text(APPLIED);
+    if (raw == null) return { ok: false, error: 'The applied firewall snapshot is unavailable.' };
+    let checked = prepare(raw);
+    if (!checked.ok) return { ok: false, error: checked.detail || checked.error || 'Unable to render the WLOC firewall.' };
+    let loaded = run_transaction(transaction(managed_tables(), checked.compiled, checked.tables));
+    if (!loaded.ok) return { ok: false, error: loaded.detail || 'Unable to refresh the WLOC firewall.' };
+    for (let spec in checked.tables)
+        if (!table_active(spec)) return { ok: false, error: `missing runtime table ${spec.family} ${spec.name}` };
+    return { ok: true, refreshed: true };
+}
 function save(raw) {
     let checked = prepare(raw);
     if (!checked.ok) return { ok: false, valid: false, error: 'The Firewall file could not be saved.', detail: checked.detail || checked.error };
@@ -467,6 +527,7 @@ function dispatch(command, args) {
     if (command == 'read') return read_current();
     if (command == 'active') return active();
     if (command == 'remove-runtime') return remove_runtime();
+    if (command == 'refresh-runtime') return refresh_runtime();
     if (command == 'validate-file' || command == 'apply-file' || command == 'save-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;
