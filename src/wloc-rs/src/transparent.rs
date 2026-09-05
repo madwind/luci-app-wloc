@@ -22,10 +22,12 @@ const PEER_CACHE_MAX: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DNS_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const UDP_DISPATCH_LIMIT: usize = 64;
-const UDP_SESSION_MAX: usize = 64;
-const UDP_SESSION_QUEUE: usize = 2;
-const UDP_REPLY_SOCKET_MAX: usize = 64;
+const UDP_DISPATCH_LIMIT: usize = 256;
+const DNS_DISPATCH_LIMIT: usize = 32;
+const UDP_ASSOCIATION_MAX: usize = 256;
+const UDP_ASSOCIATION_QUEUE: usize = 64;
+const UDP_REPLY_SOCKET_MAX: usize = 256;
+const UDP_REPLY_SOCKET_TTL: Duration = Duration::from_secs(60);
 const UDP_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const DOH_POOL_MAX: usize = 64;
 const DOH_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -36,8 +38,8 @@ const IP_RECVORIGDSTADDR: libc::c_int = 20;
 const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
 
 static DOH_GENERATION: AtomicU64 = AtomicU64::new(1);
+static UDP_ASSOCIATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-type UdpReplySockets = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>;
 type UdpErrorLog = Arc<Mutex<Instant>>;
 
 #[derive(Clone)]
@@ -71,15 +73,30 @@ struct PeerCacheEntry {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UdpSessionKey {
+struct UdpAssociationKey {
     client: SocketAddr,
-    destination: SocketAddr,
     rule_id: String,
 }
 
+struct UdpAssociationEntry {
+    generation: u64,
+    sender: mpsc::Sender<UdpRequest>,
+    last_used: Instant,
+}
+
+type UdpAssociations = Arc<Mutex<HashMap<UdpAssociationKey, UdpAssociationEntry>>>;
+
 struct UdpRequest {
+    destination: SocketAddr,
     payload: Vec<u8>,
 }
+
+struct UdpReplySocketEntry {
+    socket: Arc<UdpSocket>,
+    last_used: Instant,
+}
+
+type UdpReplySockets = Arc<Mutex<HashMap<SocketAddr, UdpReplySocketEntry>>>;
 
 struct DnsQuestion {
     id: u16,
@@ -212,8 +229,9 @@ pub struct TransparentProxy {
     dhcp_leases_path: PathBuf,
     peer_cache: Arc<Mutex<HashMap<IpAddr, PeerCacheEntry>>>,
     network_source: HostapdNetworkSource,
-    udp_sessions: Arc<Mutex<HashMap<UdpSessionKey, mpsc::Sender<UdpRequest>>>>,
+    udp_associations: UdpAssociations,
     udp_dispatch: Arc<Semaphore>,
+    dns_dispatch: Arc<Semaphore>,
     udp_reply_sockets: UdpReplySockets,
     udp_error_log: UdpErrorLog,
     doh_pool: DohPool,
@@ -235,8 +253,9 @@ impl TransparentProxy {
                 .unwrap_or_else(|| PathBuf::from("/tmp/dhcp.leases")),
             peer_cache: Arc::new(Mutex::new(HashMap::new())),
             network_source: HostapdNetworkSource::new(),
-            udp_sessions: Arc::new(Mutex::new(HashMap::new())),
+            udp_associations: Arc::new(Mutex::new(HashMap::new())),
             udp_dispatch: Arc::new(Semaphore::new(UDP_DISPATCH_LIMIT)),
+            dns_dispatch: Arc::new(Semaphore::new(DNS_DISPATCH_LIMIT)),
             udp_reply_sockets: Arc::new(Mutex::new(HashMap::new())),
             udp_error_log: Arc::new(Mutex::new(log_start)),
             doh_pool: Arc::new(Mutex::new(HashMap::new())),
@@ -297,23 +316,13 @@ impl TransparentProxy {
     pub async fn handle_tcp(&self, mut client: TcpStream) -> Result<(), String> {
         let peer = client.peer_addr().map_err(io_message)?;
         let destination = client.local_addr().map_err(io_message)?;
-        let rule = match self.target_for(peer.ip()).await {
-            Ok(rule) => rule,
-            Err(error) => {
-                eprintln!(
-                    "wlocd: transparent_rule_lookup=failed client={peer} destination={destination} action=direct error={error}"
-                );
-                None
-            }
-        };
-        let rule_id = rule
-            .as_ref()
-            .map(|rule| rule.id.clone())
-            .unwrap_or_else(|| "direct".to_owned());
-        let outbound = rule
-            .as_ref()
-            .map(|rule| rule.outbound.clone())
-            .unwrap_or(OutboundProxy::Direct);
+        client.set_nodelay(true).map_err(io_message)?;
+        let rule = self
+            .target_for(peer.ip())
+            .await?
+            .ok_or_else(|| format!("no matching WLOC rule for client {peer}"))?;
+        let rule_id = rule.id;
+        let outbound = rule.outbound;
 
         if destination.port() == 53 {
             return handle_dns_tcp(
@@ -349,14 +358,9 @@ impl TransparentProxy {
         };
         let mut buffer = vec![0_u8; 65_535];
         loop {
-            let permit = Arc::clone(&self.udp_dispatch)
-                .acquire_owned()
-                .await
-                .map_err(|_| io::Error::other("UDP dispatch limiter closed"))?;
             let (size, client, destination) = match recv_original_datagram(&socket, family, &mut buffer).await {
                 Ok(packet) => packet,
                 Err(error) => {
-                    drop(permit);
                     if error_log_allowed(&self.udp_error_log).await {
                         eprintln!(
                             "wlocd: udp_receive=failed family={} recovery=continue error={error}",
@@ -364,6 +368,22 @@ impl TransparentProxy {
                         );
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
+            let limiter = if destination.port() == 53 {
+                Arc::clone(&self.dns_dispatch)
+            } else {
+                Arc::clone(&self.udp_dispatch)
+            };
+            let permit = match limiter.try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if error_log_allowed(&self.udp_error_log).await {
+                        eprintln!(
+                            "wlocd: udp_dispatch=full client={client} destination={destination} recovery=drop"
+                        );
+                    }
                     continue;
                 }
             };
@@ -391,21 +411,12 @@ impl TransparentProxy {
         destination: SocketAddr,
         payload: Vec<u8>,
     ) -> Result<(), String> {
-        let rule = match self.target_for(client.ip()).await {
-            Ok(rule) => rule,
-            Err(error) => {
-                if error_log_allowed(&self.udp_error_log).await {
-                    eprintln!(
-                        "wlocd: transparent_rule_lookup=failed client={client} destination={destination} action=direct error={error}"
-                    );
-                }
-                None
-            }
-        };
-        let (rule_id, outbound) = match rule {
-            Some(rule) => (rule.id, rule.outbound),
-            None => ("direct".to_owned(), OutboundProxy::Direct),
-        };
+        let rule = self
+            .target_for(client.ip())
+            .await?
+            .ok_or_else(|| format!("no matching WLOC rule for client {client}"))?;
+        let rule_id = rule.id;
+        let outbound = rule.outbound;
 
         if destination.port() == 53 {
             let debug = if self.debug_log {
@@ -449,58 +460,92 @@ impl TransparentProxy {
             return Ok(());
         }
 
-        let key = UdpSessionKey {
-            client,
+        let key = UdpAssociationKey { client, rule_id };
+        let mut request = UdpRequest {
             destination,
-            rule_id,
+            payload,
         };
-        let mut request = UdpRequest { payload };
 
         for _ in 0..2 {
-            let sender = {
-                let mut sessions = self.udp_sessions.lock().await;
-                if let Some(sender) = sessions.get(&key) {
-                    sender.clone()
+            let (sender, generation) = {
+                let mut associations = self.udp_associations.lock().await;
+                let now = Instant::now();
+                if let Some(entry) = associations.get_mut(&key) {
+                    entry.last_used = now;
+                    (entry.sender.clone(), entry.generation)
                 } else {
-                    if sessions.len() >= UDP_SESSION_MAX {
-                        return Err("UDP session limit reached".into());
+                    if associations.len() >= UDP_ASSOCIATION_MAX {
+                        if let Some(oldest) = associations
+                            .iter()
+                            .min_by_key(|(_, entry)| entry.last_used)
+                            .map(|(key, _)| key.clone())
+                        {
+                            associations.remove(&oldest);
+                        }
                     }
-                    let (sender, receiver) = mpsc::channel(UDP_SESSION_QUEUE);
-                    sessions.insert(key.clone(), sender.clone());
-                    let session_key = key.clone();
-                    let sessions = Arc::clone(&self.udp_sessions);
-                    let session_outbound = outbound.clone();
+                    let generation = UDP_ASSOCIATION_GENERATION.fetch_add(1, Ordering::Relaxed);
+                    let (sender, receiver) = mpsc::channel(UDP_ASSOCIATION_QUEUE);
+                    associations.insert(
+                        key.clone(),
+                        UdpAssociationEntry {
+                            generation,
+                            sender: sender.clone(),
+                            last_used: now,
+                        },
+                    );
+                    let association_key = key.clone();
+                    let associations = Arc::clone(&self.udp_associations);
+                    let association_outbound = outbound.clone();
                     let reply_sockets = Arc::clone(&self.udp_reply_sockets);
                     let error_log = Arc::clone(&self.udp_error_log);
                     tokio::spawn(async move {
-                        let result = run_udp_session(
+                        let result = run_udp_association(
                             client,
-                            destination,
-                            session_outbound,
+                            association_outbound,
                             reply_sockets,
                             receiver,
                         )
                         .await;
-                        sessions.lock().await.remove(&session_key);
+                        remove_udp_association(&associations, &association_key, generation).await;
                         if let Err(error) = result {
                             if error_log_allowed(&error_log).await {
                                 eprintln!(
-                                    "wlocd: udp_session=failed client={client} destination={destination} error={error}"
+                                    "wlocd: udp_association=failed client={client} rule={} error={error}",
+                                    association_key.rule_id
                                 );
                             }
                         }
                     });
-                    sender
+                    (sender, generation)
                 }
             };
 
-            match sender.send(request).await {
+            match sender.try_send(request) {
                 Ok(()) => return Ok(()),
-                Err(error) => request = error.0,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    return Err("UDP association queue full".into());
+                }
+                Err(mpsc::error::TrySendError::Closed(returned)) => {
+                    request = returned;
+                    remove_udp_association(&self.udp_associations, &key, generation).await;
+                }
             }
-            self.udp_sessions.lock().await.remove(&key);
         }
         Err("unable to queue UDP datagram".into())
+    }
+}
+
+async fn remove_udp_association(
+    associations: &UdpAssociations,
+    key: &UdpAssociationKey,
+    generation: u64,
+) {
+    let mut associations = associations.lock().await;
+    if associations
+        .get(key)
+        .is_some_and(|entry| entry.generation == generation)
+    {
+        associations.remove(key);
     }
 }
 
@@ -1221,39 +1266,26 @@ fn recv_original_datagram_v6_now(
     Ok((size as usize, client, destination))
 }
 
-async fn run_udp_session(
+async fn run_udp_association(
     client: SocketAddr,
-    upstream_destination: SocketAddr,
     outbound: OutboundProxy,
     reply_sockets: UdpReplySockets,
     receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
     match outbound {
-        OutboundProxy::Direct => {
-            run_direct_udp_session(client, upstream_destination, reply_sockets, receiver).await
-        }
+        OutboundProxy::Direct => run_direct_udp_association(client, reply_sockets, receiver).await,
         OutboundProxy::Socks5 { host, port } => {
-            run_socks_udp_session(
-                client,
-                upstream_destination,
-                &host,
-                port,
-                reply_sockets,
-                receiver,
-            )
-            .await
+            run_socks_udp_association(client, &host, port, reply_sockets, receiver).await
         }
     }
 }
 
-async fn run_direct_udp_session(
+async fn run_direct_udp_association(
     client: SocketAddr,
-    upstream_destination: SocketAddr,
     reply_sockets: UdpReplySockets,
     mut receiver: mpsc::Receiver<UdpRequest>,
 ) -> Result<(), String> {
-    let upstream = UdpSocket::bind(unspecified_for(upstream_destination)).await.map_err(io_message)?;
-    upstream.connect(upstream_destination).await.map_err(io_message)?;
+    let upstream = UdpSocket::bind(unspecified_for(client)).await.map_err(io_message)?;
     let mut buffer = vec![0_u8; 65_535];
     let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -1262,12 +1294,12 @@ async fn run_direct_udp_session(
         tokio::select! {
             request = receiver.recv() => {
                 let Some(request) = request else { return Ok(()); };
-                upstream.send(&request.payload).await.map_err(io_message)?;
+                upstream.send_to(&request.payload, request.destination).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
-            response = upstream.recv(&mut buffer) => {
-                let size = response.map_err(io_message)?;
-                send_spoofed_udp(&reply_sockets, upstream_destination, client, &buffer[..size]).await.map_err(io_message)?;
+            response = upstream.recv_from(&mut buffer) => {
+                let (size, source) = response.map_err(io_message)?;
+                send_spoofed_udp(&reply_sockets, source, client, &buffer[..size]).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
             _ = &mut idle => return Ok(()),
@@ -1275,9 +1307,8 @@ async fn run_direct_udp_session(
     }
 }
 
-async fn run_socks_udp_session(
+async fn run_socks_udp_association(
     client: SocketAddr,
-    upstream_destination: SocketAddr,
     host: &str,
     port: u16,
     reply_sockets: UdpReplySockets,
@@ -1288,6 +1319,7 @@ async fn run_socks_udp_session(
         .map_err(|_| "SOCKS5 UDP association timed out".to_owned())??;
     let _control = control;
     let upstream = UdpSocket::bind(unspecified_for(relay)).await.map_err(io_message)?;
+    upstream.connect(relay).await.map_err(io_message)?;
     let mut buffer = vec![0_u8; 65_535];
     let idle = tokio::time::sleep(UDP_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -1296,15 +1328,13 @@ async fn run_socks_udp_session(
         tokio::select! {
             request = receiver.recv() => {
                 let Some(request) = request else { return Ok(()); };
-                let packet = encode_socks_udp(upstream_destination, &request.payload);
-                upstream.send_to(&packet, relay).await.map_err(io_message)?;
+                let packet = encode_socks_udp(request.destination, &request.payload);
+                upstream.send(&packet).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
-            response = upstream.recv_from(&mut buffer) => {
-                let (size, sender) = response.map_err(io_message)?;
-                if sender != relay { continue; }
+            response = upstream.recv(&mut buffer) => {
+                let size = response.map_err(io_message)?;
                 let (source, payload) = decode_socks_udp(&buffer[..size])?;
-                if source != upstream_destination { continue; }
                 send_spoofed_udp(&reply_sockets, source, client, payload).await.map_err(io_message)?;
                 idle.as_mut().reset(tokio::time::Instant::now() + UDP_IDLE_TIMEOUT);
             }
@@ -1315,6 +1345,7 @@ async fn run_socks_udp_session(
 
 async fn socks5_udp_associate(host: &str, port: u16) -> Result<(TcpStream, SocketAddr), String> {
     let mut control = TcpStream::connect((host, port)).await.map_err(io_message)?;
+    control.set_nodelay(true).map_err(io_message)?;
     control.write_all(&[0x05, 0x01, 0x00]).await.map_err(io_message)?;
     let mut greeting = [0_u8; 2];
     control.read_exact(&mut greeting).await.map_err(io_message)?;
@@ -1438,21 +1469,34 @@ async fn send_spoofed_udp(
 
     let socket = {
         let mut sockets = cache.lock().await;
-        if let Some(socket) = sockets.get(&source) {
-            Arc::clone(socket)
+        let now = Instant::now();
+        sockets.retain(|_, entry| {
+            now.duration_since(entry.last_used) < UDP_REPLY_SOCKET_TTL
+                || Arc::strong_count(&entry.socket) > 1
+        });
+        if let Some(entry) = sockets.get_mut(&source) {
+            entry.last_used = now;
+            Arc::clone(&entry.socket)
         } else {
             if sockets.len() >= UDP_REPLY_SOCKET_MAX {
-                let removable = sockets
+                if let Some(oldest) = sockets
                     .iter()
-                    .find(|(_, socket)| Arc::strong_count(socket) == 1)
-                    .map(|(address, _)| *address);
-                if let Some(address) = removable {
-                    sockets.remove(&address);
+                    .filter(|(_, entry)| Arc::strong_count(&entry.socket) == 1)
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(address, _)| *address)
+                {
+                    sockets.remove(&oldest);
                 }
             }
             let socket = Arc::new(create_spoofed_udp_socket(source)?);
             if sockets.len() < UDP_REPLY_SOCKET_MAX {
-                sockets.insert(source, Arc::clone(&socket));
+                sockets.insert(
+                    source,
+                    UdpReplySocketEntry {
+                        socket: Arc::clone(&socket),
+                        last_used: now,
+                    },
+                );
             }
             socket
         }
@@ -1464,9 +1508,14 @@ async fn send_spoofed_udp(
 
 async fn connect_tcp_outbound(outbound: &OutboundProxy, destination: SocketAddr) -> Result<TcpStream, String> {
     match outbound {
-        OutboundProxy::Direct => TcpStream::connect(destination).await.map_err(io_message),
+        OutboundProxy::Direct => {
+            let stream = TcpStream::connect(destination).await.map_err(io_message)?;
+            stream.set_nodelay(true).map_err(io_message)?;
+            Ok(stream)
+        }
         OutboundProxy::Socks5 { host, port } => {
             let mut stream = TcpStream::connect((host.as_str(), *port)).await.map_err(io_message)?;
+            stream.set_nodelay(true).map_err(io_message)?;
             socks5_connect(&mut stream, destination).await?;
             Ok(stream)
         }
