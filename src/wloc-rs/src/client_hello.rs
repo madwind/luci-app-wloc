@@ -1,6 +1,8 @@
 use tokio::net::TcpStream;
 
+const INITIAL_CLIENT_HELLO_BUFFER: usize = 4 * 1024;
 const MAX_CLIENT_HELLO: usize = 64 * 1024;
+const CLIENT_HELLO_POLL_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Debug)]
 pub enum HelloError {
@@ -159,8 +161,8 @@ pub fn parse_sni(bytes: &[u8]) -> Result<Option<String>, HelloError> {
 }
 
 pub async fn peek_sni(stream: &TcpStream) -> Result<Option<String>, HelloError> {
-    let mut buf = vec![0_u8; MAX_CLIENT_HELLO + 5];
-    for _ in 0..20 {
+    let mut buf = vec![0_u8; INITIAL_CLIENT_HELLO_BUFFER];
+    loop {
         let count = stream
             .peek(&mut buf)
             .await
@@ -171,8 +173,12 @@ pub async fn peek_sni(stream: &TcpStream) -> Result<Option<String>, HelloError> 
             return result;
         }
         match parse_sni(&buf[..count]) {
+            Err(HelloError::Incomplete) if count == buf.len() && buf.len() < MAX_CLIENT_HELLO + 5 => {
+                let next = (buf.len() * 2).min(MAX_CLIENT_HELLO + 5);
+                buf.resize(next, 0);
+            }
             Err(HelloError::Incomplete) => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await
+                tokio::time::sleep(CLIENT_HELLO_POLL_DELAY).await;
             }
             result => {
                 log_peek_result(stream, &result);
@@ -180,7 +186,4 @@ pub async fn peek_sni(stream: &TcpStream) -> Result<Option<String>, HelloError> 
             }
         }
     }
-    let result = Err(HelloError::Incomplete);
-    log_peek_result(stream, &result);
-    result
 }
