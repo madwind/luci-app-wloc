@@ -70,48 +70,6 @@ chmod 0755 \
 chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {
-	. /lib/functions.sh
-	migrate_outbound_index=0
-	migrate_outbound_changed=0
-	migrate_outbound_rule() {
-		local section="$$1" outbound legacy_type legacy_host legacy_port tproxy_port tproxy_mark port mark
-		config_get outbound "$$section" outbound ''
-		config_get legacy_type "$$section" proxy_type ''
-		config_get legacy_host "$$section" proxy_host ''
-		config_get legacy_port "$$section" proxy_port ''
-		config_get tproxy_port "$$section" tproxy_port ''
-		config_get tproxy_mark "$$section" tproxy_mark ''
-
-		if [ -z "$$outbound" ]; then
-			case "$$legacy_type" in
-				socks5)
-					port=$$((12345 + migrate_outbound_index))
-					mark=$$((1 | ((migrate_outbound_index & 255) << 8) | ((migrate_outbound_index >> 8) << 17)))
-					/sbin/uci -q set "wloc.$$section.outbound=tproxy"
-					[ -n "$$tproxy_port" ] || /sbin/uci -q set "wloc.$$section.tproxy_port=$$port"
-					[ -n "$$tproxy_mark" ] || /sbin/uci -q set "wloc.$$section.tproxy_mark=0x$$(printf '%x' "$$mark")"
-					;;
-				direct|'')
-					/sbin/uci -q set "wloc.$$section.outbound=direct"
-					;;
-			esac
-			migrate_outbound_changed=1
-		fi
-
-		if [ -n "$$legacy_type$$legacy_host$$legacy_port" ]; then
-			/sbin/uci -q delete "wloc.$$section.proxy_type"
-			/sbin/uci -q delete "wloc.$$section.proxy_host"
-			/sbin/uci -q delete "wloc.$$section.proxy_port"
-			migrate_outbound_changed=1
-		fi
-		migrate_outbound_index=$$((migrate_outbound_index + 1))
-	}
-	config_load wloc
-	config_foreach migrate_outbound_rule wifi
-	if [ "$$migrate_outbound_changed" -eq 1 ]; then
-		/sbin/uci -q commit wloc || logger -t wloc "cannot migrate legacy outbound configuration"
-	fi
-
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
