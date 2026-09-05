@@ -2,6 +2,7 @@ table bridge wloc {
     set target_ingress_interfaces {
         type ifname
         flags timeout
+        elements = { %target_ingress_interfaces% }
     }
 
     chain mark_prerouting {
@@ -30,6 +31,8 @@ table inet wloc {
     chain outbound_prerouting {
         type filter hook prerouting priority mangle - 3;
         policy accept;
+
+        %outbound_tproxy_rules%
     }
 
     chain transparent_prerouting {
