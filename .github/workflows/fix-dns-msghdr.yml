@@ -1,0 +1,44 @@
+name: Fix DNS msghdr type
+
+on:
+  push:
+    branches:
+      - fix-dns-msghdr-r68-run
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build clean commits
+        shell: bash
+        run: |
+          set -eu
+          git fetch origin master
+          git checkout -B fix-dns-msghdr-r68 origin/master
+          git config user.name "IvonWei"
+          git config user.email "madwind.cn@gmail.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/wloc-rs/src/dns.rs')
+          text = path.read_text()
+          old = 'message.msg_controllen = control.len();'
+          new = 'message.msg_controllen = control.len() as _;'
+          if text.count(old) != 2:
+              raise SystemExit(f'expected 2 msg_controllen assignments, got {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          git add src/wloc-rs/src/dns.rs
+          git commit -m 'Fix DNS control buffer length type'
+          sed -i 's/^WLOC_RELEASE=67$/WLOC_RELEASE=68/' version.env
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r68'
+          git push --force origin HEAD:fix-dns-msghdr-r68
