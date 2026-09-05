@@ -1,0 +1,291 @@
+name: Firewall set placeholders
+
+on:
+  push:
+    branches:
+      - firewall-set-placeholders-r65
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply firewall placeholder rendering
+        shell: bash
+        run: |
+          set -eu
+          git fetch origin master
+          git checkout -B firewall-set-placeholders-r65 origin/master
+          python3 - <<'PY'
+          from pathlib import Path
+
+          firewall_path = Path('root/usr/libexec/wloc/firewall.uc')
+          firewall = firewall_path.read_text()
+          firewall = firewall.replace(
+              "const RUNTIME = '/var/run/wloc';\n",
+              "const RUNTIME = '/var/run/wloc';\nconst LOCATION_STATE = `${RUNTIME}/location.targets`;\n",
+              1,
+          )
+
+          old_compile = r'''function compile_runtime(raw) {
+              raw = normalize(raw);
+              let port_text = listen_port();
+              if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
+              let port = int(port_text);
+              if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
+              let compiled = replace(raw, /%port%/g, `${port}`);
+              compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
+              compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
+              compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
+              compiled = replace(compiled, /%ap_interfaces%/g, '');
+              compiled = replace(compiled, /%location_ipv4%/g, '');
+              compiled = replace(compiled, /%location_ipv6%/g, '');
+              compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, '');
+              compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, '');
+              compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
+              return { ok: true, source: raw, compiled };
+          }
+          '''
+          new_compile = r'''function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
+          function valid_ipv4(value) {
+              let fields = split(`${value ?? ''}`, '.');
+              if (length(fields) != 4) return false;
+              for (let field in fields)
+                  if (!match(field, /^[0-9]{1,3}$/) || int(field) < 0 || int(field) > 255) return false;
+              return true;
+          }
+          function configured_ap_interfaces() {
+              let values = [], seen = {}, error = null;
+              try {
+                  let ctx = cursor();
+                  ctx.foreach('wloc', 'wifi', function(section) {
+                      if (error) return;
+                      let enabled = section.enabled == null ? true : (`${section.enabled}` == '1' || section.enabled === true);
+                      if (!enabled) return;
+                      let iface = `${section.iface || ''}`;
+                      if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
+                      if (!seen[iface]) { seen[iface] = true; push(values, `"${iface}"`); }
+                  });
+              } catch (e) { return { ok: false, error: `${e}` }; }
+              return error ? { ok: false, error } : { ok: true, values };
+          }
+          function runtime_location_targets() {
+              let raw = read_text(LOCATION_STATE);
+              if (!raw) return { ok: true, v4: [], v6: [] };
+              let v4 = [], v6 = [], seen = {};
+              for (let line in split(raw, /\r?\n/)) {
+                  let value = trim(line || '');
+                  if (!value) continue;
+                  let family = null;
+                  if (valid_ipv4(value)) family = '4';
+                  else if (index(value, ':') >= 0 && match(value, /^[0-9A-Fa-f:]+$/)) family = '6';
+                  else return { ok: false, error: `invalid runtime location target: ${value}` };
+                  let key = `${family}:${lc(value)}`;
+                  if (seen[key]) continue;
+                  seen[key] = true;
+                  push(family == '4' ? v4 : v6, value);
+              }
+              return { ok: true, v4, v6 };
+          }
+          function compile_runtime(raw) {
+              raw = normalize(raw);
+              let port_text = listen_port();
+              if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
+              let port = int(port_text);
+              if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
+              let interfaces = configured_ap_interfaces();
+              if (!interfaces.ok) return interfaces;
+              let locations = runtime_location_targets();
+              if (!locations.ok) return locations;
+              let compiled = replace(raw, /%port%/g, `${port}`);
+              if (length(interfaces.values)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', interfaces.values));
+              else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
+              if (length(locations.v4)) compiled = replace(compiled, /%location_ipv4%/g, join(', ', locations.v4));
+              else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
+              if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
+              else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
+              compiled = replace(compiled, /%ap_interfaces%/g, '');
+              compiled = replace(compiled, /%location_ipv4%/g, '');
+              compiled = replace(compiled, /%location_ipv6%/g, '');
+              compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, '');
+              compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, '');
+              compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
+              return { ok: true, source: raw, compiled };
+          }
+          '''
+          if old_compile not in firewall:
+              raise SystemExit('firewall compile_runtime block not found')
+          firewall = firewall.replace(old_compile, new_compile, 1)
+
+          marker = "function save(raw) {\n"
+          refresh = r'''function refresh_runtime() {
+              let raw = read_text(APPLIED);
+              if (raw == null) return { ok: false, error: 'The applied firewall snapshot is unavailable.' };
+              let checked = prepare(raw);
+              if (!checked.ok) return { ok: false, error: checked.detail || checked.error || 'Unable to render the WLOC firewall.' };
+              let loaded = run_transaction(transaction(managed_tables(), checked.compiled, checked.tables));
+              if (!loaded.ok) return { ok: false, error: loaded.detail || 'Unable to refresh the WLOC firewall.' };
+              for (let spec in checked.tables)
+                  if (!table_active(spec)) return { ok: false, error: `missing runtime table ${spec.family} ${spec.name}` };
+              return { ok: true, refreshed: true };
+          }
+          '''
+          if marker not in firewall:
+              raise SystemExit('firewall save marker not found')
+          firewall = firewall.replace(marker, refresh + marker, 1)
+          firewall = firewall.replace(
+              "    if (command == 'remove-runtime') return remove_runtime();\n",
+              "    if (command == 'remove-runtime') return remove_runtime();\n    if (command == 'refresh-runtime') return refresh_runtime();\n",
+              1,
+          )
+          firewall_path.write_text(firewall)
+
+          rules_path = Path('root/usr/libexec/wloc/rules.uc')
+          rules = rules_path.read_text()
+          rules = rules.replace(
+              "const ROUTING = '/usr/libexec/wloc/routing.uc';\n",
+              "const ROUTING = '/usr/libexec/wloc/routing.uc';\nconst FIREWALL = '/usr/libexec/wloc/firewall.uc';\n",
+              1,
+          )
+          rules = rules.replace(
+              "function run_routing(command) {\n    let result = capture(`/usr/bin/ucode ${q(ROUTING)} ${q(command)}`);\n    let parsed = parse_result(result.output || '');\n    if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'routing controller failed' };\n    return parsed;\n}\n",
+              "function run_routing(command) {\n    let result = capture(`/usr/bin/ucode ${q(ROUTING)} ${q(command)}`);\n    let parsed = parse_result(result.output || '');\n    if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'routing controller failed' };\n    return parsed;\n}\nfunction run_firewall(command) {\n    let result = capture(`/usr/bin/ucode ${q(FIREWALL)} ${q(command)}`);\n    let parsed = parse_result(result.output || '');\n    if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'firewall controller failed' };\n    return parsed;\n}\n",
+              1,
+          )
+
+          old_set_contains = r'''function set_contains(family, name, values) {
+              let result = capture(`nft list set ${family} ${TABLE} ${name}`);
+              if (!result.ok) return false;
+              for (let value in values) if (index(result.output || '', value) < 0) return false;
+              return true;
+          }
+          '''
+          new_set_contains = r'''function set_matches(family, name, values) {
+              let result = capture(`nft list set ${family} ${TABLE} ${name}`);
+              if (!result.ok) return false;
+              let found = match(result.output || '', /elements\s*=\s*\{([^}]*)\}/);
+              if (!found) return length(values) == 0;
+              let count = 0;
+              for (let item in split(found[1] || '', ',')) if (trim(item || '')) count++;
+              if (count != length(values)) return false;
+              for (let value in values) if (index(result.output || '', value) < 0) return false;
+              return true;
+          }
+          function firewall_sets_match(configured, targets) {
+              return set_matches(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)
+                  && set_matches('inet', LOCATION_SET4, targets.v4)
+                  && set_matches('inet', LOCATION_SET6, targets.v6);
+          }
+          '''
+          if old_set_contains not in rules:
+              raise SystemExit('rules set_contains block not found')
+          rules = rules.replace(old_set_contains, new_set_contains, 1)
+          rules = rules.replace(
+              "    if (!set_contains(BRIDGE_FAMILY, INGRESS_SET, configured.interfaces)) return false;\n    if (!set_contains('inet', LOCATION_SET4, targets.v4) || !set_contains('inet', LOCATION_SET6, targets.v6)) return false;\n",
+              "    if (!firewall_sets_match(configured, targets)) return false;\n",
+              1,
+          )
+
+          rules = rules.replace(
+              "    let lines = [\n        `flush set ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET}`,\n        `flush chain ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN}`,\n        `flush set inet ${TABLE} ${LOCATION_SET4}`,\n        `flush set inet ${TABLE} ${LOCATION_SET6}`,\n        `flush chain inet ${TABLE} ${AP_TPROXY_CHAIN}`\n    ];\n    for (let iface in configured.interfaces) push(lines, `add element ${BRIDGE_FAMILY} ${TABLE} ${INGRESS_SET} { \"${iface}\" }`);\n",
+              "    let lines = [\n        `flush chain ${BRIDGE_FAMILY} ${TABLE} ${AP_MARK_CHAIN}`,\n        `flush chain inet ${TABLE} ${AP_TPROXY_CHAIN}`\n    ];\n",
+              1,
+          )
+          rules = rules.replace(
+              "    for (let target in targets.v4) push(lines, `add element inet ${TABLE} ${LOCATION_SET4} { ${target} }`);\n    for (let target in targets.v6) push(lines, `add element inet ${TABLE} ${LOCATION_SET6} { ${target} }`);\n",
+              "",
+              1,
+          )
+
+          start = rules.find('function sync_ingress(configured) {')
+          end = rules.find('function policy_rule_present(', start)
+          if start < 0 or end < 0:
+              raise SystemExit('sync_ingress block not found')
+          rules = rules[:start] + rules[end:]
+
+          old_reconcile = r'''function reconcile_with_targets(port, target_args, save_targets) {
+              if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
+              let configured = configured_rules();
+              if (!configured.ok) return configured;
+              let targets = target_sets(target_args);
+              if (!targets.ok) return targets;
+              let route = run_routing('apply-effective');
+              if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
+              let runtime = sync_runtime(configured, targets);
+              if (!runtime.ok) return { ok: false, error: `runtime rule reconciliation failed: ${runtime.error}` };
+              let outbound = sync_outbound(configured, route);
+              if (!outbound.ok) return { ok: false, error: `outbound reconciliation failed: ${outbound.error}` };
+              if (save_targets) {
+                  let saved = write_location_targets(targets);
+                  if (!saved.ok) return saved;
+              }
+              return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: length(targets.v4) + length(targets.v6) };
+          }
+          function reconcile(port, target_args) {
+              let targets = length(target_args) ? target_args : read_location_targets();
+              return reconcile_with_targets(port, targets, length(target_args) > 0);
+          }
+          function bootstrap(port) {
+              fs.unlink(LOCATION_STATE);
+              return reconcile_with_targets(port, [], false);
+          }
+          '''
+          new_reconcile = r'''function reconcile_with_targets(port, target_args, save_targets) {
+              if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
+              let configured = configured_rules();
+              if (!configured.ok) return configured;
+              let targets = target_sets(target_args);
+              if (!targets.ok) return targets;
+              if (save_targets) {
+                  let saved = write_location_targets(targets);
+                  if (!saved.ok) return saved;
+              }
+              if (!firewall_sets_match(configured, targets)) {
+                  let refreshed = run_firewall('refresh-runtime');
+                  if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render dynamic sets'}` };
+                  if (!firewall_sets_match(configured, targets)) return { ok: false, error: 'firewall placeholder refresh did not apply the expected dynamic sets' };
+              }
+              let route = run_routing('apply-effective');
+              if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
+              let runtime = sync_runtime(configured, targets);
+              if (!runtime.ok) return { ok: false, error: `runtime rule reconciliation failed: ${runtime.error}` };
+              let outbound = sync_outbound(configured, route);
+              if (!outbound.ok) return { ok: false, error: `outbound reconciliation failed: ${outbound.error}` };
+              return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: length(targets.v4) + length(targets.v6) };
+          }
+          function reconcile(port, target_args) {
+              let targets = length(target_args) ? target_args : read_location_targets();
+              return reconcile_with_targets(port, targets, length(target_args) > 0);
+          }
+          function bootstrap(port) {
+              fs.unlink(LOCATION_STATE);
+              let refreshed = run_firewall('refresh-runtime');
+              if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to clear dynamic location sets'}` };
+              return reconcile_with_targets(port, [], false);
+          }
+          '''
+          if old_reconcile not in rules:
+              raise SystemExit('rules reconcile block not found')
+          rules = rules.replace(old_reconcile, new_reconcile, 1)
+          rules = rules.replace(
+              "    if (command == 'sync-ingress') {\n        let configured = configured_rules();\n        return configured.ok ? sync_ingress(configured) : configured;\n    }\n",
+              "",
+              1,
+          )
+          rules_path.write_text(rules)
+          PY
+
+          git diff --check
+          git add root/usr/libexec/wloc/firewall.uc root/usr/libexec/wloc/rules.uc
+          git commit -m 'Render dynamic sets from firewall placeholders'
+
+          sed -i 's/^WLOC_RELEASE=64$/WLOC_RELEASE=65/' version.env
+          git diff --check
+          git add version.env
+          git commit -m 'Bump WLOC release to r65'
+          git push --force origin HEAD:firewall-set-placeholders-r65
