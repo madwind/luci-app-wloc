@@ -26,6 +26,7 @@ const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 const GLOBAL_STREAM_LIMIT: usize = 2;
 const PEER_CACHE_TTL: Duration = Duration::from_secs(30);
 const PEER_CACHE_MAX: usize = 256;
+const H2_POOL_MAX: usize = 16;
 const UPSTREAM_TLS_ATTEMPTS: usize = 2;
 const UPSTREAM_REQUEST_ATTEMPTS: usize = 2;
 
@@ -142,6 +143,7 @@ struct H2Entry {
     sender: h2::client::SendRequest<Bytes>,
     upstream_ip: Option<IpAddr>,
     proxy_ip: Option<IpAddr>,
+    last_used: Instant,
 }
 
 #[derive(Clone)]
@@ -228,9 +230,11 @@ impl Proxy {
         let now = Instant::now();
         {
             let mut cache = self.peer_cache.lock().await;
-            cache.retain(|_, entry| entry.expires_at > now);
-            if let Some(entry) = cache.get(&peer).cloned() {
-                return Ok(Some(entry.identity));
+            if let Some(entry) = cache.get(&peer) {
+                if entry.expires_at > now {
+                    return Ok(Some(entry.identity.clone()));
+                }
+                cache.remove(&peer);
             }
         }
 
@@ -246,10 +250,14 @@ impl Proxy {
         };
 
         let mut cache = self.peer_cache.lock().await;
-        cache.retain(|_, entry| entry.expires_at > Instant::now());
         if cache.len() >= PEER_CACHE_MAX {
-            if let Some(key) = cache.keys().next().copied() {
-                cache.remove(&key);
+            if let Some(expired) = cache
+                .iter()
+                .find(|(_, entry)| entry.expires_at <= Instant::now())
+                .map(|(key, _)| *key)
+                .or_else(|| cache.keys().next().copied())
+            {
+                cache.remove(&expired);
             }
         }
         cache.insert(
@@ -290,6 +298,13 @@ impl Proxy {
                 .map(|access_point| access_point.iface.as_str()),
         )
         .cloned())
+    }
+
+    async fn h2_pool_entry(&self, key: &str) -> Option<H2Entry> {
+        let mut pool = self.h2_pool.lock().await;
+        let entry = pool.get_mut(key)?;
+        entry.last_used = Instant::now();
+        Some(entry.clone())
     }
 
     pub async fn handle(&self, stream: TcpStream) -> Result<(), ProxyError> {
@@ -500,8 +515,6 @@ impl Proxy {
             .map_err(|_| ProxyError::Protocol("stream_queue_timeout".into()))?
             .map_err(|_| ProxyError::Protocol("stream_limit_closed".into()))?;
 
-        let pool_key = outbound.pool_key(hostname);
-        let mut active_generation = None;
         let forward_result = tokio::select! {
             reset = std::future::poll_fn(|context| respond.poll_reset(context)) => {
                 let reason = match reset {
@@ -520,16 +533,12 @@ impl Proxy {
                     ip,
                     connection_id,
                     outbound,
-                    &mut active_generation,
                 ),
             ) => upstream,
         };
         let upstream = match forward_result {
             Ok(result) => result?,
             Err(_) => {
-                if let Some(generation) = active_generation {
-                    remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
-                }
                 return Err(ProxyError::Upstream("request_timeout".into()).with_domain(hostname));
             }
         };
@@ -637,7 +646,6 @@ impl Proxy {
         ip: IpAddr,
         connection_id: u32,
         outbound: &OutboundProxy,
-        active_generation: &mut Option<u64>,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
             .uri()
@@ -691,7 +699,6 @@ impl Proxy {
                     tls_sni,
                     &body,
                     outbound,
-                    active_generation,
                 )
                 .await;
             match result {
@@ -754,27 +761,20 @@ impl Proxy {
         hostname: &str,
         body: &[u8],
         outbound: &OutboundProxy,
-        active_generation: &mut Option<u64>,
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
         let pool_key = outbound.pool_key(hostname);
-        if let Some(entry) = self.h2_pool.lock().await.get(&pool_key).cloned() {
+        if let Some(entry) = self.h2_pool_entry(&pool_key).await {
             let upstream_ip = entry.upstream_ip;
             let proxy_ip = entry.proxy_ip;
-            *active_generation = Some(entry.generation);
             match entry.sender.ready().await {
                 Ok(sender) => {
-                    match exchange_h2(sender, method, uri, headers, hostname, body).await {
-                        Ok(response) => return Ok((response, "h2")),
-                        Err(error) => {
-                            remove_h2_generation(&self.h2_pool, &pool_key, entry.generation).await;
-                            *active_generation = None;
-                            return Err(error.with_target(hostname, upstream_ip, proxy_ip));
-                        }
-                    }
+                    return exchange_h2(sender, method, uri, headers, hostname, body)
+                        .await
+                        .map(|response| (response, "h2"))
+                        .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip));
                 }
                 Err(_) => {
                     remove_h2_generation(&self.h2_pool, &pool_key, entry.generation).await;
-                    *active_generation = None;
                 }
             }
         }
@@ -835,16 +835,28 @@ impl Proxy {
                         ProxyError::upstream_h2(error).with_target(hostname, upstream_ip, proxy_ip)
                     })?;
                 let generation = self.h2_generation.fetch_add(1, Ordering::Relaxed);
-                self.h2_pool.lock().await.insert(
-                    pool_key.clone(),
-                    H2Entry {
-                        generation,
-                        sender: sender.clone(),
-                        upstream_ip,
-                        proxy_ip,
-                    },
-                );
-                *active_generation = Some(generation);
+                {
+                    let mut pool = self.h2_pool.lock().await;
+                    if pool.len() >= H2_POOL_MAX && !pool.contains_key(&pool_key) {
+                        if let Some(oldest) = pool
+                            .iter()
+                            .min_by_key(|(_, entry)| entry.last_used)
+                            .map(|(key, _)| key.clone())
+                        {
+                            pool.remove(&oldest);
+                        }
+                    }
+                    pool.insert(
+                        pool_key.clone(),
+                        H2Entry {
+                            generation,
+                            sender: sender.clone(),
+                            upstream_ip,
+                            proxy_ip,
+                            last_used: Instant::now(),
+                        },
+                    );
+                }
                 let pool = Arc::clone(&self.h2_pool);
                 let driver_key = pool_key.clone();
                 tokio::spawn(async move {
@@ -855,30 +867,25 @@ impl Proxy {
                     Ok(sender) => sender,
                     Err(error) => {
                         remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
-                        *active_generation = None;
                         return Err(ProxyError::upstream_h2(error)
                             .with_target(hostname, upstream_ip, proxy_ip));
                     }
                 };
-                match exchange_h2(sender, method, uri, headers, hostname, body).await {
-                    Ok(response) => Ok((response, "h2")),
-                    Err(error) => {
-                        remove_h2_generation(&self.h2_pool, &pool_key, generation).await;
-                        *active_generation = None;
-                        Err(error)
-                    }
-                }
-            }
-            Some(b"http/1.1") | None => {
-                *active_generation = None;
-                crate::http1::exchange(tls, method, uri, headers, hostname, body)
+                exchange_h2(sender, method, uri, headers, hostname, body)
                     .await
-                    .map(|response| (response, "http/1.1"))
+                    .map(|response| (response, "h2"))
             }
-            _ => {
-                *active_generation = None;
-                Err(ProxyError::Upstream("unsupported_upstream_alpn".into()))
-            }
+            Some(b"http/1.1") | None => crate::http1::exchange(
+                tls,
+                method,
+                uri,
+                headers,
+                hostname,
+                body,
+            )
+            .await
+            .map(|response| (response, "http/1.1")),
+            _ => Err(ProxyError::Upstream("unsupported_upstream_alpn".into())),
         }
         .map_err(|error| error.with_target(hostname, upstream_ip, proxy_ip))
     }
