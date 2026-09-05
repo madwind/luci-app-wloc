@@ -22,6 +22,7 @@ const SCHEDULE = '17 4 * * 0';
 const SCHEDULE_MINUTE = 17;
 const SCHEDULE_HOUR = 4;
 const SCHEDULE_DOW = 0;
+const POST_ARMED_PENDING = 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.';
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -121,6 +122,14 @@ function wait_daemon_running() {
     }
     return false;
 }
+function wait_daemon_armed() {
+    for (let i = 0; i < 15; i++) {
+        if (!daemon_running()) return false;
+        if (daemon_armed()) return true;
+        system('sleep 1');
+    }
+    return daemon_armed();
+}
 function default_state() {
     return {
         kind: 'wloc', status: 'idle', phase: null, pid: null, started: null, finished: null,
@@ -158,6 +167,10 @@ function normalize_state(state) {
 }
 function status_result() {
     let state = normalize_state(read_state());
+    if (state.status == 'done' && state.post_check_error == POST_ARMED_PENDING && daemon_armed()) {
+        state.post_check_error = null;
+        save_state(state);
+    }
     return {
         ok: true,
         installed_version: state.installed_version || null,
@@ -263,8 +276,8 @@ function worker_update() {
             if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
                 quiet('/etc/init.d/wloc stop');
                 detail += ' WLOC did not remain running after the failed package install.';
-            } else if (!daemon_armed()) {
-                detail += ' WLOC restarted, but interception is not armed yet.';
+            } else if (!wait_daemon_armed()) {
+                detail += ' WLOC restarted, but interception did not become armed.';
             }
         }
         return fail_worker(state, `APK install failed: ${trim(detail)}`);
@@ -276,8 +289,8 @@ function worker_update() {
         if (!quiet('/etc/init.d/wloc start') || !wait_daemon_running()) {
             quiet('/etc/init.d/wloc stop');
             append_post_error(state, 'WLOC did not remain running after update; the service was left stopped.');
-        } else if (!daemon_armed()) {
-            append_post_error(state, 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.');
+        } else if (!wait_daemon_armed()) {
+            append_post_error(state, POST_ARMED_PENDING);
         }
     }
     state.installed_version = installed_version() || state.installed_version;
