@@ -20,12 +20,14 @@ jobs:
         run: |
           set -eu
           cp .github/patch-dns-target-refresh.py /tmp/patch-dns-target-refresh.py
+          cp .github/patch-firewall-apply.py /tmp/patch-firewall-apply.py
           sed -i 's/re.subn(pattern, replacement, text, count=1, flags=re.S)/re.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)/' /tmp/patch-dns-target-refresh.py
           git fetch origin master
           git checkout -B dns-target-refresh-r66 origin/master
           git config user.name "IvonWei"
           git config user.email "madwind.cn@gmail.com"
           python3 /tmp/patch-dns-target-refresh.py
+          python3 /tmp/patch-firewall-apply.py
           git diff --check
           git add root/usr/libexec/wloc/firewall.uc root/usr/libexec/wloc/rules.uc src/wloc-rs/src/main.rs src/wloc-rs/src/resolver.rs
           git commit -m 'Refresh location targets only when DNS changes'
