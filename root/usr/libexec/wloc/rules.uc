@@ -13,6 +13,7 @@ const TABLE = 'wloc';
 const INGRESS_SET = 'target_ingress_interfaces';
 const OUTBOUND_CHAIN = 'outbound_prerouting';
 const RESERVED_MARK_MASK = 0xc0010000;
+const OUTBOUND_RULE_PRIORITY = 90;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\''`)}'`; }
@@ -25,9 +26,7 @@ function capture(command) {
 }
 function quiet(command) { return system(`${command} >/dev/null 2>&1`) === 0; }
 function parse_result(output) {
-    let lines = split(trim(output || ''), /
-?
-/);
+    let lines = split(trim(output || ''), /\r?\n/);
     for (let i = length(lines) - 1; i >= 0; i--) {
         if (!trim(lines[i])) continue;
         try {
@@ -115,10 +114,10 @@ function sync_ingress(configured) {
 function rule_present(family, mark, table) {
     let result = capture(`ip -${family} rule show`);
     if (!result.ok) return false;
-    for (let source_line in split(result.output || '', '
-')) {
-        let body = trim(replace(source_line, /^\s*\d+:\s*/, ''));
-        let found = match(body, /^from\s+all\s+fwmark\s+(\S+)\s+[Ll]ookup\s+(\S+)$/);
+    for (let source_line in split(result.output || '', '\n')) {
+        let line = match(source_line, /^\s*(\d+):\s*(.*)$/);
+        if (!line || number(line[1]) != OUTBOUND_RULE_PRIORITY) continue;
+        let found = match(trim(line[2]), /^from\s+all\s+fwmark\s+(\S+)\s+[Ll]ookup\s+(\S+)$/);
         if (!found) continue;
         let markmask = split(found[1], '/');
         let current_mark = number(markmask[0]);
@@ -130,7 +129,7 @@ function rule_present(family, mark, table) {
 function delete_policy_rule(family, mark, table) {
     let count = 0;
     while (rule_present(family, mark, table)) {
-        if (count++ >= 16 || !quiet(`ip -${family} rule del fwmark ${mark}/0xffffffff lookup ${table}`)) return false;
+        if (count++ >= 16 || !quiet(`ip -${family} rule del priority ${OUTBOUND_RULE_PRIORITY} fwmark ${mark}/0xffffffff lookup ${table}`)) return false;
     }
     return true;
 }
@@ -180,11 +179,11 @@ function sync_outbound(configured, route) {
     let ipv6 = route.ipv6_enabled === true;
     let installed = [];
     for (let outbound in configured.outbounds) {
-        if (!quiet(`ip -4 rule add fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
+        if (!quiet(`ip -4 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
             for (let item in installed) delete_policy_rule('4', item.mark, table);
             return { ok: false, error: `unable to install IPv4 outbound policy for mark ${outbound.mark}` };
         }
-        if (ipv6 && !quiet(`ip -6 rule add fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
+        if (ipv6 && !quiet(`ip -6 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
             delete_policy_rule('4', outbound.mark, table);
             for (let item in installed) { delete_policy_rule('4', item.mark, table); delete_policy_rule('6', item.mark, table); }
             return { ok: false, error: `unable to install IPv6 outbound policy for mark ${outbound.mark}` };
@@ -212,7 +211,16 @@ function sync_outbound(configured, route) {
         for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
         return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC outbound dispatch rules' };
     }
-    return write_outbound_state(configured.outbounds, table, ipv6);
+    let saved = write_outbound_state(configured.outbounds, table, ipv6);
+    if (!saved.ok) {
+        clear_outbound_chain();
+        for (let item in installed) {
+            delete_policy_rule('4', item.mark, table);
+            if (ipv6) delete_policy_rule('6', item.mark, table);
+        }
+        return saved;
+    }
+    return saved;
 }
 function reconcile(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
@@ -252,6 +260,5 @@ function dispatch(command, args) {
 let result;
 try { result = dispatch(ARGV[0] || '', slice(ARGV, 1)); }
 catch (e) { result = { ok: false, error: `${e}` }; }
-printf('%J
-', result);
+printf('%J\n', result);
 exit(result?.ok === false ? 1 : 0);

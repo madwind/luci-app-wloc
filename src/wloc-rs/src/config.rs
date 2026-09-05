@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::wloc::PatchTarget;
 use crate::DEFAULT_DOMAINS;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outbound {
     Direct,
     Tproxy { port: u16, mark: u32 },

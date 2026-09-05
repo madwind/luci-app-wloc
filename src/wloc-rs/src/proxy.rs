@@ -347,6 +347,12 @@ impl Proxy {
             .cloned()
             .ok_or_else(|| ProxyError::Protocol("location_follower_missing".into()))?;
         let outbound = rule.outbound;
+        let destination = passthrough_destination(&stream).map_err(ProxyError::io)?;
+        if destination.port() == self.listen_port || destination.ip().is_unspecified() {
+            return Err(ProxyError::ClientTls(
+                "original_destination_unavailable".into(),
+            ));
+        }
         let sni = tokio::time::timeout(HANDSHAKE_TIMEOUT, peek_sni(&stream))
             .await
             .map_err(|_| ProxyError::ClientTls("client_hello_timeout".into()))?
@@ -386,6 +392,7 @@ impl Proxy {
                 &hostname,
                 connection_id,
                 &outbound,
+                destination,
                 follower,
             )
             .await;
@@ -421,6 +428,7 @@ impl Proxy {
         hostname: &str,
         connection_id: u32,
         outbound: &Outbound,
+        upstream_destination: SocketAddr,
         follower: Arc<tokio::sync::Mutex<LocationFollower>>,
     ) -> Result<(), ProxyError> {
         let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(stream))
@@ -465,6 +473,7 @@ impl Proxy {
                                 ip,
                                 connection_id,
                                 &outbound,
+                                upstream_destination,
                             )
                             .await
                     });
@@ -493,6 +502,7 @@ impl Proxy {
         ip: IpAddr,
         connection_id: u32,
         outbound: &Outbound,
+        upstream_destination: SocketAddr,
     ) -> Result<(), ProxyError> {
         let monitored = request.uri().authority().is_some_and(|authority| {
             crate::approved_host(authority.host(), &self.domains)
@@ -533,6 +543,7 @@ impl Proxy {
                     ip,
                     connection_id,
                     outbound,
+                    upstream_destination,
                 ),
             ) => upstream,
         };
@@ -626,7 +637,7 @@ impl Proxy {
         }
         let mut upstream = tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
-            connect_outbound(outbound, &destination.ip().to_string(), destination.port()),
+            outbound::connect_tcp_addr(outbound, destination),
         )
         .await
         .map_err(|_| ProxyError::Upstream("passthrough_connect_timeout".into()))??;
@@ -646,6 +657,7 @@ impl Proxy {
         ip: IpAddr,
         connection_id: u32,
         outbound: &Outbound,
+        upstream_destination: SocketAddr,
     ) -> Result<UpstreamResponse, ProxyError> {
         let authority = request
             .uri()
@@ -699,6 +711,7 @@ impl Proxy {
                     tls_sni,
                     &body,
                     outbound,
+                    upstream_destination,
                 )
                 .await;
             match result {
@@ -761,8 +774,9 @@ impl Proxy {
         hostname: &str,
         body: &[u8],
         outbound: &Outbound,
+        upstream_destination: SocketAddr,
     ) -> Result<(UpstreamResponse, &'static str), ProxyError> {
-        let pool_key = outbound.pool_key(hostname);
+        let pool_key = outbound.pool_key(&format!("{hostname}|{upstream_destination}"));
         if let Some(entry) = self.h2_pool_entry(&pool_key).await {
             let upstream_ip = entry.upstream_ip;
             let proxy_ip = entry.proxy_ip;
@@ -783,10 +797,13 @@ impl Proxy {
             .map_err(|_| ProxyError::Upstream("invalid_hostname".into()))?;
         let mut tls_attempt = 1usize;
         let (tls, upstream_ip, proxy_ip) = loop {
-            let tcp =
-                tokio::time::timeout(HANDSHAKE_TIMEOUT, connect_outbound(outbound, hostname, 443))
-                    .await
-                    .map_err(|_| ProxyError::Upstream("connect_timeout".into()))??;
+            let tcp = tokio::time::timeout(
+                HANDSHAKE_TIMEOUT,
+                outbound::connect_tcp_addr(outbound, upstream_destination),
+            )
+            .await
+            .map_err(|_| ProxyError::Upstream("connect_timeout".into()))?
+            .map_err(ProxyError::io)?;
             let (upstream_ip, proxy_ip) = upstream_peer_addresses(outbound, &tcp);
             match tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
@@ -933,16 +950,6 @@ fn upstream_peer_addresses(
     stream: &TcpStream,
 ) -> (Option<IpAddr>, Option<IpAddr>) {
     (stream.peer_addr().ok().map(|address| address.ip()), None)
-}
-
-async fn connect_outbound(
-    outbound: &Outbound,
-    destination: &str,
-    port: u16,
-) -> Result<TcpStream, ProxyError> {
-    outbound::connect_tcp_host(outbound, destination, port)
-        .await
-        .map_err(ProxyError::io)
 }
 
 async fn remove_h2_generation(

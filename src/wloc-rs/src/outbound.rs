@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
 
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio::net::{lookup_host, TcpStream, UdpSocket};
+use tokio::net::{TcpStream, UdpSocket};
 
 use crate::config::Outbound;
 
@@ -68,35 +68,6 @@ pub async fn connect_tcp_addr(
             Ok(stream)
         }
         Outbound::Tproxy { mark, .. } => connect_marked(destination, *mark).await,
-    }
-}
-
-pub async fn connect_tcp_host(
-    outbound: &Outbound,
-    host: &str,
-    port: u16,
-) -> io::Result<TcpStream> {
-    match outbound {
-        Outbound::Direct => {
-            let stream = TcpStream::connect((host, port)).await?;
-            stream.set_nodelay(true)?;
-            Ok(stream)
-        }
-        Outbound::Tproxy { mark, .. } => {
-            let mut last_error = None;
-            for destination in lookup_host((host, port)).await? {
-                match connect_marked(destination, *mark).await {
-                    Ok(stream) => return Ok(stream),
-                    Err(error) => last_error = Some(error),
-                }
-            }
-            Err(last_error.unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    "hostname resolved to no addresses",
-                )
-            }))
-        }
     }
 }
 
