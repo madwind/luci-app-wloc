@@ -21,12 +21,14 @@ jobs:
           set -eu
           cp .github/patch-dns-intercept.py /tmp/patch-dns-intercept.py
           cp .github/patch-direct-guard.py /tmp/patch-direct-guard.py
+          cp .github/patch-dns-followup.py /tmp/patch-dns-followup.py
           git fetch origin master
           git checkout -B dns-intercept-r67 origin/master
           git config user.name "IvonWei"
           git config user.email "madwind.cn@gmail.com"
           python3 /tmp/patch-dns-intercept.py
           python3 /tmp/patch-direct-guard.py
+          python3 /tmp/patch-dns-followup.py
           git diff --check
           git add root src
           git commit -m 'Learn location targets from intercepted DNS'
