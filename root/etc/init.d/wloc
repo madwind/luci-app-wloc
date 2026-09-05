@@ -15,7 +15,7 @@ START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
 wifi_sections=''
-ttproxy_marks=''
+tproxy_marks=''
 
 collect_wifi() {
     wifi_sections="$wifi_sections $1"
@@ -83,8 +83,8 @@ validate_wifi() {
                 rule_error="TPROXY mark uses WLOC reserved bits for AP: $name"; return 0;
             }
             seen_mark=" $mark_value "
-            case " $ttproxy_marks " in *"$seen_mark"*) rule_error="duplicate TPROXY mark for AP: $name"; return 0;; esac
-            ttproxy_marks="$ttproxy_marks $mark_value"
+            case " $tproxy_marks " in *"$seen_mark"*) rule_error="duplicate TPROXY mark for AP: $name"; return 0;; esac
+            tproxy_marks="$tproxy_marks $mark_value"
             ;;
         *) rule_error="invalid outbound type for AP: $name (use direct or tproxy)"; return 0;;
     esac
@@ -174,7 +174,7 @@ start_service() {
     rule_count=0
     rule_error=''
     wifi_sections=''
-    ttproxy_marks=''
+    tproxy_marks=''
     config_foreach collect_wifi wifi
     for wifi in $wifi_sections; do
         validate_wifi "$wifi"
