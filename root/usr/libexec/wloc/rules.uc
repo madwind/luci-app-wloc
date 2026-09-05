@@ -181,7 +181,14 @@ function outbound_state_matches(outbounds, table, ipv6) {
     let state = read_outbound_state();
     if (length(state) != length(outbounds)) return false;
     for (let outbound in outbounds) {
-        if (!state.some((item) => item.mark == outbound.mark && item.table == table && item.ipv6 == ipv6)) return false;
+        let matched = false;
+        for (let item in state) {
+            if (item.mark == outbound.mark && item.table == table && item.ipv6 == ipv6) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) return false;
         if (!rule_present('4', outbound.mark, table)) return false;
         if (ipv6 && !rule_present('6', outbound.mark, table)) return false;
     }
