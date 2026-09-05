@@ -24,7 +24,7 @@ Supported release targets:
 
 - Assign a virtual WGS84 location baseline to each selected wireless interface
 - Preserve real movement deltas relative to the configured virtual baseline
-- Per-rule Direct or user-defined TPROXY-port outbound selection
+- Per-rule Direct or user-defined TPROXY port/mark outbound selection
 - Per-interface daily enable/disable schedule
 - Generate and manage the local CA profile required for WLOC interception
 - Intercept `gs-loc.apple.com` and `gs-loc-cn.apple.com`

@@ -604,7 +604,7 @@ impl TransparentProxy {
                         },
                     );
                     let associations = Arc::clone(&self.udp_associations);
-                    let association_outbound = rule.outbound.clone();
+                    let association_outbound = rule.outbound;
                     let rule_id = rule.id.clone();
                     let reply_sockets = Arc::clone(&self.udp_reply_sockets);
                     let error_log = Arc::clone(&self.udp_error_log);

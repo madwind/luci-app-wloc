@@ -329,7 +329,7 @@ return baseclass.extend({
                 uci.unset('wloc', sectionId, 'country');
         };
 
-        var proxyTypeOption = wifiSections.option(form.ListValue, 'proxy_type', _('Outbound'));
+        var proxyTypeOption = wifiSections.option(form.ListValue, 'outbound', _('Outbound'));
         proxyTypeOption.modalonly = true;
         proxyTypeOption.value('direct', _('Direct'));
         proxyTypeOption.value('tproxy', _('TPROXY port'));
@@ -341,28 +341,29 @@ return baseclass.extend({
             var index = Math.max(0, sections.findIndex(function(section) {
                 return section['.name'] === sectionId;
             }));
+            var mark = 1 + ((index & 0xff) * 0x100) + (Math.floor(index / 0x100) * 0x20000);
             return {
-                port: String(Math.min(65535, 12345 + index)),
-                mark: '0x' + (((index << 8) | 1) >>> 0).toString(16)
+                port: String(12345 + index),
+                mark: '0x' + mark.toString(16)
             };
         }
 
-        var proxyPortOption = wifiSections.option(form.Value, 'proxy_port', _('TPROXY port'));
+        var proxyPortOption = wifiSections.option(form.Value, 'tproxy_port', _('TPROXY port'));
         proxyPortOption.modalonly = true;
         proxyPortOption.rmempty = false;
         proxyPortOption.datatype = 'port';
-        proxyPortOption.depends('proxy_type', 'tproxy');
+        proxyPortOption.depends('outbound', 'tproxy');
         proxyPortOption.cfgvalue = function(sectionId) {
-            return String(uci.get('wloc', sectionId, 'proxy_port') || tproxySuggestion(sectionId).port);
+            return String(uci.get('wloc', sectionId, 'tproxy_port') || tproxySuggestion(sectionId).port);
         };
         proxyPortOption.description = _('Destination TPROXY listener port. The suggested value starts at 12345 and increments per rule.');
 
-        var proxyMarkOption = wifiSections.option(form.Value, 'proxy_mark', _('TPROXY mark'));
+        var proxyMarkOption = wifiSections.option(form.Value, 'tproxy_mark', _('TPROXY mark'));
         proxyMarkOption.modalonly = true;
         proxyMarkOption.rmempty = false;
-        proxyMarkOption.depends('proxy_type', 'tproxy');
+        proxyMarkOption.depends('outbound', 'tproxy');
         proxyMarkOption.cfgvalue = function(sectionId) {
-            return String(uci.get('wloc', sectionId, 'proxy_mark') || tproxySuggestion(sectionId).mark);
+            return String(uci.get('wloc', sectionId, 'tproxy_mark') || tproxySuggestion(sectionId).mark);
         };
         proxyMarkOption.description = _('Socket mark used internally to re-enter nftables. Suggested marks are 0x1, 0x101, 0x201, and so on. WLOC reserves 0x80000000, 0x40000000, and 0x00010000.');
         proxyMarkOption.validate = function(sectionId, value) {
@@ -373,9 +374,10 @@ return baseclass.extend({
             if (!isFinite(mark) || mark < 1 || mark > 0xffffffff || (mark & 0xc0010000) !== 0)
                 return _('Mark must be non-zero and must not use WLOC reserved bits.');
             var duplicate = uci.sections('wloc', 'wifi').some(function(section) {
-                if (section['.name'] === sectionId || String(section.proxy_type || 'direct') !== 'tproxy')
+                if (section['.name'] === sectionId || String(section.enabled == null ? '1' : section.enabled) === '0' || String(section.outbound || 'direct') !== 'tproxy')
                     return false;
-                return Number(String(section.proxy_mark || '').trim()) === mark;
+                var other = String(section.tproxy_mark || tproxySuggestion(section['.name']).mark).trim();
+                return Number(other) === mark;
             });
             return duplicate ? _('Each TPROXY rule must use a unique mark.') : true;
         };

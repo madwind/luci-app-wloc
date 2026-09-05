@@ -69,21 +69,30 @@ function clear_outbound_chain() {
     if (!quiet(`nft flush chain inet ${TABLE} ${OUTBOUND_CHAIN}`)) return { ok: false, error: 'unable to clear WLOC outbound dispatch chain' };
     return { ok: true };
 }
+function suggested_outbound(index) {
+    return {
+        port: 12345 + index,
+        mark: 1 + ((index & 0xff) * 0x100) + (int(index / 0x100) * 0x20000)
+    };
+}
 function configured_rules() {
-    let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null;
+    let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, seen_marks = {}, error = null, index = -1;
     try {
         ctx.foreach('wloc', 'wifi', function(section) {
+            index++;
             if (error) return;
             let enabled = section.enabled == null ? true : (`${section.enabled}` == '1' || section.enabled === true);
             if (!enabled) return;
             let iface = `${section.iface || ''}`;
             if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
             if (!seen_ifaces[iface]) { seen_ifaces[iface] = true; push(interfaces, iface); }
-            let outbound = `${section.proxy_type || 'direct'}`;
+            let outbound = `${section.outbound || 'direct'}`;
             if (outbound == 'direct') return;
             if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
-            if (!valid_port(section.proxy_port) || !valid_mark(section.proxy_mark)) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
-            let port = number(section.proxy_port), mark = number(section.proxy_mark);
+            let suggested = suggested_outbound(index);
+            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? suggested.port : number(section.tproxy_port);
+            let mark = section.tproxy_mark == null || `${section.tproxy_mark}` == '' ? suggested.mark : number(section.tproxy_mark);
+            if (!valid_port(port) || !valid_mark(mark)) { error = `invalid TPROXY port or mark in enabled rule ${section['.name'] || ''}`; return; }
             if (seen_marks[`${mark}`]) { error = `duplicate TPROXY mark ${mark}`; return; }
             seen_marks[`${mark}`] = true;
             push(outbounds, { port, mark });
@@ -152,8 +161,9 @@ function remove_outbound_policy() {
         if (!delete_policy_rule('4', item.mark, item.table)) push(errors, `unable to remove IPv4 outbound rule for mark ${item.mark}`);
         if (item.ipv6 && !delete_policy_rule('6', item.mark, item.table)) push(errors, `unable to remove IPv6 outbound rule for mark ${item.mark}`);
     }
+    if (length(errors)) return { ok: false, error: join('; ', errors) };
     fs.unlink(OUTBOUND_STATE);
-    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
+    return { ok: true };
 }
 function write_outbound_state(outbounds, table, ipv6) {
     if (!length(outbounds)) { fs.unlink(OUTBOUND_STATE); return { ok: true }; }
@@ -167,60 +177,84 @@ function write_outbound_state(outbounds, table, ipv6) {
     fs.chmod(OUTBOUND_STATE, 0o600);
     return { ok: true };
 }
+function outbound_state_matches(outbounds, table, ipv6) {
+    let state = read_outbound_state();
+    if (length(state) != length(outbounds)) return false;
+    for (let outbound in outbounds) {
+        if (!state.some((item) => item.mark == outbound.mark && item.table == table && item.ipv6 == ipv6)) return false;
+        if (!rule_present('4', outbound.mark, table)) return false;
+        if (ipv6 && !rule_present('6', outbound.mark, table)) return false;
+    }
+    return true;
+}
+function outbound_chain_matches(outbounds) {
+    let result = capture(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`);
+    if (!result.ok) return false;
+    let found = {};
+    let count = 0;
+    for (let line in split(result.output || '', '\n')) {
+        if (index(line, 'comment "wloc outbound"') < 0) continue;
+        let mark_match = match(line, /meta mark (\S+)/);
+        let port_match = match(line, /tproxy to :([0-9]+)/);
+        if (!mark_match || !port_match) return false;
+        let mark = number(mark_match[1]), port = number(port_match[1]);
+        if (mark == null || port == null || found[`${mark}`] != null) return false;
+        found[`${mark}`] = port;
+        count++;
+    }
+    if (count != length(outbounds)) return false;
+    for (let outbound in outbounds) if (found[`${outbound.mark}`] != outbound.port) return false;
+    return true;
+}
 function sync_outbound(configured, route) {
-    let cleared = clear_outbound_chain();
-    if (!cleared.ok) return cleared;
-    let removed = remove_outbound_policy();
-    if (!removed.ok) return removed;
-    if (!length(configured.outbounds)) return { ok: true };
-    if (!quiet(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`)) return { ok: false, error: 'WLOC outbound dispatch chain is missing' };
     let table = number(route.routing_table);
     if (table == null) return { ok: false, error: 'TPROXY routing table is unavailable' };
     let ipv6 = route.ipv6_enabled === true;
+    if (outbound_state_matches(configured.outbounds, table, ipv6) && outbound_chain_matches(configured.outbounds))
+        return { ok: true, changed: false };
+
+    let removed = remove_outbound_policy();
+    if (!removed.ok) return removed;
+    let cleared = clear_outbound_chain();
+    if (!cleared.ok) return cleared;
+    if (!length(configured.outbounds)) return { ok: true, changed: true };
+    if (!quiet(`nft list chain inet ${TABLE} ${OUTBOUND_CHAIN}`)) return { ok: false, error: 'WLOC outbound dispatch chain is missing' };
+
+    sequence++;
+    let path = `${RUNTIME}/outbound-chain.${time()}.${sequence}.nft`;
+    let lines = [ `flush chain inet ${TABLE} ${OUTBOUND_CHAIN}` ];
+    for (let outbound in configured.outbounds)
+        push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta mark ${outbound.mark} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound"`);
+    let content = join('\n', lines) + '\n';
+    let written = fs.writefile(path, content);
+    if (written == null || written != length(content)) { fs.unlink(path); return { ok: false, error: 'unable to stage WLOC outbound dispatch transaction' }; }
+    fs.chmod(path, 0o600);
+    let applied = capture(`nft --file ${q(path)}`);
+    fs.unlink(path);
+    if (!applied.ok) return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC outbound dispatch rules' };
+
     let installed = [];
     for (let outbound in configured.outbounds) {
         if (!quiet(`ip -4 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
+            clear_outbound_chain();
             for (let item in installed) delete_policy_rule('4', item.mark, table);
             return { ok: false, error: `unable to install IPv4 outbound policy for mark ${outbound.mark}` };
         }
         if (ipv6 && !quiet(`ip -6 rule add priority ${OUTBOUND_RULE_PRIORITY} fwmark ${outbound.mark}/0xffffffff lookup ${table}`)) {
+            clear_outbound_chain();
             delete_policy_rule('4', outbound.mark, table);
             for (let item in installed) { delete_policy_rule('4', item.mark, table); delete_policy_rule('6', item.mark, table); }
             return { ok: false, error: `unable to install IPv6 outbound policy for mark ${outbound.mark}` };
         }
         push(installed, outbound);
     }
-    sequence++;
-    let path = `${RUNTIME}/outbound-chain.${time()}.${sequence}.nft`;
-    let lines = [ `flush chain inet ${TABLE} ${OUTBOUND_CHAIN}` ];
-    for (let outbound in configured.outbounds)
-        push(lines, `add rule inet ${TABLE} ${OUTBOUND_CHAIN} meta mark ${outbound.mark} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound"`);
-    let content = join('
-', lines) + '
-';
-    let written = fs.writefile(path, content);
-    if (written == null || written != length(content)) {
-        fs.unlink(path);
-        for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
-        return { ok: false, error: 'unable to stage WLOC outbound dispatch transaction' };
-    }
-    fs.chmod(path, 0o600);
-    let applied = capture(`nft --file ${q(path)}`);
-    fs.unlink(path);
-    if (!applied.ok) {
-        for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
-        return { ok: false, error: trim(applied.output || '') || 'unable to apply WLOC outbound dispatch rules' };
-    }
     let saved = write_outbound_state(configured.outbounds, table, ipv6);
     if (!saved.ok) {
         clear_outbound_chain();
-        for (let item in installed) {
-            delete_policy_rule('4', item.mark, table);
-            if (ipv6) delete_policy_rule('6', item.mark, table);
-        }
+        for (let item in installed) { delete_policy_rule('4', item.mark, table); if (ipv6) delete_policy_rule('6', item.mark, table); }
         return saved;
     }
-    return saved;
+    return { ok: true, changed: true };
 }
 function reconcile(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };

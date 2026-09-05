@@ -460,7 +460,7 @@ impl Proxy {
                     let proxy = self.clone();
                     let hostname = hostname.to_owned();
                     let client = client.to_owned();
-                    let outbound = outbound.clone();
+                    let outbound = *outbound;
                     let follower = Arc::clone(&follower);
                     streams.spawn(async move {
                         proxy
@@ -640,7 +640,8 @@ impl Proxy {
             outbound::connect_tcp_addr(outbound, destination),
         )
         .await
-        .map_err(|_| ProxyError::Upstream("passthrough_connect_timeout".into()))??;
+        .map_err(|_| ProxyError::Upstream("passthrough_connect_timeout".into()))?
+        .map_err(ProxyError::io)?;
         tokio::io::copy_bidirectional(&mut client, &mut upstream)
             .await
             .map_err(ProxyError::io)?;

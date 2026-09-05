@@ -15,14 +15,30 @@ START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
 wifi_sections=''
-tproxy_marks=''
+ttproxy_marks=''
 
 collect_wifi() {
     wifi_sections="$wifi_sections $1"
 }
 
+rule_index() {
+    local target="$1" section index=0
+    for section in $wifi_sections; do
+        [ "$section" = "$target" ] && { printf '%s\n' "$index"; return 0; }
+        index=$((index + 1))
+    done
+    return 1
+}
+
+tproxy_defaults() {
+    local section="$1" index
+    index="$(rule_index "$section")" || return 1
+    TPROXY_DEFAULT_PORT=$((12345 + index))
+    TPROXY_DEFAULT_MARK=$((1 | ((index & 255) << 8) | ((index >> 8) << 17)))
+}
+
 validate_wifi() {
-    local section enabled name iface latitude longitude proxy_type proxy_port proxy_mark mark_value mark_digits seen_mark
+    local section enabled name iface latitude longitude outbound tproxy_port tproxy_mark mark_value mark_digits seen_mark
     section="$1"
     config_get_bool enabled "$section" enabled 1
     [ "$enabled" -eq 1 ] || return 0
@@ -30,9 +46,14 @@ validate_wifi() {
     name="$iface"
     config_get latitude "$section" latitude
     config_get longitude "$section" longitude
-    config_get proxy_type "$section" proxy_type direct
-    config_get proxy_port "$section" proxy_port
-    config_get proxy_mark "$section" proxy_mark
+    config_get outbound "$section" outbound direct
+    config_get tproxy_port "$section" tproxy_port
+    config_get tproxy_mark "$section" tproxy_mark
+    if [ "$outbound" = tproxy ]; then
+        tproxy_defaults "$section" || { rule_error="unable to calculate TPROXY defaults for AP: $name"; return 0; }
+        [ -n "$tproxy_port" ] || tproxy_port="$TPROXY_DEFAULT_PORT"
+        [ -n "$tproxy_mark" ] || tproxy_mark="0x$(printf '%x' "$TPROXY_DEFAULT_MARK")"
+    fi
     [ -n "$latitude" ] && [ -n "$longitude" ] || {
         rule_error="incomplete location parameters for AP: $name"; return 0;
     }
@@ -40,21 +61,21 @@ validate_wifi() {
     if ! "$UCODE" "$AP_CTL" find "$iface" >/dev/null 2>&1; then
         rule_error="interface \"$iface\" cannot be resolved"; return 0
     fi
-    case "$proxy_type" in
+    case "$outbound" in
         direct) ;;
         tproxy)
-            case "$proxy_port" in *[!0-9]*|'') rule_error="invalid TPROXY port for AP: $name"; return 0;; esac
-            [ "$proxy_port" -ge 1 ] 2>/dev/null && [ "$proxy_port" -le 65535 ] 2>/dev/null || {
+            case "$tproxy_port" in *[!0-9]*|'') rule_error="invalid TPROXY port for AP: $name"; return 0;; esac
+            [ "$tproxy_port" -ge 1 ] 2>/dev/null && [ "$tproxy_port" -le 65535 ] 2>/dev/null || {
                 rule_error="invalid TPROXY port for AP: $name"; return 0;
             }
-            case "$proxy_mark" in
+            case "$tproxy_mark" in
                 0x*|0X*)
-                    mark_digits="${proxy_mark#0x}"; mark_digits="${mark_digits#0X}"
+                    mark_digits="${tproxy_mark#0x}"; mark_digits="${mark_digits#0X}"
                     case "$mark_digits" in ''|*[!0-9A-Fa-f]*) rule_error="invalid TPROXY mark for AP: $name"; return 0;; esac
                     ;;
                 ''|*[!0-9]*) rule_error="invalid TPROXY mark for AP: $name"; return 0;;
             esac
-            mark_value=$((proxy_mark))
+            mark_value=$((tproxy_mark))
             [ "$mark_value" -gt 0 ] 2>/dev/null && [ "$mark_value" -le 4294967295 ] 2>/dev/null || {
                 rule_error="invalid TPROXY mark for AP: $name"; return 0;
             }
@@ -62,8 +83,8 @@ validate_wifi() {
                 rule_error="TPROXY mark uses WLOC reserved bits for AP: $name"; return 0;
             }
             seen_mark=" $mark_value "
-            case " $tproxy_marks " in *"$seen_mark"*) rule_error="duplicate TPROXY mark for AP: $name"; return 0;; esac
-            tproxy_marks="$tproxy_marks $mark_value"
+            case " $ttproxy_marks " in *"$seen_mark"*) rule_error="duplicate TPROXY mark for AP: $name"; return 0;; esac
+            ttproxy_marks="$ttproxy_marks $mark_value"
             ;;
         *) rule_error="invalid outbound type for AP: $name (use direct or tproxy)"; return 0;;
     esac
@@ -71,7 +92,7 @@ validate_wifi() {
 }
 
 append_rule_for_wifi() {
-    local section enabled name iface latitude longitude proxy_type proxy_port proxy_mark
+    local section enabled name iface latitude longitude outbound tproxy_port tproxy_mark
     section="$1"
     config_get_bool enabled "$section" enabled 1
     [ "$enabled" -eq 1 ] || return 0
@@ -79,13 +100,18 @@ append_rule_for_wifi() {
     name="$iface"
     config_get latitude "$section" latitude
     config_get longitude "$section" longitude
-    config_get proxy_type "$section" proxy_type direct
-    config_get proxy_port "$section" proxy_port
-    config_get proxy_mark "$section" proxy_mark
+    config_get outbound "$section" outbound direct
+    config_get tproxy_port "$section" tproxy_port
+    config_get tproxy_mark "$section" tproxy_mark
+    if [ "$outbound" = tproxy ]; then
+        tproxy_defaults "$section" || return 1
+        [ -n "$tproxy_port" ] || tproxy_port="$TPROXY_DEFAULT_PORT"
+        [ -n "$tproxy_mark" ] || tproxy_mark="0x$(printf '%x' "$TPROXY_DEFAULT_MARK")"
+    fi
     procd_append_param command --rule "$section" "$iface" "$latitude" "$longitude"
     procd_append_param command --rule-name "$section" "$name"
-    [ "$proxy_type" = tproxy ] && \
-        procd_append_param command --rule-tproxy "$section" "$proxy_port" "$proxy_mark"
+    [ "$outbound" = tproxy ] && \
+        procd_append_param command --rule-tproxy "$section" "$tproxy_port" "$tproxy_mark"
 }
 
 startup_failure() {
@@ -148,7 +174,7 @@ start_service() {
     rule_count=0
     rule_error=''
     wifi_sections=''
-    tproxy_marks=''
+    ttproxy_marks=''
     config_foreach collect_wifi wifi
     for wifi in $wifi_sections; do
         validate_wifi "$wifi"
