@@ -9,6 +9,7 @@ const ROUTING = '/usr/libexec/wloc/routing.uc';
 const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
+const BOOTSTRAP_HANDOFF = `${RUNTIME}/bootstrap.ready`;
 const BRIDGE_FAMILY = 'bridge';
 const TABLE = 'wloc';
 const INGRESS_SET = 'ap_interfaces';
@@ -165,18 +166,36 @@ function runtime_ready() {
     let route = run_routing('ready');
     return route.ok === true && route.active === true;
 }
-function bootstrap(port) {
+function bootstrap_result(configured) {
+    return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
+}
+function consume_bootstrap_handoff(configured) {
+    if (fs.readfile(BOOTSTRAP_HANDOFF) == null) return null;
+    fs.unlink(BOOTSTRAP_HANDOFF);
+    return runtime_ready() ? bootstrap_result(configured) : null;
+}
+function write_bootstrap_handoff() {
+    let content = 'ready\n';
+    let written = fs.writefile(BOOTSTRAP_HANDOFF, content);
+    if (written == null || written != length(content)) return false;
+    fs.chmod(BOOTSTRAP_HANDOFF, 0o600);
+    return true;
+}
+function bootstrap(port, init_handoff) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
     let configured = configured_rules();
     if (!configured.ok) return configured;
-    if (quiet('pidof wlocd') && runtime_ready())
-        return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
+    if (!init_handoff) {
+        let handoff = consume_bootstrap_handoff(configured);
+        if (handoff) return handoff;
+    }
     fs.unlink(LOCATION_STATE);
     let refreshed = run_firewall('refresh-runtime');
     if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render startup firewall'}` };
     let route = run_routing('apply-effective');
     if (!route.ok) return { ok: false, error: route.error || 'unable to ensure TPROXY policy routing' };
-    return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
+    if (init_handoff && !write_bootstrap_handoff()) return { ok: false, error: 'unable to create daemon bootstrap handoff' };
+    return bootstrap_result(configured);
 }
 function cleanup(reset) {
     let errors = [];
@@ -189,12 +208,14 @@ function cleanup(reset) {
         clear_chain('inet', OUTBOUND_CHAIN)
     ]) if (!item.ok) push(errors, item.error);
     fs.unlink(LOCATION_STATE);
+    fs.unlink(BOOTSTRAP_HANDOFF);
     let route = run_routing(reset ? 'reset' : 'deactivate');
     if (!route.ok) push(errors, route.error || `unable to ${reset ? 'reset' : 'deactivate'} TPROXY policy routing`);
     return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true, route_active: false };
 }
 function dispatch(command, args) {
-    if (command == 'bootstrap') return bootstrap(args[0]);
+    if (command == 'bootstrap') return bootstrap(args[0], false);
+    if (command == 'bootstrap-init') return bootstrap(args[0], true);
     if (command == 'update-targets') return update_targets(args);
     if (command == 'cleanup') return cleanup(false);
     if (command == 'reset') return cleanup(true);

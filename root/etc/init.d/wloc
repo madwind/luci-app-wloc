@@ -144,7 +144,7 @@ start_service() {
         return 1
     fi
 
-    if ! bootstrap_detail="$("$UCODE" "$RULES" bootstrap "$listen_port" 2>&1)"; then
+    if ! bootstrap_detail="$("$UCODE" "$RULES" bootstrap-init "$listen_port" 2>&1)"; then
         "$UCODE" "$FIREWALL_CTL" remove-runtime >/dev/null 2>&1 || true
         startup_failure "runtime bootstrap failed: ${bootstrap_detail:-unknown error}"
         return 1
