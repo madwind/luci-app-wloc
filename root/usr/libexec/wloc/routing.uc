@@ -255,10 +255,11 @@ function read_current() {
     if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
-    let state = parsed.state, applied_raw = read_text(APPLIED);
+    let state = parsed.state, applied_raw = read_text(APPLIED), status = state_status(state);
     return {
         ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized),
         ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
+        route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
         commands: state.commands, route_commands: state.route_commands, rule_commands: state.rule_commands,
         applied_config: applied_raw || '', applied_path: APPLIED
     };

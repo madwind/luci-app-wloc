@@ -100,7 +100,7 @@ startup_failure() {
 }
 
 start_service() {
-    local enabled listen_port debug debug_log cleanup_detail firewall_apply_detail
+    local enabled listen_port debug debug_log cleanup_detail firewall_apply_detail bootstrap_detail
 
     config_load wloc
     config_get_bool enabled main enabled 0
@@ -141,6 +141,12 @@ start_service() {
     if ! firewall_apply_detail="$("$UCODE" "$FIREWALL_CTL" apply-file "$FIREWALL" 2>&1)"; then
         "$UCODE" "$FIREWALL_CTL" remove-runtime >/dev/null 2>&1 || true
         startup_failure "firewall apply failed: ${firewall_apply_detail:-unknown error}"
+        return 1
+    fi
+
+    if ! bootstrap_detail="$("$UCODE" "$RULES" bootstrap "$listen_port" 2>&1)"; then
+        "$UCODE" "$FIREWALL_CTL" remove-runtime >/dev/null 2>&1 || true
+        startup_failure "runtime bootstrap failed: ${bootstrap_detail:-unknown error}"
         return 1
     fi
 

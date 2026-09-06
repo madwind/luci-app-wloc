@@ -10,7 +10,6 @@ let ubus = require('ubus').connect();
 
 const HELPER = '/usr/libexec/wloc/routing.uc';
 const RUNTIME = '/var/run/wloc';
-const STATUS = `${RUNTIME}/status.json`;
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -46,35 +45,13 @@ function exec_result(code, reply, label) {
     return result;
 }
 
-function read_json(path) {
-    let file = open(path, 'r');
-    if (!file) return null;
-    let raw = file.read('all') || '';
-    file.close();
-    try { return json(raw); } catch (e) { return null; }
-}
-
-function truthy(value) {
-    return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes';
-}
-
-function routing_status(result) {
-    if (!result || result.ok !== true) return result;
-    let state = read_json(STATUS) || {};
-    let active = truthy(state.armed);
-    result.route_active = active;
-    result.route_ipv4 = active;
-    result.route_ipv6 = active;
-    return result;
-}
-
 function remove_payload(payload) {
     if (!payload) return;
     if (payload.path) unlink(payload.path);
     if (payload.directory) rmdir(payload.directory);
 }
 
-function defer_helper(request, args, label, cleanup, transform) {
+function defer_helper(request, args, label, cleanup) {
     if (!ubus) {
         if (cleanup) cleanup();
         return { ok: false, error: 'unable to connect to ubus' };
@@ -91,7 +68,6 @@ function defer_helper(request, args, label, cleanup, transform) {
             let result;
             try {
                 result = exec_result(code, reply, label);
-                if (transform) result = transform(result);
             } catch (e) {
                 result = { ok: false, error: `${label}: ${e}` };
             }
@@ -121,9 +97,7 @@ function create_payload(value) {
 
     let written = file.write(content), closed = file.close();
     if (written == null || written !== length(content) || closed !== true || chmod(path, RPC_FILE_MODE) !== true) {
-        unlink(path);
-        rmdir(directory);
-        return null;
+        unlink(path); rmdir(directory); return null;
     }
 
     return { directory, path };
@@ -150,7 +124,7 @@ function args(request) {
 const methods = {
     read: {
         args: {},
-        call: request => defer_helper(request, [ 'read' ], 'Routing read', null, routing_status)
+        call: request => defer_helper(request, [ 'read' ], 'Routing read')
     },
     runtime: {
         args: {},
