@@ -8,7 +8,6 @@ import { cursor } from 'uci';
 const RUNTIME = '/var/run/wloc';
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
 const SOURCE = '/etc/wloc/firewall.nft';
-const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const NEXT = `${APPLIED}.next`;
 const RULES = '/usr/libexec/wloc/rules.uc';
@@ -508,7 +507,7 @@ function apply(raw) {
         return fail_open('snapshot_promote_failed', 'The applied firewall snapshot could not be promoted.', 'nftables transaction succeeded but the applied snapshot could not be promoted');
     fs.chmod(APPLIED, 0o600);
 
-    let recovering = false, warning = '';
+    let warning = '';
     if (!daemon_ready()) {
         let cleaned = rules('cleanup', []);
         warning = cleaned.ok
@@ -518,7 +517,7 @@ function apply(raw) {
 
     return {
         ok: true, valid: true, applied: true, path: SOURCE, config: checked.config, bytes: length(checked.config),
-        recovering, warning, applied_config: checked.config, applied_path: APPLIED
+        warning, applied_config: checked.config, applied_path: APPLIED
     };
 }
 function refresh_runtime() {
@@ -540,13 +539,12 @@ function save(raw) {
     return read_current();
 }
 function read_current() {
-    let config = read_text(SOURCE), using_default = false;
-    if (config == null) { config = read_text(DEFAULT_SOURCE); using_default = true; }
+    let config = read_text(SOURCE);
     if (config == null) return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
     config = format_nftables(config);
     return {
-        ok: true, path: SOURCE, config, bytes: length(config), using_default,
-        recovering: false, warning: '', applied_config: read_text(APPLIED) || '', applied_path: APPLIED
+        ok: true, path: SOURCE, config, bytes: length(config),
+        applied_config: read_text(APPLIED) || '', applied_path: APPLIED
     };
 }
 function remove_runtime() {
