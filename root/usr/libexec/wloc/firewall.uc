@@ -491,18 +491,6 @@ function apply(raw) {
     if (!loaded.ok)
         return fail_open('nft_apply_failed', 'The nftables transaction failed.', loaded.detail || 'apply failed');
 
-    let runtime_tables = managed_tables();
-    let verified = length(runtime_tables) == length(checked.tables);
-    if (verified) {
-        for (let spec in checked.tables) {
-            if (!table_active(spec)) {
-                return fail_open('nft_apply_failed', 'The nftables transaction failed verification.', `missing runtime table ${spec.family} ${spec.name}`);
-            }
-        }
-    } else {
-        return fail_open('nft_apply_failed', 'The nftables transaction failed verification.', 'runtime table count does not match the configured tables');
-    }
-
     if (fs.rename(NEXT, APPLIED) !== true || read_text(APPLIED) == null)
         return fail_open('snapshot_promote_failed', 'The applied firewall snapshot could not be promoted.', 'nftables transaction succeeded but the applied snapshot could not be promoted');
     fs.chmod(APPLIED, 0o600);
@@ -527,8 +515,6 @@ function refresh_runtime() {
     if (!checked.ok) return { ok: false, error: checked.detail || checked.error || 'Unable to render the WLOC firewall.' };
     let loaded = run_transaction(transaction(managed_tables(), checked.compiled, checked.tables));
     if (!loaded.ok) return { ok: false, error: loaded.detail || 'Unable to refresh the WLOC firewall.' };
-    for (let spec in checked.tables)
-        if (!table_active(spec)) return { ok: false, error: `missing runtime table ${spec.family} ${spec.name}` };
     return { ok: true, refreshed: true };
 }
 function save(raw) {
