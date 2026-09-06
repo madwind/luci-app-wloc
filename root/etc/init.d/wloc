@@ -102,12 +102,12 @@ startup_failure() {
 start_service() {
     local enabled listen_port debug debug_log cleanup_detail firewall_apply_detail
 
-    mkdir -p /var/run/wloc
-    rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
-
     config_load wloc
     config_get_bool enabled main enabled 0
     [ "$enabled" -eq 1 ] || return 0
+
+    mkdir -p /var/run/wloc
+    rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
 
     config_get listen_port main listen_port 61520
     config_get_bool debug main debug 0
