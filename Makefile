@@ -65,7 +65,6 @@ chmod 0755 \
 	"$${postinst_root}/usr/libexec/wloc/routing.uc" \
 	"$${postinst_root}/usr/libexec/wloc/rpc.uc" \
 	"$${postinst_root}/usr/libexec/wloc/rules.uc" \
-	"$${postinst_root}/usr/libexec/wloc/update.uc" \
 	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" 2>/dev/null || true
 chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null || true
 
@@ -73,10 +72,9 @@ chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null ||
 	rm -f /tmp/luci-indexcache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
-	/usr/bin/ucode /usr/libexec/wloc/update.uc auto-sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
 	if [ "$$(uci -q get wloc.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/wloc enable >/dev/null 2>&1 || true
-		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ] && [ -f "$${upgrade_running}" ]; then
+		if [ -f "$${upgrade_running}" ]; then
 			/etc/init.d/wloc start >/dev/null 2>&1 || logger -t wloc "service restart after package upgrade failed"
 		fi
 	else
@@ -98,7 +96,6 @@ define Package/luci-app-wloc/prerm
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
 			;;
 		*)
-			[ -f /usr/libexec/wloc/update.uc ] && /usr/bin/ucode /usr/libexec/wloc/update.uc auto-remove >/dev/null 2>&1 || true
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
 			rm -f /usr/share/wloc/installed-version /tmp/wloc-upgrade.running
 			;;
