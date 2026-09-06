@@ -8,7 +8,7 @@ import { access, chmod, mkdtemp, mkdir, open, rmdir, unlink } from 'fs';
 
 let ubus = require('ubus').connect();
 
-const HELPER = '/usr/libexec/wloc/firewall.uc';
+const HELPER = '/usr/libexec/wloc/rpc-input.uc';
 const RUNTIME = '/var/run/wloc';
 const SOURCE = '/etc/wloc/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
@@ -126,7 +126,7 @@ function defer_helper(request, args, label, cleanup) {
         return { ok: false, error: 'unable to connect to ubus' };
     }
 
-    let params = [ HELPER ];
+    let params = [ HELPER, 'firewall' ];
     for (let arg in args) push(params, `${arg}`);
 
     try {

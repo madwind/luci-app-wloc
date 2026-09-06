@@ -8,7 +8,7 @@ import { access, chmod, mkdtemp, mkdir, open, rmdir, unlink } from 'fs';
 
 let ubus = require('ubus').connect();
 
-const HELPER = '/usr/libexec/wloc/routing.uc';
+const HELPER = '/usr/libexec/wloc/rpc-input.uc';
 const RUNTIME = '/var/run/wloc';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
@@ -57,7 +57,7 @@ function defer_helper(request, args, label, cleanup) {
         return { ok: false, error: 'unable to connect to ubus' };
     }
 
-    let params = [ HELPER ];
+    let params = [ HELPER, 'routing' ];
     for (let arg in args) push(params, `${arg}`);
 
     try {
