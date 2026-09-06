@@ -274,7 +274,7 @@ return view.extend({
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, saved
                     ? _('The Routing file was saved, but commands could not be applied.')
-                    : _('The Routing file could not be saved.'));
+                    : _('The Routing file could not be saved.')));
                 return false;
             });
         }
