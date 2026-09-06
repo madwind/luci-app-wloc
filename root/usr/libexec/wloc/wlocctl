@@ -8,6 +8,8 @@ RULES=/usr/libexec/wloc/rules.uc
 AP_CTL=/usr/libexec/wloc/ap.uc
 
 wifi_sections=''
+child_pid=''
+cleaned=0
 
 collect_wifi() {
     wifi_sections="$wifi_sections $1"
@@ -89,7 +91,34 @@ run_check() {
     "$@"
 }
 
+cleanup_guarded() {
+    [ "$cleaned" -eq 0 ] || return 0
+    cleaned=1
+    "$UCODE" "$RULES" cleanup >/dev/null 2>&1 || logger -t wlocd 'guarded runtime cleanup failed'
+}
+
+terminate_child() {
+    [ -n "$child_pid" ] || return 0
+    kill -TERM "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+    child_pid=''
+}
+
+run_guarded() {
+    shift
+    [ "$#" -gt 0 ] || { printf '%s\n' 'missing daemon command' >&2; return 1; }
+    trap 'terminate_child; cleanup_guarded' TERM INT
+    trap 'cleanup_guarded' EXIT
+    "$@" &
+    child_pid=$!
+    wait "$child_pid"
+    rc=$?
+    child_pid=''
+    return "$rc"
+}
+
 case "${1:-}" in
     check) run_check ;;
+    run-guarded) run_guarded "$@" ;;
     *) printf '%s\n' 'unsupported wlocctl command' >&2; exit 1 ;;
 esac
