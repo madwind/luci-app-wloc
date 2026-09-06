@@ -519,17 +519,6 @@ pub fn request_kind(body: &[u8]) -> Option<u8> {
     envelope(body).ok().map(|envelope| envelope.kind())
 }
 
-pub fn request_wifi_devices(body: &[u8]) -> Option<usize> {
-    let envelope = envelope(body).ok()?;
-    let parsed = fields(envelope.payload()).ok()?;
-    Some(
-        parsed
-            .iter()
-            .filter(|field| field.number == 2 && field.wire == 2)
-            .count(),
-    )
-}
-
 fn patch_response_with<F>(body: &[u8], target_for: &mut F) -> Result<PatchedResponse, WlocError>
 where
     F: FnMut((i64, i64)) -> PatchTarget,
