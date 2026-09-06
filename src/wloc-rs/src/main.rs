@@ -154,6 +154,9 @@ fn main() {
 
 fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::from_args().map_err(|e| format!("configuration: {e}"))?;
+    if config.check_only {
+        return Ok(());
+    }
     let (ca, generated) = CaBundle::load_or_generate(&config.state_dir)?;
     let ca = Arc::new(ca);
     let fingerprint = ca.fingerprint();

@@ -66,7 +66,8 @@ chmod 0755 \
 	"$${postinst_root}/usr/libexec/wloc/rpc.uc" \
 	"$${postinst_root}/usr/libexec/wloc/rules.uc" \
 	"$${postinst_root}/usr/libexec/wloc/update.uc" \
-	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" 2>/dev/null || true
+	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" \
+	"$${postinst_root}/usr/libexec/wloc/wlocctl" 2>/dev/null || true
 chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {

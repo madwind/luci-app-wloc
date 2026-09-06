@@ -104,6 +104,7 @@ pub struct Config {
     pub listen_port: u16,
     pub domains: Vec<String>,
     pub debug: bool,
+    pub check_only: bool,
     /// Enabled rules in exact UCI order. Never sort this vector.
     pub rules: Vec<LocationRule>,
     pub state_dir: PathBuf,
@@ -143,6 +144,7 @@ impl Config {
             .map(|domain| (*domain).to_owned())
             .collect::<Vec<_>>();
         let mut debug = false;
+        let mut check_only = false;
         let mut rules = Vec::new();
         let mut state_dir = PathBuf::from("/etc/wloc");
         let mut rules_helper = PathBuf::from("/usr/libexec/wloc/rules.uc");
@@ -158,6 +160,7 @@ impl Config {
                         .map_err(|_| "invalid listen port")?
                 }
                 "--debug" => debug = true,
+                "--check" => check_only = true,
                 "--rule" => {
                     let id = parse_rule_id(&args.next().ok_or_else(value)?)?;
                     if rules.iter().any(|rule: &LocationRule| rule.id == id) {
@@ -220,6 +223,7 @@ impl Config {
             listen_port,
             domains,
             debug,
+            check_only,
             rules,
             state_dir,
             rules_helper,
@@ -227,7 +231,7 @@ impl Config {
     }
 
     pub const fn usage() -> &'static str {
-        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-tproxy ID PORT MARK] [--rule ...] [--listen-port PORT] [--debug]"
+        "wlocd --rule ID IFACE LATITUDE LONGITUDE [--rule-name ID NAME] [--rule-tproxy ID PORT MARK] [--rule ...] [--listen-port PORT] [--debug] [--check]"
     }
 }
 

@@ -10,6 +10,7 @@ FIREWALL=/etc/wloc/firewall.nft
 FIREWALL_CTL=/usr/libexec/wloc/firewall.uc
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.uc
 AP_CTL=/usr/libexec/wloc/ap.uc
+WLOC_CTL=/usr/libexec/wloc/wlocctl
 START_ERROR=/var/run/wloc/start-error
 rule_count=0
 rule_error=''
@@ -100,7 +101,7 @@ startup_failure() {
 }
 
 start_service() {
-    local enabled listen_port debug debug_log cleanup_detail
+    local enabled listen_port debug debug_log cleanup_detail check_detail
 
     config_load wloc
     config_get_bool enabled main enabled 0
@@ -128,6 +129,12 @@ start_service() {
     done
     [ -z "$rule_error" ] || { startup_failure "$rule_error"; return 1; }
     [ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules'; return 1; }
+
+    if ! check_detail="$("$WLOC_CTL" check 2>&1)"; then
+        [ -n "$check_detail" ] || check_detail='unknown configuration error'
+        startup_failure "wlocd configuration validation failed: $check_detail"
+        return 1
+    fi
 
     cleanup_detail=''
     if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then

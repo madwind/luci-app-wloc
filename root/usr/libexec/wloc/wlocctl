@@ -1,0 +1,95 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+WLOCD=/usr/sbin/wlocd
+UCODE=/usr/bin/ucode
+RULES=/usr/libexec/wloc/rules.uc
+AP_CTL=/usr/libexec/wloc/ap.uc
+
+wifi_sections=''
+
+collect_wifi() {
+    wifi_sections="$wifi_sections $1"
+}
+
+rule_index() {
+    target="$1"
+    index=0
+    for section in $wifi_sections; do
+        [ "$section" = "$target" ] && { printf '%s\n' "$index"; return 0; }
+        index=$((index + 1))
+    done
+    return 1
+}
+
+run_check() {
+    config_load wloc
+    config_get listen_port main listen_port 61520
+    config_get_bool debug main debug 0
+
+    case "$listen_port" in ''|*[!0-9]*) printf '%s\n' 'invalid local listen port' >&2; return 1;; esac
+    [ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
+        printf '%s\n' 'invalid local listen port' >&2
+        return 1
+    }
+
+    wifi_sections=''
+    config_foreach collect_wifi wifi
+    set -- "$WLOCD" --check --listen-port "$listen_port" --rules-helper "$RULES"
+    [ "$debug" -eq 1 ] && set -- "$@" --debug
+
+    count=0
+    for section in $wifi_sections; do
+        config_get_bool enabled "$section" enabled 1
+        [ "$enabled" -eq 1 ] || continue
+        config_get iface "$section" iface ''
+        config_get latitude "$section" latitude
+        config_get longitude "$section" longitude
+        config_get outbound "$section" outbound direct
+        config_get tproxy_port "$section" tproxy_port
+
+        [ -n "$iface" ] || { printf '%s\n' 'interface is required for every enabled WLOC rule' >&2; return 1; }
+        [ -n "$latitude" ] && [ -n "$longitude" ] || {
+            printf 'incomplete location parameters for AP: %s\n' "$iface" >&2
+            return 1
+        }
+        "$UCODE" "$AP_CTL" find "$iface" >/dev/null 2>&1 || {
+            printf 'interface "%s" cannot be resolved\n' "$iface" >&2
+            return 1
+        }
+
+        set -- "$@" --rule "$section" "$iface" "$latitude" "$longitude" --rule-name "$section" "$iface"
+        case "$outbound" in
+            direct) ;;
+            tproxy)
+                index="$(rule_index "$section")" || return 1
+                profile=$((index + 1))
+                [ "$profile" -le 255 ] || {
+                    printf 'TPROXY profile limit exceeded for AP: %s\n' "$iface" >&2
+                    return 1
+                }
+                [ -n "$tproxy_port" ] || tproxy_port=$((12345 + index))
+                case "$tproxy_port" in ''|*[!0-9]*) printf 'invalid TPROXY port for AP: %s\n' "$iface" >&2; return 1;; esac
+                [ "$tproxy_port" -ge 1 ] 2>/dev/null && [ "$tproxy_port" -le 65535 ] 2>/dev/null || {
+                    printf 'invalid TPROXY port for AP: %s\n' "$iface" >&2
+                    return 1
+                }
+                set -- "$@" --rule-tproxy "$section" "$tproxy_port" "$profile"
+                ;;
+            *)
+                printf 'invalid outbound type for AP: %s (use direct or tproxy)\n' "$iface" >&2
+                return 1
+                ;;
+        esac
+        count=$((count + 1))
+    done
+
+    [ "$count" -gt 0 ] || { printf '%s\n' 'no enabled rules' >&2; return 1; }
+    "$@"
+}
+
+case "${1:-}" in
+    check) run_check ;;
+    *) printf '%s\n' 'unsupported wlocctl command' >&2; exit 1 ;;
+esac
