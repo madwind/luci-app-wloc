@@ -257,7 +257,6 @@ def copy_package_source(sdk_dir: Path) -> Path:
         "usr/libexec/wloc/firewall.uc",
         "usr/libexec/wloc/routing.uc",
         "usr/libexec/wloc/rules.uc",
-        "usr/libexec/wloc/update.uc",
         "usr/libexec/wloc/wifi-schedule.uc",
     )
     for relative in executable_paths:
@@ -412,7 +411,6 @@ def verify_package(
             "usr/libexec/wloc/firewall.uc",
             "usr/libexec/wloc/routing.uc",
             "usr/libexec/wloc/rules.uc",
-            "usr/libexec/wloc/update.uc",
             "usr/libexec/wloc/wifi-schedule.uc",
         )
         for relative in executable_paths:
