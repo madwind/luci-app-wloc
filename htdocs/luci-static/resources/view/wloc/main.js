@@ -33,18 +33,6 @@ return view.extend({
         option.rmempty = false;
         option.description = _('Normally this should not be changed. If your custom nftables rules redirect traffic to WLOC, use the same port. WLOC does not inspect or enforce redirect rules; a mismatched rule simply will not send traffic to the listener.');
 
-        var domainsOption = settings.option(form.DummyValue, '_intercepted_domains', _('Intercepted domains'));
-        domainsOption.rmempty = true;
-        domainsOption.cfgvalue = function() { return 'gs-loc.apple.com\ngs-loc-cn.apple.com'; };
-        domainsOption.renderWidget = function() {
-            return E('div', { 'class': 'wloc-fixed-domains' }, [
-                E('code', {}, 'gs-loc.apple.com'),
-                E('br'),
-                E('code', {}, 'gs-loc-cn.apple.com')
-            ]);
-        };
-        domainsOption.description = _('Apple WLOC endpoints intercepted by this service.');
-
         option = settings.option(form.Flag, 'debug_log', _('Debug request logging'));
         option.default = '0';
         option.rmempty = false;

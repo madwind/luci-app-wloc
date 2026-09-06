@@ -429,9 +429,6 @@ msgstr "活动"
 msgid "Ambiguous"
 msgstr "有歧义"
 
-msgid "Apple WLOC endpoints intercepted by this service."
-msgstr "此服务拦截的 Apple WLOC 端点。"
-
 msgid "Debug: fixed JSON response"
 msgstr "调试：固定 JSON 响应"
 
@@ -443,9 +440,6 @@ msgstr "错误"
 
 msgid "Firewall rules are not active."
 msgstr "防火墙规则未激活。"
-
-msgid "Intercepted domains"
-msgstr "拦截的域名"
 
 msgid "Interception status"
 msgstr "拦截状态"

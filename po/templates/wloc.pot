@@ -427,9 +427,6 @@ msgstr ""
 msgid "Ambiguous"
 msgstr ""
 
-msgid "Apple WLOC endpoints intercepted by this service."
-msgstr ""
-
 msgid "Debug: fixed JSON response"
 msgstr ""
 
@@ -440,9 +437,6 @@ msgid "Error"
 msgstr ""
 
 msgid "Firewall rules are not active."
-msgstr ""
-
-msgid "Intercepted domains"
 msgstr ""
 
 msgid "Interception status"
