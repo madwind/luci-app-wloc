@@ -17,7 +17,6 @@ const MAX_BYTES = 1024 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
 const MAX_PROFILE = 0xff;
-const XRAY_ROUTE_MARK = 0x1;
 const WLOC_ROUTE_MARK = 0x2;
 const PROFILE_SHIFT = 8;
 let sequence = 0;
@@ -406,9 +405,9 @@ function compile_runtime(raw) {
     for (let outbound in configured.outbounds) {
         let profile_mark = outbound.profile << PROFILE_SHIFT;
         let outbound_mark = profile_mark | WLOC_ROUTE_MARK;
-        push(ap_mark_rules, `iifname "${outbound.iface}" meta mark set ${hex(profile_mark)} return comment "wloc ap mark ${outbound.profile}"`);
-        push(ap_dispatch_rules, `meta mark ${hex(profile_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.profile}"`);
-        push(outbound_rules, `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.profile}"`);
+        push(ap_mark_rules, `iifname "${outbound.iface}" meta mark set meta mark | ${hex(profile_mark)} return comment "wloc ap mark ${outbound.profile}"`);
+        push(ap_dispatch_rules, `meta mark & 0xff00 == ${hex(profile_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.profile}"`);
+        push(outbound_rules, `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.profile}"`);
     }
     let compiled = replace(raw, /%port%/g, `${port}`);
     if (length(configured.interfaces)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', configured.interfaces));

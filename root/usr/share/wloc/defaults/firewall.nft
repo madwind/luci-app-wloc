@@ -10,7 +10,7 @@ table bridge wloc {
     chain mark_prerouting {
         type filter hook prerouting priority dstnat - 1;
         policy accept;
-        iifname @ap_interfaces meta l4proto { tcp, udp } counter meta mark set 0x80000000 jump ap_tproxy_marks comment "wloc ingress"
+        iifname @ap_interfaces meta l4proto { tcp, udp } counter meta mark set 0x2 jump ap_tproxy_marks comment "wloc ingress"
     }
 }
 table inet wloc {
@@ -58,11 +58,12 @@ table inet wloc {
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
         policy accept;
-        meta mark != 0x80000000 meta mark & 0xff00 == 0 return
+        meta mark & 0x2 == 0 return
+        iifname "lo" return
         ct direction reply return
-        meta nfproto ipv4 ip daddr @location_v4 meta l4proto tcp th dport 443 meta mark set 0x2 counter tproxy ip to :%port% accept comment "wloc location"
-        meta nfproto ipv6 ip6 daddr @location_v6 meta l4proto tcp th dport 443 meta mark set 0x2 counter tproxy ip6 to :%port% accept comment "wloc location"
-        meta l4proto { tcp, udp } th dport 53 meta mark set 0x2 counter tproxy to :%port% accept comment "wloc dns"
+        meta nfproto ipv4 ip daddr @location_v4 meta l4proto tcp th dport 443 counter tproxy ip to :%port% accept comment "wloc location"
+        meta nfproto ipv6 ip6 daddr @location_v6 meta l4proto tcp th dport 443 counter tproxy ip6 to :%port% accept comment "wloc location"
+        meta l4proto { tcp, udp } th dport 53 counter tproxy to :%port% accept comment "wloc dns"
         fib daddr type local meta mark set 0 return
         meta nfproto ipv4 ip daddr @bypass_v4 meta mark set 0 return
         meta nfproto ipv6 ip6 daddr @bypass_v6 meta mark set 0 return
