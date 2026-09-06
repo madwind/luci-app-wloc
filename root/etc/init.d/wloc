@@ -100,7 +100,7 @@ startup_failure() {
 }
 
 start_service() {
-    local enabled listen_port debug debug_log cleanup_detail firewall_apply_detail bootstrap_detail
+    local enabled listen_port debug debug_log cleanup_detail
 
     config_load wloc
     config_get_bool enabled main enabled 0
@@ -129,26 +129,14 @@ start_service() {
     [ -z "$rule_error" ] || { startup_failure "$rule_error"; return 1; }
     [ "$rule_count" -gt 0 ] || { startup_failure 'no enabled rules'; return 1; }
 
-    [ -r "$FIREWALL" ] || { startup_failure "firewall file is missing: $FIREWALL"; return 1; }
-
     cleanup_detail=''
-    if ! cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
+    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
         startup_failure "runtime cleanup failed: $cleanup_detail"
         return 1
     fi
 
-    if ! firewall_apply_detail="$("$UCODE" "$FIREWALL_CTL" apply-file "$FIREWALL" 2>&1)"; then
-        "$UCODE" "$FIREWALL_CTL" remove-runtime >/dev/null 2>&1 || true
-        startup_failure "firewall apply failed: ${firewall_apply_detail:-unknown error}"
-        return 1
-    fi
-
-    if ! bootstrap_detail="$("$UCODE" "$RULES" bootstrap-init "$listen_port" 2>&1)"; then
-        "$UCODE" "$FIREWALL_CTL" remove-runtime >/dev/null 2>&1 || true
-        startup_failure "runtime bootstrap failed: ${bootstrap_detail:-unknown error}"
-        return 1
-    fi
+    [ -r "$FIREWALL" ] || { startup_failure "firewall file is missing: $FIREWALL"; return 1; }
 
     mkdir -p /etc/wloc
     chmod 0700 /etc/wloc

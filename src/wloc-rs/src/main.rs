@@ -188,6 +188,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     runtime.block_on(async move {
         let transparent_tcp_listener_v4 = listener_v4(config.listen_port, tcp_listen_backlog)?;
         let transparent_tcp_listener_v6 = listener_v6(config.listen_port, tcp_listen_backlog)?;
+        let dns_udp_v4 = dns::listener_v4(config.listen_port)?;
+        let dns_udp_v6 = dns::listener_v6(config.listen_port)?;
         let status_path = std::env::var_os("WLOC_STATUS_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/wloc/status.json"));
@@ -218,15 +220,18 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
             |_| {},
         );
-        let bootstrap = bootstrap_rules_async(config.rules_helper.clone(), config.listen_port).await;
-        let initially_armed = if let Err(error) = bootstrap {
-            match cleanup_rules_async(config.rules_helper.clone()).await {
-                Ok(()) => status.update_detail(
-                    "lease_failed",
-                    "action=rules_removed fail_open=true phase=initial_start",
-                    Some(&error),
-                    |c| c.armed(false),
-                ),
+
+        if let Err(error) = bootstrap_rules_async(config.rules_helper.clone(), config.listen_port).await {
+            let detail = match cleanup_rules_async(config.rules_helper.clone()).await {
+                Ok(()) => {
+                    status.update_detail(
+                        "lease_failed",
+                        "action=rules_removed fail_open=true phase=initial_start",
+                        Some(&error),
+                        |c| c.armed(false),
+                    );
+                    error
+                }
                 Err(cleanup_error) => {
                     let detail = format!(
                         "initial rules bootstrap failed: {error}; cleanup failed: {cleanup_error}"
@@ -237,26 +242,25 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Some(&detail),
                         |c| c.armed(false),
                     );
+                    detail
                 }
-            }
-            false
-        } else {
-            status.update_detail(
-                "interception_armed",
-                &format!(
-                    "rules={} hosts={} targets=0 protocol=tcp,dns mode=dns-learned-ip listen_port={}",
-                    config.rules.len(),
-                    config.domains.join(","),
-                    config.listen_port
-                ),
-                None,
-                |c| c.armed(true),
-            );
-            true
-        };
+            };
+            return Err(std::io::Error::other(detail));
+        }
+
+        status.update_detail(
+            "interception_armed",
+            &format!(
+                "rules={} hosts={} targets=0 protocol=tcp,dns mode=dns-learned-ip listen_port={}",
+                config.rules.len(),
+                config.domains.join(","),
+                config.listen_port
+            ),
+            None,
+            |c| c.armed(true),
+        );
         eprintln!(
-            "wlocd: daemon=ready interception={} targets=0 dns_mode=intercept ca_generated={generated}",
-            initially_armed
+            "wlocd: daemon=ready interception=true targets=0 dns_mode=intercept ca_generated={generated}"
         );
 
         let dns_tracker = DnsTracker::new(
@@ -265,8 +269,6 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::clone(&status),
             config.debug,
         );
-        let dns_udp_v4 = dns::listener_v4(config.listen_port)?;
-        let dns_udp_v6 = dns::listener_v6(config.listen_port)?;
         let proxy = Arc::new(Proxy::new(
             server,
             client,
