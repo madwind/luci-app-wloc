@@ -149,36 +149,24 @@ function delete_route(spec) {
     return quiet(`ip -${spec.family} route del local ${q(spec.prefix)} dev lo table ${spec.table}`);
 }
 function ensure_route(spec) {
-    let current = route_state(spec);
-    if (current.conflict) return { ok: false, error: `refusing to replace existing IPv${spec.family} route ${spec.prefix}` };
-    if (!current.exact && !quiet(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`))
-        return { ok: false, error: `unable to install the IPv${spec.family} TPROXY local route` };
-    if (!route_state(spec).exact) return { ok: false, error: `IPv${spec.family} TPROXY local route verification failed` };
-    return { ok: true };
+    let current = route_state(spec), added = false;
+    if (current.conflict) return { ok: false, added, error: `refusing to replace existing IPv${spec.family} route ${spec.prefix}` };
+    if (!current.exact) {
+        if (!quiet(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`))
+            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY local route` };
+        added = true;
+    }
+    if (!route_state(spec).exact) return { ok: false, added, error: `IPv${spec.family} TPROXY local route verification failed` };
+    return { ok: true, added };
 }
 function ensure_rule(spec) {
-    if (!rule_present(spec) && !quiet(spec.rule)) return { ok: false, error: `unable to install the IPv${spec.family} TPROXY policy rule` };
-    if (!rule_present(spec)) return { ok: false, error: `IPv${spec.family} TPROXY policy rule verification failed` };
-    return { ok: true };
-}
-function install_state(state) {
-    for (let family in [ '4', '6' ]) {
-        let spec = state[`ipv${family}`];
-        if (!spec) continue;
-        let result = ensure_route(spec);
-        if (!result.ok) return result;
+    let added = false;
+    if (!rule_present(spec)) {
+        if (!quiet(spec.rule)) return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY policy rule` };
+        added = true;
     }
-    for (let family in [ '4', '6' ]) {
-        let spec = state[`ipv${family}`];
-        if (!spec) continue;
-        let result = ensure_rule(spec);
-        if (!result.ok) return result;
-    }
-    for (let family in [ '4', '6' ]) {
-        let spec = state[`ipv${family}`];
-        if (spec && !active(spec)) return { ok: false, error: `IPv${family} TPROXY policy route verification failed` };
-    }
-    return { ok: true };
+    if (!rule_present(spec)) return { ok: false, added, error: `IPv${spec.family} TPROXY policy rule verification failed` };
+    return { ok: true, added };
 }
 function remove_state(state, keep_routes) {
     if (!state) return { ok: true };
@@ -193,6 +181,46 @@ function remove_state(state, keep_routes) {
             return { ok: false, error: `unable to remove the IPv${family} TPROXY local route` };
     }
     return { ok: true };
+}
+function cleanup_created(created) {
+    let errors = [];
+    for (let i = length(created.rules) - 1; i >= 0; i--) {
+        let spec = created.rules[i];
+        if (rule_present(spec) && !delete_rules(spec)) push(errors, `unable to remove newly added IPv${spec.family} TPROXY policy rule`);
+    }
+    for (let i = length(created.routes) - 1; i >= 0; i--) {
+        let spec = created.routes[i];
+        if (route_state(spec).exact && !delete_route(spec)) push(errors, `unable to remove newly added IPv${spec.family} TPROXY local route`);
+    }
+    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
+}
+function install_state(state) {
+    let created = { routes: [], rules: [] };
+    for (let family in [ '4', '6' ]) {
+        let spec = state[`ipv${family}`];
+        if (!spec) continue;
+        let result = ensure_route(spec);
+        if (result.added) push(created.routes, spec);
+        if (!result.ok) return { ok: false, error: result.error, created };
+    }
+    for (let family in [ '4', '6' ]) {
+        let spec = state[`ipv${family}`];
+        if (!spec) continue;
+        let result = ensure_rule(spec);
+        if (result.added) push(created.rules, spec);
+        if (!result.ok) return { ok: false, error: result.error, created };
+    }
+    for (let family in [ '4', '6' ]) {
+        let spec = state[`ipv${family}`];
+        if (spec && !active(spec)) return { ok: false, error: `IPv${family} TPROXY policy route verification failed`, created };
+    }
+    return { ok: true, created };
+}
+function apply_failure(error, created) {
+    let cleaned = cleanup_created(created || { routes: [], rules: [] });
+    return cleaned.ok
+        ? { ok: false, error }
+        : { ok: false, error, detail: `partial routing cleanup failed: ${cleaned.error}` };
 }
 function state_status(state) {
     let ipv4 = !!state && !!state.ipv4 && active(state.ipv4);
@@ -271,10 +299,10 @@ function apply(raw) {
 
     fs.unlink(APPLIED);
     let installed = install_state(state);
-    if (!installed.ok) return installed;
+    if (!installed.ok) return apply_failure(installed.error, installed.created);
 
     let saved = atomic_write(APPLIED, state.normalized);
-    if (!saved.ok) return saved;
+    if (!saved.ok) return apply_failure(saved.error, installed.created);
 
     return {
         ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
