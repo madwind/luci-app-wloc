@@ -82,15 +82,11 @@ function version_relation(left, right) {
     let found = match(trim(result.output || ''), /[<=>]/);
     return found ? found[0] : null;
 }
-function board_target() {
-    try {
-        let ubus = connect();
-        if (!ubus) return null;
-        let board = ubus.call('system', 'board', {});
-        return board && board.release ? `${board.release.target || ''}` : null;
-    } catch (e) { return null; }
+function package_arch() {
+    let lines = split(read_text('/etc/apk/arch') || '', /\r?\n/);
+    let arch = length(lines) ? trim(lines[0] || '') : '';
+    return arch && match(arch, /^[A-Za-z0-9._+-]+$/) ? arch : null;
 }
-function asset_suffix() { let target = board_target(); return target ? replace(target, /\//g, '-') : null; }
 function fetch_to(url, path, timeout) {
     if (!match(`${url ?? ''}`, /^https:\/\//)) return { ok: false, error: 'download URL must use HTTPS' };
     fs.unlink(path);
@@ -170,8 +166,8 @@ function status_result() {
 function probe_release() {
     let installed = installed_version();
     if (!installed) return { ok: false, error: 'Unable to determine installed WLOC version.' };
-    let suffix = asset_suffix();
-    if (!suffix) return { ok: false, error: 'Unable to determine OpenWrt target.' };
+    let arch = package_arch();
+    if (!arch) return { ok: false, error: 'Unable to determine OpenWrt package architecture.' };
     if (!mkdirp(STATE_DIR)) return { ok: false, error: 'Unable to create the WLOC update directory.' };
     let release_path = temporary(`${STATE_DIR}/release.json`);
     let fetched = fetch_to(API_URL, release_path, 20);
@@ -180,11 +176,11 @@ function probe_release() {
     if (type(release) != 'object') return { ok: false, error: 'The latest WLOC release metadata is invalid.' };
     let tag = `${release.tag_name || ''}`;
     if (!match(tag, /^v[A-Za-z0-9._+~-]+$/)) return { ok: false, error: 'The latest WLOC release tag is invalid.' };
-    let latest = substr(tag, 1), asset = `${PACKAGE}-${latest}-${suffix}.apk`;
+    let latest = substr(tag, 1), asset = `${PACKAGE}-${latest}-${arch}.apk`;
     let sha_path = temporary(`${STATE_DIR}/check.sha256`);
     fetched = fetch_to(`https://github.com/${REPO}/releases/download/${tag}/${asset}.sha256`, sha_path, 20);
     fs.unlink(sha_path);
-    if (!fetched.ok) return { ok: false, error: `The latest release does not provide a package for target ${suffix}.` };
+    if (!fetched.ok) return { ok: false, error: `The latest release does not provide a package for architecture ${arch}.` };
     let relation = version_relation(latest, installed);
     if (!relation) return { ok: false, error: 'Unable to compare WLOC package versions.' };
     return { ok: true, installed_version: installed, latest_version: latest, update_available: relation == '>', release_tag: tag, asset };
