@@ -545,8 +545,13 @@ return view.extend({
             var enabled = lastStatus && truthy(lastStatus.enabled);
 
             serviceButtons.forEach(function(button) {
+                if (button.primary) {
+                    button.name = running ? 'restart' : 'start';
+                    button.node.textContent = running ? _('Restart') : _('Start');
+                }
+
                 button.node.disabled = actionInProgress || !runningKnown ||
-                    (button.name === 'start' && (running || !enabled)) ||
+                    ((button.name === 'start' || button.name === 'restart') && !enabled) ||
                     (button.name === 'stop' && !running);
             });
 
@@ -567,6 +572,9 @@ return view.extend({
             var firewallActive = firewallKnown && truthy(result.firewall_active);
             var routingKnown = routingResult.ok === true && routingResult.route_active !== undefined;
             var routingActive = routingKnown && truthy(routingResult.route_active);
+            var routeIpv4 = routingKnown && truthy(routingResult.route_ipv4);
+            var routeIpv6 = routingKnown && truthy(routingResult.route_ipv6);
+            var ipv6Enabled = routingKnown && truthy(routingResult.ipv6_enabled);
             var reason = String(result.service_reason || '');
 
             wlocUi.setState(service, running ? 'ok' : runningKnown ? 'warn' : 'notice',
@@ -579,7 +587,11 @@ return view.extend({
             if (!routingKnown) {
                 wlocUi.setState(routing, 'notice', _('Unavailable'));
             } else if (routingActive) {
-                wlocUi.setState(routing, 'ok', _('Active · IPv4'));
+                wlocUi.setState(routing, 'ok', ipv6Enabled ? _('Active · IPv4 + IPv6') : _('Active · IPv4'));
+            } else if (routeIpv4) {
+                wlocUi.setState(routing, 'warn', ipv6Enabled ? _('Partial · IPv4 only') : _('Active · IPv4'));
+            } else if (routeIpv6) {
+                wlocUi.setState(routing, 'warn', _('Partial · IPv6 only'));
             } else {
                 wlocUi.setState(routing, 'warn', _('Inactive'));
             }
@@ -646,7 +658,9 @@ return view.extend({
                 if (complete) {
                     transitionBusy = false;
                     return callStatus().then(function(result) {
-                        return applyStatus(result, lastRoutingStatus);
+                        return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
+                            return applyStatus(result, routingResult);
+                        });
                     });
                 }
                 if (Date.now() >= actionDeadline)
@@ -745,14 +759,15 @@ return view.extend({
             });
         }
 
-        function serviceButton(name, title, className) {
+        function serviceButton(name, title, className, primary) {
             var button = E('button', {
                 'class': 'btn cbi-button ' + className,
                 'type': 'button'
             }, title);
-            serviceButtons.push({ name: name, node: button });
+            var entry = { name: name, node: button, primary: primary === true };
+            serviceButtons.push(entry);
             button.addEventListener('click', ui.createHandlerFn(button, function() {
-                return serviceAction(name);
+                return serviceAction(entry.name);
             }));
             return button;
         }
@@ -792,8 +807,7 @@ return view.extend({
                         'style': 'display:flex; flex-wrap:wrap; align-items:center; gap:.75rem;'
                     }, [
                         E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.5rem;' }, [
-                            serviceButton('start', _('Start'), 'cbi-button-positive'),
-                            serviceButton('restart', _('Restart'), 'cbi-button-positive'),
+                            serviceButton('start', _('Start'), 'cbi-button-positive', true),
                             E('a', { 'class': 'btn cbi-button cbi-button-action', href: '/wloc-ca.mobileconfig' }, _('Download CA')),
                             regenerateButton
                         ]),
