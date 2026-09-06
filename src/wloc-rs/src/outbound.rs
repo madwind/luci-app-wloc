@@ -8,6 +8,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use crate::config::Outbound;
 
 const WLOC_ROUTE_MARK: u32 = 0x00000002;
+const WLOCD_PROCESSED_MARK: u32 = 0x00010000;
 const PROFILE_SHIFT: u32 = 8;
 const MAX_PROFILE: u32 = 0xff;
 
@@ -28,7 +29,7 @@ fn profile_id(mark: u32) -> io::Result<u32> {
 }
 
 fn outbound_mark(mark: u32) -> io::Result<u32> {
-    Ok((profile_id(mark)? << PROFILE_SHIFT) | WLOC_ROUTE_MARK)
+    Ok((profile_id(mark)? << PROFILE_SHIFT) | WLOCD_PROCESSED_MARK | WLOC_ROUTE_MARK)
 }
 
 fn set_socket_mark(socket: &Socket, mark: u32) -> io::Result<()> {

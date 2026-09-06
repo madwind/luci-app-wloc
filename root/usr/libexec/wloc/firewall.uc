@@ -18,6 +18,7 @@ const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
 const MAX_PROFILE = 0xff;
 const WLOC_ROUTE_MARK = 0x2;
+const WLOCD_PROCESSED_MARK = 0x10000;
 const PROFILE_SHIFT = 8;
 let sequence = 0;
 
@@ -404,7 +405,7 @@ function compile_runtime(raw) {
     let ap_mark_rules = [], ap_dispatch_rules = [], outbound_rules = [];
     for (let outbound in configured.outbounds) {
         let profile_mark = outbound.profile << PROFILE_SHIFT;
-        let outbound_mark = profile_mark | WLOC_ROUTE_MARK;
+        let outbound_mark = profile_mark | WLOCD_PROCESSED_MARK | WLOC_ROUTE_MARK;
         push(ap_mark_rules, `iifname "${outbound.iface}" meta mark set meta mark | ${hex(profile_mark)} return comment "wloc ap mark ${outbound.profile}"`);
         push(ap_dispatch_rules, `meta mark & 0xff00 == ${hex(profile_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.profile}"`);
         push(outbound_rules, `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.profile}"`);
