@@ -186,12 +186,6 @@ function normalize_state(state) {
 }
 function status_result() {
     let state = normalize_state(read_state());
-    if (state.post_check_error == 'WLOC restarted, but interception is not armed yet; runtime recovery will continue automatically.' ||
-        state.post_check_error == 'WLOC did not remain running after update; the service was left stopped.') {
-        if (!daemon_running()) quiet('/etc/init.d/wloc start');
-        state.post_check_error = null;
-        save_state(state);
-    }
     return {
         ok: true,
         installed_version: state.installed_version || null,
