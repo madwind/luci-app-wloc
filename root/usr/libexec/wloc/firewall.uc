@@ -527,8 +527,8 @@ function read_current() {
 }
 function remove_runtime() {
     let errors = [];
-    let reset = rules('reset', []);
-    if (!reset.ok) push(errors, reset.error || 'unable to reset runtime rules');
+    let cleaned = rules('cleanup', []);
+    if (!cleaned.ok) push(errors, cleaned.error || 'unable to clean runtime rules');
     let removed = remove_tables();
     if (!removed.ok) push(errors, removed.error);
     fs.unlink(APPLIED); fs.unlink(NEXT);
@@ -541,7 +541,6 @@ function file_input(path) {
     return raw == null ? { ok: false, error: `cannot read ${path}` } : { ok: true, raw };
 }
 function dispatch(command, args) {
-    if (command == 'read') return read_current();
     if (command == 'active') return active();
     if (command == 'deactivate-runtime') return deactivate_runtime();
     if (command == 'remove-runtime') return remove_runtime();

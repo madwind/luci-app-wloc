@@ -287,12 +287,8 @@ function file_input(path) {
 function dispatch(command, args) {
     if (command == 'read') return read_current();
     if (command == 'active') return runtime_current();
-    if (command == 'ready') {
-        let status = snapshot_status(read_text(APPLIED));
-        return status.ok ? { ok: true, active: status.active } : status;
-    }
     if (command == 'apply-effective') return apply_effective();
-    if (command == 'deactivate' || command == 'reset') return deactivate();
+    if (command == 'deactivate') return deactivate();
     if (command == 'validate-file' || command == 'save-file' || command == 'apply-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;

@@ -177,7 +177,7 @@ function bootstrap(port) {
 function dispatch(command, args) {
     if (command == 'bootstrap') return bootstrap(args[0]);
     if (command == 'update-targets') return update_targets(args);
-    if (command == 'cleanup' || command == 'reset') return cleanup();
+    if (command == 'cleanup') return cleanup();
     return { ok: false, error: `unsupported rules command: ${command}` };
 }
 

@@ -153,7 +153,6 @@ function run_loop() {
 }
 function dispatch(command) {
     if (command == 'run') return run_loop();
-    if (command == 'reconcile') return reconcile();
     return { ok: false, error: `unsupported WiFi schedule command: ${command}` };
 }
 

@@ -474,7 +474,7 @@ function auto_run() {
 function dispatch(command, args) {
     if (command == 'status') return status_result();
     if (command == 'check') return check_update();
-    if (command == 'install' || command == 'start') return start_update();
+    if (command == 'install') return start_update();
     if (command == 'stop') return stop_update();
     if (command == 'worker') { let state = worker_update(); return { ok: state.status == 'done', state }; }
     if (command == 'auto-status') return auto_status();
