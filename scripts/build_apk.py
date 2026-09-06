@@ -536,10 +536,6 @@ def main() -> int:
     shutil.copy2(matches[0], apk)
     verify_package(sdk_dir, apk, dist_dir, cfg, package_version, package_release)
 
-    checksum_line = f"{sha256(apk)}  {apk.name}\n"
-    checksum_path = Path(str(apk) + ".sha256")
-    checksum_path.write_text(checksum_line, encoding="utf-8")
-    print(checksum_line, end="")
     print(f"READY: {apk}")
     return 0
 

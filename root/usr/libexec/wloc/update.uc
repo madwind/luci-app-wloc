@@ -96,6 +96,16 @@ function fetch_to(url, path, timeout) {
     fs.unlink(path);
     return { ok: false, error: compact_error(result.output) || `uclient-fetch exited with status ${result.code}` };
 }
+function release_asset(release, name) {
+    if (type(release?.assets) != 'array') return null;
+    for (let asset in release.assets)
+        if (type(asset) == 'object' && `${asset.name || ''}` == name) return asset;
+    return null;
+}
+function release_digest(asset) {
+    let found = match(lc(trim(`${asset?.digest || ''}`)), /^sha256:([0-9a-f]{64})$/);
+    return found ? found[1] : null;
+}
 function daemon_running() {
     try {
         let ubus = connect();
@@ -110,7 +120,7 @@ function default_state() {
         installed_version: installed_version(), latest_version: null, update_available: null,
         checked: null, check_ok: null, last_check_error: null, last_update: null,
         updated: false, post_check_error: null, error: null, message: null,
-        release_tag: null, asset: null
+        release_tag: null, asset: null, sha256: null, download_url: null
     };
 }
 function read_state() {
@@ -212,14 +222,20 @@ function probe_release() {
     if (type(release) != 'object') return { ok: false, error: 'The latest WLOC release metadata is invalid.' };
     let tag = `${release.tag_name || ''}`;
     if (!match(tag, /^v[A-Za-z0-9._+~-]+$/)) return { ok: false, error: 'The latest WLOC release tag is invalid.' };
-    let latest = substr(tag, 1), asset = `${PACKAGE}-${latest}-${arch}.apk`;
-    let sha_path = temporary(`${STATE_DIR}/check.sha256`);
-    fetched = fetch_to(`https://github.com/${REPO}/releases/download/${tag}/${asset}.sha256`, sha_path, 20);
-    fs.unlink(sha_path);
-    if (!fetched.ok) return { ok: false, error: `The latest release does not provide a package for architecture ${arch}.` };
+    let latest = substr(tag, 1), name = `${PACKAGE}-${latest}-${arch}.apk`;
+    let asset = release_asset(release, name);
+    if (!asset) return { ok: false, error: `The latest release does not provide a package for architecture ${arch}.` };
+    let digest = release_digest(asset);
+    if (!digest) return { ok: false, error: 'The latest WLOC release package digest is invalid.' };
+    let url = `${asset.browser_download_url || ''}`;
+    let expected_url = `https://github.com/${REPO}/releases/download/${tag}/${name}`;
+    if (url != expected_url) return { ok: false, error: 'The latest WLOC release package URL is invalid.' };
     let relation = version_relation(latest, installed);
     if (!relation) return { ok: false, error: 'Unable to compare WLOC package versions.' };
-    return { ok: true, installed_version: installed, latest_version: latest, update_available: relation == '>', release_tag: tag, asset };
+    return {
+        ok: true, installed_version: installed, latest_version: latest, update_available: relation == '>',
+        release_tag: tag, asset: name, sha256: digest, download_url: url
+    };
 }
 function check_update() {
     let state = normalize_state(read_state());
@@ -231,7 +247,8 @@ function check_update() {
     state.checked = now(); state.check_ok = probe.ok === true; state.installed_version = probe.installed_version || installed_version() || state.installed_version;
     if (probe.ok) {
         state.latest_version = probe.latest_version; state.update_available = probe.update_available;
-        state.release_tag = probe.release_tag; state.asset = probe.asset; state.last_check_error = null;
+        state.release_tag = probe.release_tag; state.asset = probe.asset; state.sha256 = probe.sha256; state.download_url = probe.download_url;
+        state.last_check_error = null;
     } else state.last_check_error = probe.error || 'Update check failed.';
     save_state(state);
     return probe.ok ? status_result() : { ok: false, error: state.last_check_error };
@@ -256,32 +273,29 @@ function done_worker(state, message) {
 }
 function worker_update_inner() {
     let state = read_state(); state.pid = pid();
-    if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
+    if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset || !state.sha256 || !state.download_url)
         return fail_worker(state, 'No checked WLOC update is available. Run Check updates first.');
-    let apk = temporary(`${STATE_DIR}/${state.asset}.tmp`), sha = `${apk}.sha256`;
+    let apk = temporary(`${STATE_DIR}/${state.asset}.tmp`);
     set_phase(state, 'downloading', 'Downloading WLOC package');
-    let fetched = fetch_to(`https://github.com/${REPO}/releases/download/${state.release_tag}/${state.asset}`, apk, 30);
+    let fetched = fetch_to(state.download_url, apk, 30);
     if (!fetched.ok) { fs.unlink(apk); return fail_worker(state, 'Unable to download the WLOC update package.'); }
-    fetched = fetch_to(`https://github.com/${REPO}/releases/download/${state.release_tag}/${state.asset}.sha256`, sha, 20);
-    if (!fetched.ok) { fs.unlink(apk); fs.unlink(sha); return fail_worker(state, 'Unable to download the WLOC update package checksum.'); }
 
     set_phase(state, 'verifying', 'Verifying WLOC package');
-    let expected_match = match(trim(read_text(sha) || ''), /^([0-9A-Fa-f]{64})/);
     let hash = capture(`sha256sum ${q(apk)}`), actual_match = hash.ok ? match(hash.output || '', /^([0-9A-Fa-f]{64})/) : null;
-    let expected = expected_match ? lc(expected_match[1]) : '', actual = actual_match ? lc(actual_match[1]) : '';
-    if (!expected || !actual || expected != actual) { fs.unlink(apk); fs.unlink(sha); return fail_worker(state, 'WLOC update SHA256 verification failed.'); }
+    let expected = lc(`${state.sha256}`), actual = actual_match ? lc(actual_match[1]) : '';
+    if (!actual || expected != actual) { fs.unlink(apk); return fail_worker(state, 'WLOC update SHA256 verification failed.'); }
     let simulated = capture(`apk --network=no add --allow-untrusted --simulate --upgrade ${q(apk)}`);
-    if (!simulated.ok) { fs.unlink(apk); fs.unlink(sha); return fail_worker(state, 'WLOC update dependencies cannot be satisfied without network access after download.'); }
+    if (!simulated.ok) { fs.unlink(apk); return fail_worker(state, 'WLOC update dependencies cannot be satisfied without network access after download.'); }
 
     let was_running = daemon_running();
     if (was_running) {
         set_phase(state, 'stopping', 'Stopping WLOC before package installation');
-        if (!quiet('/etc/init.d/wloc stop')) { fs.unlink(apk); fs.unlink(sha); return fail_worker(state, 'Unable to stop WLOC before package installation.'); }
+        if (!quiet('/etc/init.d/wloc stop')) { fs.unlink(apk); return fail_worker(state, 'Unable to stop WLOC before package installation.'); }
     }
 
     set_phase(state, 'installing', 'Installing WLOC package');
     let installed = capture(`WLOC_DEFER_RESTART=1 apk --network=no add --allow-untrusted --upgrade ${q(apk)}`);
-    fs.unlink(apk); fs.unlink(sha);
+    fs.unlink(apk);
     if (!installed.ok) {
         let detail = compact_error(installed.output || '');
         if (was_running) {
@@ -321,7 +335,7 @@ function start_update() {
     if (operation_active(state)) return status_result();
     let owner = active_lock_owner();
     if (owner) return { ok: false, error: 'A WLOC update is already in progress.', pid: owner };
-    if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
+    if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset || !state.sha256 || !state.download_url)
         return { ok: false, error: 'No checked WLOC update is available. Run Check updates first.' };
     state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
     state.post_check_error = null; state.error = null; state.message = 'Update started';

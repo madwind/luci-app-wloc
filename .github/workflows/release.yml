@@ -79,13 +79,12 @@ jobs:
           mkdir -p release-assets
           asset="luci-app-wloc-${WLOC_VERSION}-r${WLOC_RELEASE}-${{ matrix.apk_arch }}.apk"
           cp "$source_apk" "release-assets/$asset"
-          (cd release-assets && sha256sum "$asset" >"$asset.sha256")
 
       - name: Upload ${{ matrix.target }}/${{ matrix.subtarget }} artifacts
         uses: actions/upload-artifact@v7
         with:
           name: wloc-${{ matrix.target }}-${{ matrix.subtarget }}
-          path: release-assets/*
+          path: release-assets/*.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -117,9 +116,9 @@ jobs:
           . ./version.env
           release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
           if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release upload "$release_tag" release-assets/* --clobber
+            gh release upload "$release_tag" release-assets/*.apk --clobber
           else
-            gh release create "$release_tag" release-assets/* \
+            gh release create "$release_tag" release-assets/*.apk \
               --target "$GITHUB_SHA" \
               --generate-notes \
               --title "$release_tag"
