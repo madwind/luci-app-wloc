@@ -1,7 +1,13 @@
 'use strict';
 'require view';
 'require form';
+'require rpc';
 'require uci';
+'require wloc.ui as wlocUi';
+
+var callServiceSync = rpc.declare({ object: 'luci.wloc.service', method: 'sync', expect: { '': {} }, reject: true });
+var callStart = rpc.declare({ object: 'luci.wloc.service', method: 'start', expect: { '': {} }, reject: true });
+var callStop = rpc.declare({ object: 'luci.wloc.service', method: 'stop', expect: { '': {} }, reject: true });
 
 return view.extend({
     load: function() {
@@ -50,5 +56,34 @@ return view.extend({
         option.description = _('When enabled, requests to the fixed Apple WLOC endpoints return {"wloc":"ok"} without contacting the upstream server.');
 
         return map.render();
+    },
+
+    handleSaveApply: function(event, mode) {
+        if (this._wlocAppliedHandler)
+            document.removeEventListener('uci-applied', this._wlocAppliedHandler);
+
+        var appliedHandler = function() {
+            document.removeEventListener('uci-applied', appliedHandler);
+
+            if (this._wlocAppliedHandler === appliedHandler)
+                this._wlocAppliedHandler = null;
+
+            return callServiceSync().then(function(result) {
+                return wlocUi.requireOk(result, _('WLOC boot state synchronization failed.'));
+            }).then(function(result) {
+                return result.enabled ? callStart() : callStop();
+            }).then(function(result) {
+                return wlocUi.requireOk(result, _('WLOC service state reconciliation failed.'));
+            }).then(function() {
+                return true;
+            }).catch(function(error) {
+                wlocUi.notifyFatal(error, _('WLOC service state reconciliation failed.'));
+                return false;
+            });
+        }.bind(this);
+
+        this._wlocAppliedHandler = appliedHandler;
+        document.addEventListener('uci-applied', appliedHandler);
+        return this.super('handleSaveApply', [ event, mode ]);
     }
 });

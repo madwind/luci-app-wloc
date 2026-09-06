@@ -17,6 +17,14 @@ function service_enabled() {
     return value === true || value === 1 || value === '1';
 }
 
+function sync_boot() {
+    let enabled = service_enabled();
+    let action = enabled ? 'enable' : 'disable';
+    if (system(`${INIT} ${action} >/dev/null 2>&1`) !== 0)
+        return { ok: false, enabled, error: `Unable to ${action} WLOC at boot.` };
+    return { ok: true, enabled };
+}
+
 function service_running() {
     if (!ubus) return false;
     try {
@@ -68,6 +76,7 @@ function defer_action(request, action) {
 }
 
 const methods = {
+    sync: { args: {}, call: () => sync_boot() },
     start: { args: {}, call: request => defer_action(request, 'start') },
     stop: { args: {}, call: request => defer_action(request, 'stop') },
     restart: { args: {}, call: request => defer_action(request, 'restart') }
