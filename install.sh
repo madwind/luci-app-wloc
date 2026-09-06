@@ -16,12 +16,9 @@ command -v apk >/dev/null 2>&1 || die 'apk is required (OpenWrt 25.12+)'
 command -v wget >/dev/null 2>&1 || die 'wget is required'
 command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
 
-ARCH="$(apk --print-arch 2>/dev/null || true)"
+ARCH="$(head -n 1 /etc/apk/arch 2>/dev/null | tr -d '\r' || true)"
 case "$ARCH" in
-    aarch64_cortex-a53) TARGET='mediatek-filogic' ;;
-    aarch64_generic) TARGET='rockchip-armv8' ;;
-    x86_64) TARGET='x86-64' ;;
-    *) die "unsupported package architecture: ${ARCH:-unknown}" ;;
+    ''|*[!A-Za-z0-9._+-]*) die "invalid package architecture: ${ARCH:-unknown}" ;;
 esac
 
 mkdir -p "$TMP"
@@ -36,11 +33,11 @@ TAG="$(sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' "$COMPACT")"
 ASSET_LINE="$(
     sed 's#{"url":"https://api.github.com/repos/madwind/luci-app-wloc/releases/assets/#\
 &#g' "$COMPACT" |
-        grep "\"name\":\"luci-app-wloc-[^\"]*-${TARGET}\\.apk\"" |
+        grep "\"name\":\"luci-app-wloc-[^\"]*-${ARCH}\\.apk\"" |
         head -n 1
 )"
 
-[ -n "$ASSET_LINE" ] || die "release APK asset not found for $TARGET"
+[ -n "$ASSET_LINE" ] || die "release APK asset not found for $ARCH"
 
 ASSET_URL="$(printf '%s\n' "$ASSET_LINE" | sed -n 's#^{"url":"\([^"]*\)".*#\1#p')"
 ASSET="$(printf '%s\n' "$ASSET_LINE" | sed -n 's#.*"name":"\([^"]*\.apk\)".*#\1#p')"
@@ -54,7 +51,7 @@ VERSION="${TAG#v}"
 [ -n "$SHA256" ] || die 'missing release asset SHA256'
 
 case "$TAG" in *[!A-Za-z0-9._+-]*) die 'invalid release tag' ;; esac
-case "$ASSET" in luci-app-wloc-*-$TARGET.apk) ;; *) die 'invalid package asset' ;; esac
+case "$ASSET" in luci-app-wloc-*-$ARCH.apk) ;; *) die 'invalid package asset' ;; esac
 case "$SHA256" in *[!0-9a-f]*) die 'invalid SHA256' ;; esac
 [ "${#SHA256}" -eq 64 ] || die 'invalid SHA256 length'
 
@@ -67,7 +64,7 @@ case "$ASSET_ID" in ''|*[!0-9]*) die 'invalid release asset ID' ;; esac
 
 PACKAGE="$TMP/$ASSET"
 
-printf 'Downloading WLOC %s for %s...\n' "$VERSION" "$TARGET"
+printf 'Downloading WLOC %s for %s...\n' "$VERSION" "$ARCH"
 wget --header='Accept: application/octet-stream' -O "$PACKAGE" "$ASSET_URL" || die 'package download failed'
 
 ACTUAL="$(sha256sum "$PACKAGE" | awk '{ print $1 }')"
