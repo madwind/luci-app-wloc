@@ -7,6 +7,7 @@ import { cursor } from 'uci';
 import { connect } from 'ubus';
 
 const STATE_DIR = '/tmp/wloc-update';
+const LOCK_DIR = `${STATE_DIR}/lock`;
 const STATE_PATH = `${STATE_DIR}/wloc.json`;
 const LOG = `${STATE_DIR}/wloc.log`;
 const VERSION_CACHE = '/usr/share/wloc/installed-version';
@@ -128,6 +129,41 @@ function save_state(state) {
     return atomic_write(STATE_PATH, sprintf('%J\n', state), 0o600);
 }
 function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
+function update_process_alive(process_pid) {
+    process_pid = int(process_pid || 0);
+    if (!process_alive(process_pid)) return false;
+    let command = replace(read_text(`/proc/${process_pid}/cmdline`) || '', /\0/g, ' ');
+    return index(command, SELF) >= 0 && index(command, 'worker') >= 0;
+}
+function lock_owner() { return int(trim(read_text(`${LOCK_DIR}/pid`) || '0')); }
+function active_lock_owner() { let owner = lock_owner(); return update_process_alive(owner) ? owner : 0; }
+function create_update_lock() {
+    if (!quiet(`mkdir ${q(LOCK_DIR)}`)) return false;
+    fs.chmod(LOCK_DIR, 0o700);
+    let owner = pid(), value = `${owner}\n`;
+    let written = fs.writefile(`${LOCK_DIR}/pid`, value);
+    if (written == null || written != length(value)) { quiet(`rm -rf ${q(LOCK_DIR)}`); return false; }
+    fs.chmod(`${LOCK_DIR}/pid`, 0o600);
+    return true;
+}
+function acquire_update_lock() {
+    if (!mkdirp(STATE_DIR)) return { ok: false, error: 'Unable to create the WLOC update directory.' };
+    if (create_update_lock()) return { ok: true, pid: pid() };
+    let owner = active_lock_owner();
+    if (owner) return { ok: false, error: 'A WLOC update is already in progress.', pid: owner };
+    if (!lock_owner()) {
+        system('sleep 1');
+        owner = active_lock_owner();
+        if (owner) return { ok: false, error: 'A WLOC update is already in progress.', pid: owner };
+    }
+    quiet(`rm -rf ${q(LOCK_DIR)}`);
+    if (create_update_lock()) return { ok: true, pid: pid() };
+    owner = active_lock_owner();
+    return { ok: false, error: 'A WLOC update is already in progress.', pid: owner || null };
+}
+function release_update_lock() {
+    if (lock_owner() == pid()) quiet(`rm -rf ${q(LOCK_DIR)}`);
+}
 function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
 function operation_active(state) { return active_status(state) && process_alive(state.pid); }
 function normalize_state(state) {
@@ -188,6 +224,8 @@ function probe_release() {
 function check_update() {
     let state = normalize_state(read_state());
     if (operation_active(state)) return { ok: false, error: 'A WLOC update is already in progress.' };
+    let owner = active_lock_owner();
+    if (owner) return { ok: false, error: 'A WLOC update is already in progress.', pid: owner };
     state.status = 'idle'; state.phase = null; state.error = null; state.message = null; state.updated = false; state.finished = null;
     let probe = probe_release();
     state.checked = now(); state.check_ok = probe.ok === true; state.installed_version = probe.installed_version || installed_version() || state.installed_version;
@@ -216,7 +254,7 @@ function done_worker(state, message) {
     }
     state.last_update = state.finished; save_state(state); return state;
 }
-function worker_update() {
+function worker_update_inner() {
     let state = read_state(); state.pid = pid();
     if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
         return fail_worker(state, 'No checked WLOC update is available. Run Check updates first.');
@@ -263,6 +301,15 @@ function worker_update() {
     else if (state.latest_version && version_relation(state.installed_version, state.latest_version) == '<') append_post_error(state, 'The installed WLOC version is still older than the checked release version.');
     return done_worker(state, 'WLOC updated successfully');
 }
+function worker_update() {
+    let locked = acquire_update_lock();
+    if (!locked.ok) { let state = read_state(); state.pid = pid(); return fail_worker(state, locked.error); }
+    let state;
+    try { state = worker_update_inner(); }
+    catch (e) { let failed = read_state(); failed.pid = pid(); state = fail_worker(failed, `${e}`); }
+    release_update_lock();
+    return state;
+}
 function spawn_worker() {
     let command = `/usr/bin/ucode ${q(SELF)} worker </dev/null >>${q(LOG)} 2>&1 & echo $!`;
     let result = capture(command), worker_pid = int(trim(result.output || '0'));
@@ -272,6 +319,8 @@ function start_update() {
     if (!mkdirp(STATE_DIR)) return { ok: false, error: 'Unable to create the WLOC update directory.' };
     let state = normalize_state(read_state());
     if (operation_active(state)) return status_result();
+    let owner = active_lock_owner();
+    if (owner) return { ok: false, error: 'A WLOC update is already in progress.', pid: owner };
     if (state.check_ok !== true || state.update_available !== true || !state.release_tag || !state.asset)
         return { ok: false, error: 'No checked WLOC update is available. Run Check updates first.' };
     state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
@@ -323,6 +372,7 @@ function stop_update() {
         state.error = 'Unable to stop the WLOC update worker.'; state.message = 'Unable to stop update';
         save_state(state); return { ok: false, error: state.error };
     }
+    if (lock_owner() == process_pid) quiet(`rm -rf ${q(LOCK_DIR)}`);
     quiet(`rm -f ${q(STATE_DIR)}/*.tmp.${process_pid}.* ${q(STATE_DIR)}/apk-install.log.${process_pid}`);
     state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = 'Update stopped'; save_state(state);
     return status_result();
