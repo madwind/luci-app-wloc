@@ -6,6 +6,7 @@
 * Do not build the project.
 * Do not run, add, or modify tests.
 * Remove obsolete or dead code made unnecessary by the changes.
+* Never add backward compatibility, migration, or fallback logic for obsolete configuration formats or options; support only the current configuration model.
 * Prefer native LuCI components and APIs over custom UI implementations.
 * Follow OpenWrt, LuCI, ucode, POSIX shell, and Rust best practices.
 * Keep Rust code compatible with OpenWrt, musl, and cross-compilation.
