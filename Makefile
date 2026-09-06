@@ -58,17 +58,6 @@ upgrade_running='/tmp/wloc-upgrade.running'
 mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
 printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
 chmod 0644 "$${version_cache}" 2>/dev/null || true
-chmod 0755 \
-	"$${postinst_root}/etc/init.d/wloc" \
-	"$${postinst_root}/usr/libexec/wloc/ap.uc" \
-	"$${postinst_root}/usr/libexec/wloc/firewall.uc" \
-	"$${postinst_root}/usr/libexec/wloc/routing.uc" \
-	"$${postinst_root}/usr/libexec/wloc/rpc.uc" \
-	"$${postinst_root}/usr/libexec/wloc/rules.uc" \
-	"$${postinst_root}/usr/libexec/wloc/update.uc" \
-	"$${postinst_root}/usr/libexec/wloc/wifi-schedule.uc" \
-	"$${postinst_root}/usr/libexec/wloc/wlocctl" 2>/dev/null || true
-chmod 0644 "$${postinst_root}/usr/share/rpcd/ucode/"luci.wloc*.uc 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache.*
