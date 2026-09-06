@@ -97,7 +97,9 @@ function create_payload(value) {
 
     let written = file.write(content), closed = file.close();
     if (written == null || written !== length(content) || closed !== true || chmod(path, RPC_FILE_MODE) !== true) {
-        unlink(path); rmdir(directory); return null;
+        unlink(path);
+        rmdir(directory);
+        return null;
     }
 
     return { directory, path };

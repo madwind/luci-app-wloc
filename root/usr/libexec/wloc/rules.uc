@@ -159,10 +159,18 @@ function update_targets(target_args) {
         return { ok: false, error: `firewall target refresh failed: ${refreshed.error || 'unable to render location targets'}` };
     return { ok: true, changed: true, location_count: length(targets.v4) + length(targets.v6) };
 }
+function runtime_ready() {
+    let firewall = run_firewall('active');
+    if (!firewall.ok || firewall.active_found !== true) return false;
+    let route = run_routing('ready');
+    return route.ok === true && route.active === true;
+}
 function bootstrap(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
     let configured = configured_rules();
     if (!configured.ok) return configured;
+    if (quiet('pidof wlocd') && runtime_ready())
+        return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
     fs.unlink(LOCATION_STATE);
     let refreshed = run_firewall('refresh-runtime');
     if (!refreshed.ok) return { ok: false, error: `firewall placeholder refresh failed: ${refreshed.error || 'unable to render startup firewall'}` };
