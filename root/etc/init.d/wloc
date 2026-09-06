@@ -18,6 +18,21 @@ startup_failure() {
     return 1
 }
 
+schedule_rule_enabled() {
+    local section="$1" rule_enabled schedule_enabled
+
+    config_get_bool rule_enabled "$section" enabled 1
+    config_get_bool schedule_enabled "$section" schedule_enabled 0
+    [ "$rule_enabled" -eq 1 ] && [ "$schedule_enabled" -eq 1 ] && schedule_required=1
+}
+
+has_wifi_schedule() {
+    local schedule_required=0
+
+    config_foreach schedule_rule_enabled wifi
+    [ "$schedule_required" -eq 1 ]
+}
+
 start_service() {
     local enabled debug_log cleanup_detail check_detail
 
@@ -47,13 +62,15 @@ start_service() {
     chmod 0700 /etc/wloc
     config_get_bool debug_log main debug_log 0
 
-    procd_open_instance schedule
-    procd_set_param command "$UCODE" "$SCHEDULE" run
-    procd_set_param respawn 60 5 3
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_set_param file /etc/config/wloc /etc/config/wireless
-    procd_close_instance
+    if has_wifi_schedule; then
+        procd_open_instance schedule
+        procd_set_param command "$UCODE" "$SCHEDULE" run
+        procd_set_param respawn 60 5 3
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+        procd_set_param file /etc/config/wloc /etc/config/wireless
+        procd_close_instance
+    fi
 
     procd_open_instance daemon
     procd_set_param command "$WLOC_CTL" run-guarded
