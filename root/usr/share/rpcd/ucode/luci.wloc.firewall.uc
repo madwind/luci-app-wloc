@@ -192,6 +192,19 @@ function args(request) {
     return request && request.args ? request.args : {};
 }
 
+function firewall_apply(request) {
+    let current = firewall_ready();
+    if (current.ready !== true)
+        return {
+            ok: false,
+            error: current.busy
+                ? 'WLOC is changing state. Apply the Firewall after the service is ready.'
+                : 'WLOC must be running and ready before Firewall rules can be applied.',
+            state: current.state
+        };
+    return defer_payload(request, 'apply', args(request).config || '');
+}
+
 const methods = {
     read: {
         args: {},
@@ -211,7 +224,7 @@ const methods = {
     },
     apply: {
         args: { config: '' },
-        call: request => defer_payload(request, 'apply', args(request).config || '')
+        call: request => firewall_apply(request)
     },
     save: {
         args: { config: '' },
