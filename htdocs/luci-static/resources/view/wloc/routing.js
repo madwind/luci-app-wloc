@@ -211,7 +211,7 @@ return view.extend({
             }).then(function(next) {
                 current.setValue(formatRouting(next.config || ''));
                 current.focus();
-                setMessage('notice', _('Default Routing template loaded in the editor. Review before applying.'));
+                setMessage('notice', _('Default Routing template loaded in the editor. Review before saving and applying.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to read the default Routing template.')));
@@ -231,7 +231,7 @@ return view.extend({
         function formatRoutingEditor(current) {
             current.setValue(formatRouting(current.getValue()));
             current.focus();
-            setMessage('ok', _('Formatted in the editor. Review before applying.'));
+            setMessage('ok', _('Formatted in the editor. Review before saving and applying.'));
             return Promise.resolve(true);
         }
 
@@ -251,48 +251,30 @@ return view.extend({
             });
         }
 
-        function applyRouting(current) {
+        function saveApplyRouting(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
 
-            setMessage('notice', _('Applying Routing commands to runtime...'));
-            return callApply(current.getValue()).then(function(next) {
-                return requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function() {
-                invalidateRuntime();
-                setMessage('ok', _('Applied to runtime; the saved file was not changed.'));
-                return true;
-            }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to apply Routing commands.')));
-                return false;
-            });
-        }
-
-        function applySaveRouting(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
-
-            var applied = false;
+            var saved = false;
             var value = current.getValue();
-            setMessage('notice', _('Applying Routing commands and saving the file...'));
+            setMessage('notice', _('Saving Routing file and applying commands...'));
 
-            return callApply(value).then(function(next) {
-                return requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function() {
-                applied = true;
-                invalidateRuntime();
-                return callSave(value);
-            }).then(function(next) {
+            return callSave(value).then(function(next) {
                 return requireOk(next, _('The Routing file could not be saved.'));
             }).then(function(next) {
+                saved = true;
                 current.markSaved(next.config === undefined ? value : next.config);
-                setMessage('ok', _('Applied to runtime and saved to the Routing file.'));
+                return callApply(value);
+            }).then(function(next) {
+                return requireOk(next, _('The Routing file was saved, but commands could not be applied.'));
+            }).then(function() {
+                invalidateRuntime();
+                setMessage('ok', _('Saved to the Routing file and applied to runtime.'));
                 return true;
             }).catch(function(error) {
-                var fallback = applied
-                    ? _('Applied to runtime, but the Routing file could not be saved.')
-                    : _('Unable to apply Routing commands.');
-                setMessage('error', wlocUi.errorMessage(error, fallback));
+                setMessage('error', wlocUi.errorMessage(error, saved
+                    ? _('The Routing file was saved, but commands could not be applied.')
+                    : _('The Routing file could not be saved.')));
                 return false;
             });
         }
@@ -306,8 +288,7 @@ return view.extend({
             check: checkRouting,
             loadDefault: loadDefaultRouting,
             reload: reloadRouting,
-            apply: applyRouting,
-            applySave: applySaveRouting
+            saveApply: saveApplyRouting
         });
 
         if (result && result.ok === true) {
@@ -338,7 +319,7 @@ return view.extend({
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Routing')),
             E('div', { 'class': 'cbi-map-descr' },
-                _('Edit the IPv4 TPROXY policy routing commands. Apply changes temporarily or apply and save them permanently.')),
+                _('Edit the IPv4 TPROXY policy routing commands. Save & Apply writes the saved file first, then applies it to runtime. Failed runtime apply does not restore the previous file.')),
             E('div', { 'class': 'cbi-section' }, [
                 editor.root,
                 message

@@ -133,7 +133,7 @@ return view.extend({
                     throw new Error(firewallError(next, _('Unable to read the default Firewall template.')));
                 current.setValue(wlocNftFormat.format(next.config || ''));
                 current.focus();
-                setMessage('notice', _('Default Firewall template loaded in the editor. Review before applying.'));
+                setMessage('notice', _('Default Firewall template loaded in the editor. Review before saving and applying.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to read the default Firewall template.')));
@@ -151,7 +151,7 @@ return view.extend({
         function formatFirewall(current) {
             current.setValue(wlocNftFormat.format(current.getValue()));
             current.focus();
-            setMessage('ok', _('Formatted in the editor. Review before applying.'));
+            setMessage('ok', _('Formatted in the editor. Review before saving and applying.'));
             return Promise.resolve(true);
         }
 
@@ -169,45 +169,32 @@ return view.extend({
             });
         }
 
-        function applyFirewall(current) {
+        function saveApplyFirewall(current) {
             if (!withinLimit(current)) return Promise.resolve(false);
-            setMessage('notice', _('Applying Firewall rules to runtime...'));
-            return callApply(current.getValue()).then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
-                invalidateRuntime();
-                setMessage(next.recovering === true ? 'warn' : 'ok', next.recovering === true
-                    ? (next.warning || _('Applied to runtime; dynamic state is recovering automatically.'))
-                    : _('Applied to runtime; the saved file was not changed.'));
-                return true;
-            }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, _('Unable to apply Firewall rules.')));
-                return false;
-            });
-        }
 
-        function applySaveFirewall(current) {
-            if (!withinLimit(current)) return Promise.resolve(false);
-            var applied = false;
+            var saved = false;
             var value = current.getValue();
-            setMessage('notice', _('Applying Firewall rules and saving the file...'));
+            setMessage('notice', _('Saving Firewall file and applying rules...'));
 
-            return callApply(value).then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Unable to apply Firewall rules.')));
-                applied = true;
-                invalidateRuntime();
-                return callSave(value);
-            }).then(function(next) {
+            return callSave(value).then(function(next) {
                 if (!next || next.ok !== true)
                     throw new Error(firewallError(next, _('The Firewall file could not be saved.')));
+                saved = true;
                 current.markSaved(next.config === undefined ? value : next.config);
-                setMessage('ok', _('Applied to runtime and saved to the Firewall file.'));
+                return callApply(value);
+            }).then(function(next) {
+                if (!next || next.ok !== true)
+                    throw new Error(firewallError(next, _('The Firewall file was saved, but rules could not be applied.')));
+                invalidateRuntime();
+                if (next.warning)
+                    setMessage('warn', next.warning);
+                else
+                    setMessage('ok', _('Saved to the Firewall file and applied to runtime.'));
                 return true;
             }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, applied
-                    ? _('Applied to runtime, but the Firewall file could not be saved.')
-                    : _('Unable to apply Firewall rules.')));
+                setMessage('error', wlocUi.errorMessage(error, saved
+                    ? _('The Firewall file was saved, but rules could not be applied.')
+                    : _('The Firewall file could not be saved.')));
                 return false;
             });
         }
@@ -221,8 +208,7 @@ return view.extend({
             check: checkFirewall,
             loadDefault: loadDefaultFirewall,
             reload: reloadFirewall,
-            apply: applyFirewall,
-            applySave: applySaveFirewall
+            saveApply: saveApplyFirewall
         });
 
         if (result && result.ok === true) {
@@ -261,7 +247,7 @@ return view.extend({
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Edit the WLOC nftables template. Runtime interface sets, location targets, TPROXY profile marks and dispatch rules are generated from the template variables automatically.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Edit the WLOC nftables template. Save & Apply writes the saved file first, then applies it to runtime. Failed runtime apply does not restore the previous file.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
