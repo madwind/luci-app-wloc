@@ -234,6 +234,8 @@ return view.extend({
                 window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
+        refreshRuntimeWhenReady();
+
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
             E('div', {}, _('Template variables are rendered automatically when the firewall is checked, applied, or refreshed:')),
             E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port), ' — ', _('WLOC local transparent-proxy listener port.') ]),

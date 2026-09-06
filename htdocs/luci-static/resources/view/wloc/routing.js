@@ -274,7 +274,7 @@ return view.extend({
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, saved
                     ? _('The Routing file was saved, but commands could not be applied.')
-                    : _('The Routing file could not be saved.')));
+                    : _('The Routing file could not be saved.'));
                 return false;
             });
         }
@@ -315,6 +315,8 @@ return view.extend({
             if (runtimeReadyTimer !== null)
                 window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
+
+        refreshRuntimeWhenReady();
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Routing')),
