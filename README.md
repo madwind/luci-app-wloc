@@ -12,7 +12,7 @@ OpenWrt 25.12+:
 wget -qO- https://raw.githubusercontent.com/madwind/luci-app-wloc/master/install.sh | sh
 ```
 
-The installer detects the current package architecture, downloads the matching latest release APK, verifies its SHA256, updates package indexes and installs or upgrades WLOC.
+The installer detects the current package architecture, downloads the matching latest release APK, verifies its SHA256 and installs or upgrades WLOC.
 
 Supported release targets:
 
