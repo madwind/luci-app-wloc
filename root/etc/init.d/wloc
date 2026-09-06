@@ -174,7 +174,7 @@ start_service() {
 
 stop_service() {
     local rc=0 cleanup_detail
-    if ! cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
+    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
         logger -t wlocd "runtime cleanup failed while stopping service: $cleanup_detail"
         rc=1
@@ -184,7 +184,7 @@ stop_service() {
 
 service_stopped() {
     local rc=0 cleanup_detail
-    if ! cleanup_detail="$("$UCODE" "$RULES" reset 2>&1)"; then
+    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
         [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
         logger -t wlocd "runtime cleanup failed after service stop: $cleanup_detail"
         rc=1
