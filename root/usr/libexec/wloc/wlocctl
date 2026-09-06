@@ -15,15 +15,6 @@ collect_wifi() {
     wifi_sections="$wifi_sections $1"
 }
 
-rule_index() {
-    local target="$1" section index=0
-    for section in $wifi_sections; do
-        [ "$section" = "$target" ] && { printf '%s\n' "$index"; return 0; }
-        index=$((index + 1))
-    done
-    return 1
-}
-
 run_from_uci() {
     local mode="$1" listen_port debug section enabled iface latitude longitude outbound tproxy_port index profile rc
 
@@ -37,7 +28,9 @@ run_from_uci() {
     set -- "$WLOCD" --listen-port "$listen_port" --rules-helper "$RULES"
     [ "$debug" -eq 1 ] && set -- "$@" --debug
 
+    index=-1
     for section in $wifi_sections; do
+        index=$((index + 1))
         config_get_bool enabled "$section" enabled 1
         [ "$enabled" -eq 1 ] || continue
         config_get iface "$section" iface ''
@@ -60,7 +53,6 @@ run_from_uci() {
         case "$outbound" in
             direct) ;;
             tproxy)
-                index="$(rule_index "$section")" || return 1
                 profile=$((index + 1))
                 [ "$profile" -le 255 ] || {
                     printf 'TPROXY profile limit exceeded for AP: %s\n' "$iface" >&2
