@@ -249,13 +249,19 @@ return view.extend({
         }, { once: true });
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
-            E('div', {}, _('Available variables:')),
-            E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port) ])
+            E('div', {}, _('Template variables are rendered automatically when the firewall is checked, applied, or refreshed:')),
+            E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port), ' — ', _('WLOC local transparent-proxy listener port.') ]),
+            E('div', {}, [ E('code', {}, '%ap_interfaces%'), ' — ', _('Enabled WLOC AP interfaces inserted into the bridge ingress set.') ]),
+            E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime Apple location target addresses.') ]),
+            E('div', {}, [ E('code', {}, '%ap_tproxy_mark_rules%'), ' — ', _('Per-AP profile mark rules inserted into ap_tproxy_marks.') ]),
+            E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', _('Per-AP TPROXY dispatch rules inserted into ap_tproxy_dispatch.') ]),
+            E('div', {}, [ E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Dispatch rules for WLOC-originated marked sockets inserted into outbound_prerouting.') ]),
+            E('div', {}, _('Keep the template jumps from mark_prerouting to ap_tproxy_marks and from transparent_prerouting to ap_tproxy_dispatch so the generated rules are reachable.'))
         ]);
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Edit the WLOC nftables template. Runtime interface sets, location targets, TPROXY profile marks and dispatch rules are generated from the template variables automatically.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),

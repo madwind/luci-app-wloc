@@ -5,6 +5,7 @@ table bridge wloc {
         elements = { %ap_interfaces% }
     }
     chain ap_tproxy_marks {
+        %ap_tproxy_mark_rules%
     }
     chain mark_prerouting {
         type filter hook prerouting priority dstnat - 1;
@@ -49,8 +50,10 @@ table inet wloc {
     chain outbound_prerouting {
         type filter hook prerouting priority mangle - 3;
         policy accept;
+        %outbound_tproxy_rules%
     }
     chain ap_tproxy_dispatch {
+        %ap_tproxy_dispatch_rules%
     }
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;

@@ -17,6 +17,9 @@ const MAX_BYTES = 1024 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
 const MAX_PROFILE = 0xff;
+const XRAY_ROUTE_MARK = 0x1;
+const WLOC_ROUTE_MARK = 0x2;
+const PROFILE_SHIFT = 8;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -334,6 +337,7 @@ function number(value) {
     let result = +text;
     return result == result ? result : null;
 }
+function hex(value) { return sprintf('0x%x', value); }
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function valid_port(value) {
     let port = number(value);
@@ -347,7 +351,7 @@ function valid_ipv4(value) {
     return true;
 }
 function configured_firewall() {
-    let interfaces = [], seen_ifaces = {}, error = null, index = -1;
+    let interfaces = [], outbounds = [], seen_ifaces = {}, error = null, index = -1;
     try {
         let ctx = cursor();
         ctx.foreach('wloc', 'wifi', function(section) {
@@ -361,12 +365,14 @@ function configured_firewall() {
             let outbound = `${section.outbound || 'direct'}`;
             if (outbound == 'direct') return;
             if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
-            if (index + 1 > MAX_PROFILE) { error = `TPROXY profile limit exceeded in enabled rule ${section['.name'] || ''}`; return; }
+            let profile = index + 1;
+            if (profile > MAX_PROFILE) { error = `TPROXY profile limit exceeded in enabled rule ${section['.name'] || ''}`; return; }
             let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? 12345 + index : number(section.tproxy_port);
             if (!valid_port(port)) { error = `invalid TPROXY port in enabled rule ${section['.name'] || ''}`; return; }
+            push(outbounds, { iface, port, profile });
         });
     } catch (e) { return { ok: false, error: `${e}` }; }
-    return error ? { ok: false, error } : { ok: true, interfaces };
+    return error ? { ok: false, error } : { ok: true, interfaces, outbounds };
 }
 function runtime_location_targets() {
     let raw = read_text(LOCATION_STATE);
@@ -396,6 +402,14 @@ function compile_runtime(raw) {
     if (!configured.ok) return configured;
     let locations = runtime_location_targets();
     if (!locations.ok) return locations;
+    let ap_mark_rules = [], ap_dispatch_rules = [], outbound_rules = [];
+    for (let outbound in configured.outbounds) {
+        let profile_mark = outbound.profile << PROFILE_SHIFT;
+        let outbound_mark = profile_mark | WLOC_ROUTE_MARK;
+        push(ap_mark_rules, `iifname "${outbound.iface}" meta mark set ${hex(profile_mark)} return comment "wloc ap mark ${outbound.profile}"`);
+        push(ap_dispatch_rules, `meta mark ${hex(profile_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.profile}"`);
+        push(outbound_rules, `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } meta mark set ${hex(XRAY_ROUTE_MARK)} counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.profile}"`);
+    }
     let compiled = replace(raw, /%port%/g, `${port}`);
     if (length(configured.interfaces)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', configured.interfaces));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
@@ -403,9 +417,9 @@ function compile_runtime(raw) {
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
     if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
     else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
-    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, '');
-    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, '');
-    compiled = replace(compiled, /%outbound_tproxy_rules%/g, '');
+    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, join('\n', ap_mark_rules));
+    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, join('\n', ap_dispatch_rules));
+    compiled = replace(compiled, /%outbound_tproxy_rules%/g, join('\n', outbound_rules));
     compiled = replace(compiled, /%ap_interfaces%/g, '');
     compiled = replace(compiled, /%location_ipv4%/g, '');
     compiled = replace(compiled, /%location_ipv6%/g, '');
