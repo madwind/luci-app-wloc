@@ -47,10 +47,6 @@ function number(value) {
     let value_number = +text;
     return value_number == value_number ? value_number : null;
 }
-function normalized_prefix(family, prefix) {
-    if (prefix == 'default') return family == '4' ? '0.0.0.0/0' : '::/0';
-    return prefix;
-}
 function parse_config(raw) {
     raw = `${raw ?? ''}`;
     if (length(raw) > MAX_BYTES) return { ok: false, error: 'routing file is larger than 32 KiB' };
@@ -111,97 +107,44 @@ function parse_config(raw) {
     state.table = primary.table;
     return { ok: true, state };
 }
-function rule_present(spec) {
-    let result = capture(`ip -${spec.family} rule show`);
-    if (!result.ok) return false;
-    for (let source_line in split(result.output || '', '\n')) {
-        let body = trim(replace(source_line, /^\s*\d+:\s*/, ''));
-        let found = match(body, /^from\s+all\s+fwmark\s+(\S+)\s+[Ll]ookup\s+(\S+)$/);
-        if (!found) continue;
-        let markmask = split(found[1], '/');
-        let mark = number(markmask[0]), mask = number(length(markmask) > 1 ? markmask[1] : '0xffffffff');
-        if (mark == spec.mark && mask == spec.mask && number(found[2]) == spec.table) return true;
-    }
-    return false;
+function run_command(command, label) {
+    let result = capture(command);
+    if (result.ok) return { ok: true };
+    return { ok: false, error: `${label}: ${trim(result.output || '') || result.error || 'command failed'}` };
 }
-function route_state(spec) {
-    let result = capture(`ip -${spec.family} route show table ${spec.table}`);
-    if (!result.ok) return { exact: false, conflict: false };
-    let expected = normalized_prefix(spec.family, spec.prefix);
-    let exact = false, conflict = false;
-    for (let line in split(result.output || '', '\n')) {
-        let fields = split(trim(line), /\s+/);
-        if (length(fields) < 2 || normalized_prefix(spec.family, fields[1]) != expected) continue;
-        if (fields[0] == 'local' && match(line, /\sdev\s+lo(\s|$)/)) exact = true;
-        else conflict = true;
-    }
-    return { exact, conflict };
-}
-function active(spec) { return route_state(spec).exact && rule_present(spec); }
-function same_route_spec(a, b) {
-    return !!a && !!b && a.family == b.family && normalized_prefix(a.family, a.prefix) == normalized_prefix(b.family, b.prefix) && a.table == b.table;
-}
-function delete_rules(spec) {
-    let count = 0;
-    while (rule_present(spec)) {
-        if (count++ >= 64 || !quiet(`ip -${spec.family} rule del fwmark ${spec.mark}/${spec.mask} lookup ${spec.table}`)) return false;
-    }
-    return true;
+function delete_rule(spec) {
+    return run_command(`ip -${spec.family} rule del fwmark ${spec.mark}/${spec.mask} lookup ${spec.table}`,
+        `unable to remove the IPv${spec.family} TPROXY policy rule`);
 }
 function delete_route(spec) {
-    if (!route_state(spec).exact) return true;
-    return quiet(`ip -${spec.family} route del local ${q(spec.prefix)} dev lo table ${spec.table}`);
+    return run_command(`ip -${spec.family} route del local ${q(spec.prefix)} dev lo table ${spec.table}`,
+        `unable to remove the IPv${spec.family} TPROXY local route`);
 }
-function ensure_route(spec) {
-    let current = route_state(spec), added = false;
-    if (current.conflict) return { ok: false, added, error: `refusing to replace existing IPv${spec.family} route ${spec.prefix}` };
-    if (!current.exact) {
-        let executed = capture(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`);
-        if (!executed.ok) {
-            let detail = trim(executed.output || '') || executed.error || 'command failed';
-            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY local route: ${detail}` };
-        }
-        added = true;
-    }
-    if (!route_state(spec).exact) return { ok: false, added, error: `IPv${spec.family} TPROXY local route verification failed` };
-    return { ok: true, added };
-}
-function ensure_rule(spec) {
-    let added = false;
-    if (!rule_present(spec)) {
-        let executed = capture(spec.rule);
-        if (!executed.ok) {
-            let detail = trim(executed.output || '') || executed.error || 'command failed';
-            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY policy rule: ${detail}` };
-        }
-        added = true;
-    }
-    if (!rule_present(spec)) return { ok: false, added, error: `IPv${spec.family} TPROXY policy rule verification failed` };
-    return { ok: true, added };
-}
-function remove_state(state, keep_routes) {
+function remove_state(state) {
     if (!state) return { ok: true };
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
-        if (spec && rule_present(spec) && !delete_rules(spec)) return { ok: false, error: `unable to remove the IPv${family} TPROXY policy rule` };
+        if (!spec) continue;
+        let removed = delete_rule(spec);
+        if (!removed.ok) return removed;
     }
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
-        let keep = keep_routes ? keep_routes[`ipv${family}`] : null;
-        if (spec && !same_route_spec(spec, keep) && route_state(spec).exact && !delete_route(spec))
-            return { ok: false, error: `unable to remove the IPv${family} TPROXY local route` };
+        if (!spec) continue;
+        let removed = delete_route(spec);
+        if (!removed.ok) return removed;
     }
     return { ok: true };
 }
 function cleanup_created(created) {
     let errors = [];
     for (let i = length(created.rules) - 1; i >= 0; i--) {
-        let spec = created.rules[i];
-        if (rule_present(spec) && !delete_rules(spec)) push(errors, `unable to remove newly added IPv${spec.family} TPROXY policy rule`);
+        let removed = delete_rule(created.rules[i]);
+        if (!removed.ok) push(errors, removed.error);
     }
     for (let i = length(created.routes) - 1; i >= 0; i--) {
-        let spec = created.routes[i];
-        if (route_state(spec).exact && !delete_route(spec)) push(errors, `unable to remove newly added IPv${spec.family} TPROXY local route`);
+        let removed = delete_route(created.routes[i]);
+        if (!removed.ok) push(errors, removed.error);
     }
     return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
 }
@@ -210,20 +153,16 @@ function install_state(state) {
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
         if (!spec) continue;
-        let result = ensure_route(spec);
-        if (result.added) push(created.routes, spec);
-        if (!result.ok) return { ok: false, error: result.error, created };
+        let installed = run_command(spec.route, `unable to install the IPv${family} TPROXY local route`);
+        if (!installed.ok) return { ok: false, error: installed.error, created };
+        push(created.routes, spec);
     }
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
         if (!spec) continue;
-        let result = ensure_rule(spec);
-        if (result.added) push(created.rules, spec);
-        if (!result.ok) return { ok: false, error: result.error, created };
-    }
-    for (let family in [ '4', '6' ]) {
-        let spec = state[`ipv${family}`];
-        if (spec && !active(spec)) return { ok: false, error: `IPv${family} TPROXY policy route verification failed`, created };
+        let installed = run_command(spec.rule, `unable to install the IPv${family} TPROXY policy rule`);
+        if (!installed.ok) return { ok: false, error: installed.error, created };
+        push(created.rules, spec);
     }
     return { ok: true, created };
 }
@@ -233,25 +172,25 @@ function apply_failure(error, created) {
         ? { ok: false, error }
         : { ok: false, error, detail: `partial routing cleanup failed: ${cleaned.error}` };
 }
-function state_status(state) {
-    let has4 = !!state && !!state.ipv4;
-    let has6 = !!state && !!state.ipv6;
-    let ipv4 = has4 && active(state.ipv4);
-    let ipv6 = has6 && active(state.ipv6);
-    return { active: (has4 || has6) && (!has4 || ipv4) && (!has6 || ipv6), ipv4, ipv6 };
+function snapshot_status(raw) {
+    if (!raw) return { ok: true, active: false, ipv4: false, ipv6: false, state: null };
+    let parsed = parse_config(raw);
+    if (!parsed.ok) return { ok: false, error: `invalid applied routing snapshot: ${parsed.error}` };
+    return { ok: true, active: true, ipv4: !!parsed.state.ipv4, ipv6: !!parsed.state.ipv6, state: parsed.state };
 }
 function runtime_text(state) {
-    if (!state) return '# No active policy routing commands are installed.\n';
     let output = [];
     for (let family in [ '4', '6' ]) {
         let spec = state[`ipv${family}`];
         if (!spec) continue;
-        let rules = capture(`ip -${family} rule show`).output || '';
-        let routes = capture(`ip -${family} route show table ${spec.table}`).output || '';
-        push(output, `# ip -${family} rule show\n${trim(rules)}`);
-        push(output, `# ip -${family} route show table ${spec.table}\n${trim(routes)}`);
+        let rules = capture(`ip -${family} rule show`);
+        if (!rules.ok) return { ok: false, error: `unable to read IPv${family} policy rules: ${trim(rules.output || '') || rules.error || 'command failed'}` };
+        let routes = capture(`ip -${family} route show table ${spec.table}`);
+        if (!routes.ok) return { ok: false, error: `unable to read IPv${family} routing table ${spec.table}: ${trim(routes.output || '') || routes.error || 'command failed'}` };
+        push(output, `# ip -${family} rule show\n${trim(rules.output || '')}`);
+        push(output, `# ip -${family} route show table ${spec.table}\n${trim(routes.output || '')}`);
     }
-    return join('\n\n', output) + '\n';
+    return { ok: true, active: join('\n\n', output) + '\n' };
 }
 function validate(raw) {
     let parsed = parse_config(raw);
@@ -268,7 +207,8 @@ function read_current() {
     if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
-    let state = parsed.state, applied_raw = read_text(APPLIED), status = state_status(state);
+    let state = parsed.state, applied_raw = read_text(APPLIED), status = snapshot_status(applied_raw);
+    if (!status.ok) return status;
     return {
         ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized),
         ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
@@ -278,14 +218,15 @@ function read_current() {
     };
 }
 function runtime_current() {
-    let raw = read_text(APPLIED);
-    if (!raw) return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
-    let parsed = parse_config(raw);
-    if (!parsed.ok) return { ok: false, error: parsed.error };
-    let state = parsed.state, status = state_status(state);
+    let status = snapshot_status(read_text(APPLIED));
+    if (!status.ok) return status;
+    if (!status.active)
+        return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
+    let runtime = runtime_text(status.state);
+    if (!runtime.ok) return runtime;
     return {
-        ok: true, active: runtime_text(state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
-        ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table
+        ok: true, active: runtime.active, route_active: true, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
+        ipv6_enabled: status.state.ipv6_enabled, firewall_mark: status.state.mark, routing_table: status.state.table
     };
 }
 function save(raw) {
@@ -296,6 +237,13 @@ function save(raw) {
         ? { ok: true, valid: true, path: SOURCE, config: parsed.state.normalized, bytes: length(parsed.state.normalized) }
         : { ok: false, valid: true, error: result.error };
 }
+function applied_result(state) {
+    return {
+        ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
+        ipv6_enabled: state.ipv6_enabled, commands: state.commands, route_commands: state.route_commands,
+        rule_commands: state.rule_commands, firewall_mark: state.mark, routing_table: state.table
+    };
+}
 function apply(raw) {
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, valid: false, error: parsed.error };
@@ -303,26 +251,19 @@ function apply(raw) {
 
     let previous_raw = read_text(APPLIED);
     if (previous_raw) {
-        let checked = parse_config(previous_raw);
-        if (!checked.ok) return { ok: false, error: `invalid applied routing snapshot: ${checked.error}` };
-        if (checked.state.normalized != state.normalized) {
-            let removed = remove_state(checked.state, state);
-            if (!removed.ok) return removed;
-        }
+        let previous = parse_config(previous_raw);
+        if (!previous.ok) return { ok: false, error: `invalid applied routing snapshot: ${previous.error}` };
+        if (previous.state.normalized == state.normalized) return applied_result(state);
+        let removed = remove_state(previous.state);
+        if (!removed.ok) return removed;
+        fs.unlink(APPLIED);
     }
 
-    fs.unlink(APPLIED);
     let installed = install_state(state);
     if (!installed.ok) return apply_failure(installed.error, installed.created);
-
     let saved = atomic_write(APPLIED, state.normalized);
     if (!saved.ok) return apply_failure(saved.error, installed.created);
-
-    return {
-        ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
-        ipv6_enabled: state.ipv6_enabled, commands: state.commands, route_commands: state.route_commands,
-        rule_commands: state.rule_commands, firewall_mark: state.mark, routing_table: state.table
-    };
+    return applied_result(state);
 }
 function apply_effective() {
     let raw = read_text(SOURCE);
@@ -331,16 +272,12 @@ function apply_effective() {
 }
 function deactivate(reset) {
     let raw = read_text(APPLIED);
-    if (!raw) raw = read_text(SOURCE);
-    if (!raw) {
-        if (reset) fs.unlink(APPLIED);
-        return { ok: true, route_active: false };
-    }
+    if (!raw) return { ok: true, route_active: false };
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
-    let removed = remove_state(parsed.state, null);
+    let removed = remove_state(parsed.state);
     if (!removed.ok) return removed;
-    if (reset) fs.unlink(APPLIED);
+    fs.unlink(APPLIED);
     return { ok: true, route_active: false };
 }
 function file_input(path) {
@@ -351,8 +288,8 @@ function dispatch(command, args) {
     if (command == 'read') return read_current();
     if (command == 'active') return runtime_current();
     if (command == 'ready') {
-        let current = runtime_current();
-        return current.ok ? { ok: current.route_active === true, active: current.route_active === true } : current;
+        let status = snapshot_status(read_text(APPLIED));
+        return status.ok ? { ok: true, active: status.active } : status;
     }
     if (command == 'apply-effective') return apply_effective();
     if (command == 'deactivate') return deactivate(false);
