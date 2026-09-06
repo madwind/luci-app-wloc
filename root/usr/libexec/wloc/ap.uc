@@ -3,7 +3,6 @@
 'use strict';
 
 import { cursor } from 'uci';
-import { connect } from 'ubus';
 
 function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
 function truthy(value) { return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes'; }
@@ -31,19 +30,8 @@ function find_iface(iface) {
     result.ok = true;
     return result;
 }
-function hostapd_status(iface) {
-    let found = find_iface(iface);
-    if (!found.ok) return found;
-    try {
-        let ubus = connect();
-        if (!ubus) return { ok: false, error: 'unable to connect to ubus' };
-        let status = ubus.call(`hostapd.${found.iface}`, 'get_status', {});
-        return { ok: type(status) == 'object', status: status || {}, section: found.section, iface: found.iface };
-    } catch (e) { return { ok: false, error: `${e}`, section: found.section, iface: found.iface }; }
-}
 function dispatch(command, args) {
     if (command == 'find') return find_iface(args[0]);
-    if (command == 'status') return hostapd_status(args[0]);
     return { ok: false, error: `unsupported AP command: ${command}` };
 }
 
