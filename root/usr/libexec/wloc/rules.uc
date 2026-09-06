@@ -10,14 +10,6 @@ const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const FIREWALL_SOURCE = '/etc/wloc/firewall.nft';
 const RUNTIME = '/var/run/wloc';
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
-const BRIDGE_FAMILY = 'bridge';
-const TABLE = 'wloc';
-const INGRESS_SET = 'ap_interfaces';
-const AP_MARK_CHAIN = 'ap_tproxy_marks';
-const LOCATION_SET4 = 'location_v4';
-const LOCATION_SET6 = 'location_v6';
-const AP_TPROXY_CHAIN = 'ap_tproxy_dispatch';
-const OUTBOUND_CHAIN = 'outbound_prerouting';
 const MAX_PROFILE = 0xff;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -28,7 +20,6 @@ function capture(command) {
     let rc = proc.close();
     return { ok: rc === 0, output, error: rc === 0 ? null : (trim(output) || 'command failed') };
 }
-function quiet(command) { return system(`${command} >/dev/null 2>&1`) === 0; }
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
     for (let i = length(lines) - 1; i >= 0; i--) {
@@ -102,19 +93,6 @@ function write_location_targets(targets) {
     fs.chmod(LOCATION_STATE, 0o600);
     return { ok: true };
 }
-function resource_present(command) { return quiet(command); }
-function clear_set(family, name) {
-    if (!resource_present(`nft list set ${family} ${TABLE} ${name}`)) return { ok: true };
-    return quiet(`nft flush set ${family} ${TABLE} ${name}`)
-        ? { ok: true }
-        : { ok: false, error: `unable to clear WLOC set ${name}` };
-}
-function clear_chain(family, name) {
-    if (!resource_present(`nft list chain ${family} ${TABLE} ${name}`)) return { ok: true };
-    return quiet(`nft flush chain ${family} ${TABLE} ${name}`)
-        ? { ok: true }
-        : { ok: false, error: `unable to clear WLOC chain ${name}` };
-}
 function configured_rules() {
     let ctx = cursor(), interfaces = [], outbounds = [], seen_ifaces = {}, error = null, index = -1;
     try {
@@ -165,8 +143,17 @@ function update_targets(target_args) {
 function bootstrap_result(configured) {
     return { ok: true, interfaces: configured.interfaces, route_active: true, outbound_count: length(configured.outbounds), location_count: 0 };
 }
+function cleanup() {
+    let errors = [];
+    let firewall = run_firewall('deactivate-runtime');
+    if (!firewall.ok) push(errors, firewall.error || 'unable to deactivate WLOC firewall');
+    fs.unlink(LOCATION_STATE);
+    let route = run_routing('deactivate');
+    if (!route.ok) push(errors, route.error || 'unable to deactivate TPROXY policy routing');
+    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true, route_active: false };
+}
 function startup_failure(error) {
-    let cleaned = run_firewall('remove-runtime');
+    let cleaned = cleanup();
     return cleaned.ok
         ? { ok: false, error }
         : { ok: false, error, detail: `startup cleanup failed: ${cleaned.error || 'unknown error'}` };
@@ -187,26 +174,10 @@ function bootstrap(port) {
 
     return bootstrap_result(configured);
 }
-function cleanup(reset) {
-    let errors = [];
-    for (let item in [
-        clear_set(BRIDGE_FAMILY, INGRESS_SET),
-        clear_chain(BRIDGE_FAMILY, AP_MARK_CHAIN),
-        clear_set('inet', LOCATION_SET4),
-        clear_set('inet', LOCATION_SET6),
-        clear_chain('inet', AP_TPROXY_CHAIN),
-        clear_chain('inet', OUTBOUND_CHAIN)
-    ]) if (!item.ok) push(errors, item.error);
-    fs.unlink(LOCATION_STATE);
-    let route = run_routing(reset ? 'reset' : 'deactivate');
-    if (!route.ok) push(errors, route.error || `unable to ${reset ? 'reset' : 'deactivate'} TPROXY policy routing`);
-    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true, route_active: false };
-}
 function dispatch(command, args) {
     if (command == 'bootstrap') return bootstrap(args[0]);
     if (command == 'update-targets') return update_targets(args);
-    if (command == 'cleanup') return cleanup(false);
-    if (command == 'reset') return cleanup(true);
+    if (command == 'cleanup' || command == 'reset') return cleanup();
     return { ok: false, error: `unsupported rules command: ${command}` };
 }
 

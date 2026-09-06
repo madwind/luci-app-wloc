@@ -255,59 +255,38 @@ function run_ucode(path, args) {
     return parsed;
 }
 function table_command(verb, spec) { return `${verb} table ${spec.family} ${spec.name}`; }
-function table_active(spec) { return quiet(table_command('nft list', spec)); }
 function managed_tables() {
     let result = capture('nft list tables');
+    if (!result.ok) return { ok: false, error: trim(result.output || '') || 'unable to list nftables tables' };
     let tables = [], seen = {};
-    if (!result.ok) return tables;
     for (let line in split(result.output || '', '\n')) {
         let found = match(trim(line), /^table\s+(\S+)\s+(\S+)$/);
         if (!found || found[2] != OWNED_TABLE) continue;
         let key = `${found[1]} ${found[2]}`;
         if (!seen[key]) { seen[key] = true; push(tables, { family: found[1], name: found[2], key }); }
     }
-    return tables;
+    return { ok: true, tables };
 }
-function active_firewall(tables, fold) {
-    tables = tables || managed_tables();
-    let output = [], missing = [], bridge = '', inet = '';
-    for (let spec in tables) {
+function active() {
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let output = [];
+    for (let spec in managed.tables) {
         let listed = capture(table_command('nft list', spec));
-        if (!listed.ok || !trim(listed.output || '')) {
-            push(missing, spec.key);
-            continue;
-        }
-        let text = fold ? fold_runtime(trim(listed.output)) : trim(listed.output);
-        push(output, text);
-        if (spec.family == 'bridge') bridge = text;
-        else if (spec.family == 'inet') inet = text;
+        if (!listed.ok)
+            return { ok: false, error: trim(listed.output || '') || `unable to read WLOC nftables table ${spec.family} ${spec.name}` };
+        if (trim(listed.output || '')) push(output, fold_runtime(trim(listed.output)));
     }
-    let active = length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n';
     return {
         ok: true,
-        active,
-        active_found: length(tables) > 0 && !length(missing),
-        missing_tables: missing,
-        table_count: length(tables),
-        active_table_count: length(output),
-        bridge_active: bridge,
-        inet_active: inet
+        active: length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n',
+        table_count: length(managed.tables)
     };
 }
-function active() { return active_firewall(managed_tables(), true); }
-function transaction(current_tables, desired, desired_tables) {
-    let lines = [], targets = {};
-    function add_deletes(tables) {
-        for (let spec in (tables || [])) {
-            let key = `${spec.family} ${spec.name}`;
-            if (spec.name == OWNED_TABLE && !targets[key]) {
-                targets[key] = true;
-                if (table_active(spec)) push(lines, table_command('delete', spec));
-            }
-        }
-    }
-    add_deletes(current_tables);
-    add_deletes(desired_tables);
+function transaction(current_tables, desired) {
+    let lines = [];
+    for (let spec in (current_tables || []))
+        push(lines, table_command('delete', spec));
     if (trim(desired || '')) push(lines, desired);
     return join('\n', lines);
 }
@@ -446,26 +425,36 @@ function validate(raw) {
     return checked;
 }
 function remove_tables() {
-    let tables = managed_tables();
-    let removed = run_transaction(transaction(tables, '', []));
-    if (!removed.ok) return { ok: false, error: removed.detail || 'failed to remove WLOC nftables tables' };
-    return length(managed_tables())
-        ? { ok: false, error: 'some WLOC nftables tables are still active' }
-        : { ok: true };
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let removed = run_transaction(transaction(managed.tables, ''));
+    return removed.ok ? { ok: true } : { ok: false, error: removed.detail || 'failed to remove WLOC nftables tables' };
 }
 function rules(command, args) {
     let argv = [ command ];
     for (let arg in (args || [])) push(argv, arg);
     return run_ucode(RULES, argv);
 }
+function deactivate_runtime() {
+    let raw = read_text(APPLIED);
+    if (raw == null) { fs.unlink(NEXT); return { ok: true, active: false }; }
+    let parsed = inspect_source(format_nftables(raw));
+    if (!parsed.ok) return { ok: false, error: `invalid applied firewall snapshot: ${parsed.error}` };
+    let lines = [];
+    for (let spec in parsed.tables) push(lines, `flush table ${spec.family} ${spec.name}`);
+    let flushed = run_transaction(join('\n', lines));
+    if (!flushed.ok) return { ok: false, error: flushed.detail || 'failed to deactivate WLOC nftables tables' };
+    fs.unlink(APPLIED); fs.unlink(NEXT);
+    return { ok: true, active: false };
+}
 function fail_open(error_code, error, detail) {
     let errors = [];
     if (detail) push(errors, detail);
+    let cleaned = rules('cleanup', []);
+    if (!cleaned.ok) push(errors, `runtime cleanup failed: ${cleaned.error || 'unable to clear runtime state'}`);
     let removed = remove_tables();
     if (!removed.ok) push(errors, `firewall cleanup failed: ${removed.error}`);
     fs.unlink(APPLIED); fs.unlink(NEXT);
-    let cleaned = rules('cleanup', []);
-    if (!cleaned.ok) push(errors, `runtime cleanup failed: ${cleaned.error || 'unable to clear runtime state'}`);
     return {
         ok: false,
         valid: false,
@@ -486,8 +475,9 @@ function apply(raw) {
     let staged = atomic_write(NEXT, checked.config, 0o600);
     if (!staged.ok) return { ok: false, error_code: 'snapshot_stage_failed', error: staged.error };
 
-    let current_tables = managed_tables();
-    let loaded = run_transaction(transaction(current_tables, checked.compiled, checked.tables));
+    let managed = managed_tables();
+    if (!managed.ok) return { ok: false, valid: false, error_code: 'nft_apply_failed', error: managed.error };
+    let loaded = run_transaction(transaction(managed.tables, checked.compiled));
     if (!loaded.ok)
         return fail_open('nft_apply_failed', 'The nftables transaction failed.', loaded.detail || 'apply failed');
 
@@ -513,7 +503,9 @@ function refresh_runtime() {
     if (raw == null) return { ok: false, error: 'The applied firewall snapshot is unavailable.' };
     let checked = prepare(raw);
     if (!checked.ok) return { ok: false, error: checked.detail || checked.error || 'Unable to render the WLOC firewall.' };
-    let loaded = run_transaction(transaction(managed_tables(), checked.compiled, checked.tables));
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let loaded = run_transaction(transaction(managed.tables, checked.compiled));
     if (!loaded.ok) return { ok: false, error: loaded.detail || 'Unable to refresh the WLOC firewall.' };
     return { ok: true, refreshed: true };
 }
@@ -535,11 +527,11 @@ function read_current() {
 }
 function remove_runtime() {
     let errors = [];
+    let reset = rules('reset', []);
+    if (!reset.ok) push(errors, reset.error || 'unable to reset runtime rules');
     let removed = remove_tables();
     if (!removed.ok) push(errors, removed.error);
     fs.unlink(APPLIED); fs.unlink(NEXT);
-    let reset = rules('reset', []);
-    if (!reset.ok) push(errors, reset.error || 'unable to reset runtime rules');
     return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
 }
 function file_input(path) {
@@ -551,6 +543,7 @@ function file_input(path) {
 function dispatch(command, args) {
     if (command == 'read') return read_current();
     if (command == 'active') return active();
+    if (command == 'deactivate-runtime') return deactivate_runtime();
     if (command == 'remove-runtime') return remove_runtime();
     if (command == 'refresh-runtime') return refresh_runtime();
     if (command == 'validate-file' || command == 'apply-file' || command == 'save-file') {

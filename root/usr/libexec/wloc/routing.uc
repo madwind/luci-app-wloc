@@ -270,7 +270,7 @@ function apply_effective() {
     if (raw == null) return { ok: false, error: `cannot read ${SOURCE}` };
     return apply(raw);
 }
-function deactivate(reset) {
+function deactivate() {
     let raw = read_text(APPLIED);
     if (!raw) return { ok: true, route_active: false };
     let parsed = parse_config(raw);
@@ -292,8 +292,7 @@ function dispatch(command, args) {
         return status.ok ? { ok: true, active: status.active } : status;
     }
     if (command == 'apply-effective') return apply_effective();
-    if (command == 'deactivate') return deactivate(false);
-    if (command == 'reset') return deactivate(true);
+    if (command == 'deactivate' || command == 'reset') return deactivate();
     if (command == 'validate-file' || command == 'save-file' || command == 'apply-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;
