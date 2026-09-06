@@ -13,6 +13,7 @@ const RUNTIME = '/var/run/wloc';
 const SOURCE = '/etc/wloc/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const STATUS = `${RUNTIME}/status.json`;
+const START_ERROR = `${RUNTIME}/start-error`;
 const STARTUP_GRACE_SECONDS = 20;
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
@@ -83,6 +84,11 @@ function service_running() {
 function firewall_ready() {
     let status = read_json(STATUS) || {};
     let running = service_running();
+    if (!running) {
+        let error = trim(read_text(START_ERROR) || '');
+        if (error)
+            return { ok: false, running: false, ready: false, busy: false, state: 'failed', error };
+    }
     let armed = status.armed === true || status.armed === 1 || status.armed == '1' || status.armed == 'true';
     let started = int(status.session_started_at || 0);
     let now = time();
