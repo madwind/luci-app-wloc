@@ -82,8 +82,11 @@ function parse_config(raw) {
         push(lines, line);
     }
 
-    if (!routes['4'] || !rules['4']) return { ok: false, error: 'routing file must declare IPv4 route and rule' };
-    if (!!routes['6'] != !!rules['6']) return { ok: false, error: 'routing file must declare both IPv6 route and rule' };
+    for (let family in [ '4', '6' ])
+        if (!!routes[family] != !!rules[family])
+            return { ok: false, error: `routing file must declare both IPv${family} route and rule` };
+    if (!routes['4'] && !routes['6'])
+        return { ok: false, error: 'routing file must declare at least one route and rule pair' };
 
     let state = { normalized: join('\n', lines) + '\n', commands: lines, route_commands: [], rule_commands: [], ipv6_enabled: !!routes['6'] };
     for (let family in [ '4', '6' ]) {
@@ -102,9 +105,10 @@ function parse_config(raw) {
         push(state.route_commands, spec.route);
         push(state.rule_commands, spec.rule);
     }
-    state.mark = state.ipv4.mark;
-    state.mask = state.ipv4.mask;
-    state.table = state.ipv4.table;
+    let primary = state.ipv4 || state.ipv6;
+    state.mark = primary.mark;
+    state.mask = primary.mask;
+    state.table = primary.table;
     return { ok: true, state };
 }
 function rule_present(spec) {
@@ -152,8 +156,11 @@ function ensure_route(spec) {
     let current = route_state(spec), added = false;
     if (current.conflict) return { ok: false, added, error: `refusing to replace existing IPv${spec.family} route ${spec.prefix}` };
     if (!current.exact) {
-        if (!quiet(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`))
-            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY local route` };
+        let executed = capture(`ip -${spec.family} route add local ${q(spec.prefix)} dev lo table ${spec.table}`);
+        if (!executed.ok) {
+            let detail = trim(executed.output || '') || executed.error || 'command failed';
+            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY local route: ${detail}` };
+        }
         added = true;
     }
     if (!route_state(spec).exact) return { ok: false, added, error: `IPv${spec.family} TPROXY local route verification failed` };
@@ -162,7 +169,11 @@ function ensure_route(spec) {
 function ensure_rule(spec) {
     let added = false;
     if (!rule_present(spec)) {
-        if (!quiet(spec.rule)) return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY policy rule` };
+        let executed = capture(spec.rule);
+        if (!executed.ok) {
+            let detail = trim(executed.output || '') || executed.error || 'command failed';
+            return { ok: false, added, error: `unable to install the IPv${spec.family} TPROXY policy rule: ${detail}` };
+        }
         added = true;
     }
     if (!rule_present(spec)) return { ok: false, added, error: `IPv${spec.family} TPROXY policy rule verification failed` };
@@ -223,9 +234,11 @@ function apply_failure(error, created) {
         : { ok: false, error, detail: `partial routing cleanup failed: ${cleaned.error}` };
 }
 function state_status(state) {
-    let ipv4 = !!state && !!state.ipv4 && active(state.ipv4);
-    let ipv6 = !!state && !!state.ipv6 && active(state.ipv6);
-    return { active: ipv4 && (!state || !state.ipv6_enabled || ipv6), ipv4, ipv6 };
+    let has4 = !!state && !!state.ipv4;
+    let has6 = !!state && !!state.ipv6;
+    let ipv4 = has4 && active(state.ipv4);
+    let ipv6 = has6 && active(state.ipv6);
+    return { active: (has4 || has6) && (!has4 || ipv4) && (!has6 || ipv6), ipv4, ipv6 };
 }
 function runtime_text(state) {
     if (!state) return '# No active policy routing commands are installed.\n';
