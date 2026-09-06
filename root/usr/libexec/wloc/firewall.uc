@@ -12,7 +12,7 @@ const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const NEXT = `${APPLIED}.next`;
 const RULES = '/usr/libexec/wloc/rules.uc';
 const STATUS = '/var/run/wloc/status.json';
-const MAX_BYTES = 1024 * 1024;
+const MAX_BYTES = 32 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
 const MAX_PROFILE = 0xff;
@@ -428,7 +428,7 @@ function compile_runtime(raw) {
 function prepare(raw) {
     let runtime = compile_runtime(raw);
     if (!runtime.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: runtime.error };
-    if (length(runtime.source) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 1 MiB.' };
+    if (length(runtime.source) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 32 KiB.' };
     let parsed = inspect_source(runtime.source);
     if (!parsed.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: parsed.error };
     if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Unable to create WLOC runtime directory.' };
