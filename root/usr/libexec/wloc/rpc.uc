@@ -17,7 +17,6 @@ const CA_KEY = '/etc/wloc/ca.key';
 const CA_DER = '/etc/wloc/ca.der';
 const CA_PEM = '/etc/wloc/ca.pem';
 const CA_PROFILE = '/www/wloc-ca.mobileconfig';
-const VERSION_CACHE = '/var/run/wloc/package.version';
 const INSTALLED_VERSION = '/usr/share/wloc/installed-version';
 const FIREWALL_CONFIG = '/etc/wloc/firewall.nft';
 const FIREWALL_RUNTIME = '/var/run/wloc/firewall.applied.nft';
@@ -93,16 +92,8 @@ function daemon_running() {
 }
 
 function package_version() {
-    for (let path in [ INSTALLED_VERSION, VERSION_CACHE ]) {
-        let cached = trim(read_file(path) || '');
-        if (cached && match(cached, /^[A-Za-z0-9._+~-]+$/)) return cached;
-    }
-
-    let result = run_command("apk list --installed luci-app-wloc 2>/dev/null | sed -n 's/^luci-app-wloc-\\([^ ]*\\).*/\\1/p' | head -n 1");
-    let version = trim(result.output || '');
-    if (!version || !match(version, /^[A-Za-z0-9._+~-]+$/)) return '';
-    system(`printf '%s\\n' ${q(version)} > ${q(VERSION_CACHE)} 2>/dev/null`);
-    return version;
+    let version = trim(read_file(INSTALLED_VERSION) || '');
+    return version && match(version, /^[A-Za-z0-9._+~-]+$/) ? version : '';
 }
 
 function firewall_status() {

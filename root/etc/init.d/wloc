@@ -41,7 +41,7 @@ start_service() {
     [ "$enabled" -eq 1 ] || return 0
 
     mkdir -p /var/run/wloc
-    rm -f /var/run/wloc/status.json /var/run/wloc/package.version "$START_ERROR"
+    rm -f /var/run/wloc/status.json "$START_ERROR"
 
     if ! check_detail="$("$WLOC_CTL" check 2>&1)"; then
         [ -n "$check_detail" ] || check_detail='unknown configuration error'
