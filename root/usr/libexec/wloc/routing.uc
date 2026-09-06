@@ -5,10 +5,8 @@
 import * as fs from 'fs';
 
 const SOURCE = '/etc/wloc/routing.conf';
-const DEFAULT_SOURCE = '/usr/share/wloc/defaults/routing.conf';
 const RUNTIME = '/var/run/wloc';
 const APPLIED = `${RUNTIME}/routing.applied.conf`;
-const CANDIDATE = `${APPLIED}.next`;
 const MAX_BYTES = 32 * 1024;
 let sequence = 0;
 
@@ -196,16 +194,6 @@ function remove_state(state, keep_routes) {
     }
     return { ok: true };
 }
-function rollback(previous, current) {
-    let errors = [];
-    let removed = remove_state(current, previous);
-    if (!removed.ok) push(errors, removed.error);
-    if (previous) {
-        let restored = install_state(previous);
-        if (!restored.ok) push(errors, restored.error);
-    }
-    return { ok: length(errors) == 0, error: join('; ', errors) };
-}
 function state_status(state) {
     let ipv4 = !!state && !!state.ipv4 && active(state.ipv4);
     let ipv6 = !!state && !!state.ipv6 && active(state.ipv6);
@@ -224,12 +212,6 @@ function runtime_text(state) {
     }
     return join('\n\n', output) + '\n';
 }
-function effective_raw() {
-    let raw = read_text(SOURCE);
-    if (raw != null) return { raw, using_default: false };
-    raw = read_text(DEFAULT_SOURCE);
-    return raw == null ? null : { raw, using_default: true };
-}
 function validate(raw) {
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, valid: false, error: parsed.error };
@@ -241,13 +223,13 @@ function validate(raw) {
     };
 }
 function read_current() {
-    let effective = effective_raw();
-    if (!effective) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}`, path: SOURCE };
-    let parsed = parse_config(effective.raw);
+    let raw = read_text(SOURCE);
+    if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
+    let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
     let state = parsed.state, applied_raw = read_text(APPLIED);
     return {
-        ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized), using_default: effective.using_default,
+        ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized),
         ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
         commands: state.commands, route_commands: state.route_commands, rule_commands: state.rule_commands,
         applied_config: applied_raw || '', applied_path: APPLIED
@@ -255,10 +237,6 @@ function read_current() {
 }
 function runtime_current() {
     let raw = read_text(APPLIED);
-    if (!raw) {
-        let effective = effective_raw();
-        raw = effective ? effective.raw : null;
-    }
     if (!raw) return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
@@ -276,42 +254,28 @@ function save(raw) {
         ? { ok: true, valid: true, path: SOURCE, config: parsed.state.normalized, bytes: length(parsed.state.normalized) }
         : { ok: false, valid: true, error: result.error };
 }
-function apply(raw, stage) {
+function apply(raw) {
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, valid: false, error: parsed.error };
     let state = parsed.state;
-    if (stage) {
-        let staged = atomic_write(CANDIDATE, state.normalized);
-        if (!staged.ok) return staged;
-    }
 
-    let previous_raw = read_text(APPLIED), previous = null;
+    let previous_raw = read_text(APPLIED);
     if (previous_raw) {
         let checked = parse_config(previous_raw);
-        if (!checked.ok) { if (stage) fs.unlink(CANDIDATE); return { ok: false, error: `invalid applied routing snapshot: ${checked.error}` }; }
-        previous = checked.state;
-    }
-    if (previous && previous.normalized != state.normalized) {
-        let removed = remove_state(previous, state);
-        if (!removed.ok) { if (stage) fs.unlink(CANDIDATE); return removed; }
+        if (!checked.ok) return { ok: false, error: `invalid applied routing snapshot: ${checked.error}` };
+        if (checked.state.normalized != state.normalized) {
+            let removed = remove_state(checked.state, state);
+            if (!removed.ok) return removed;
+        }
     }
 
+    fs.unlink(APPLIED);
     let installed = install_state(state);
-    if (!installed.ok) {
-        let restored = rollback(previous, state);
-        if (!restored.ok) installed.error += `; rollback failed: ${restored.error}`;
-        if (stage) fs.unlink(CANDIDATE);
-        return installed;
-    }
+    if (!installed.ok) return installed;
 
     let saved = atomic_write(APPLIED, state.normalized);
-    if (!saved.ok) {
-        let restored = rollback(previous, state);
-        if (!restored.ok) saved.error += `; rollback failed: ${restored.error}`;
-        if (stage) fs.unlink(CANDIDATE);
-        return saved;
-    }
-    if (stage) fs.unlink(CANDIDATE);
+    if (!saved.ok) return saved;
+
     return {
         ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
         ipv6_enabled: state.ipv6_enabled, commands: state.commands, route_commands: state.route_commands,
@@ -319,37 +283,22 @@ function apply(raw, stage) {
     };
 }
 function apply_effective() {
-    let applied_raw = read_text(APPLIED);
-    if (applied_raw) {
-        let parsed = parse_config(applied_raw);
-        if (!parsed.ok) return { ok: false, error: `invalid applied routing snapshot: ${parsed.error}` };
-        let state = parsed.state;
-        let installed = install_state(state);
-        if (!installed.ok) return installed;
-        return {
-            ok: true, active: true, ipv6_enabled: state.ipv6_enabled,
-            firewall_mark: state.mark, routing_table: state.table
-        };
-    }
-    let effective = effective_raw();
-    if (!effective) return { ok: false, error: `cannot read ${SOURCE} or ${DEFAULT_SOURCE}` };
-    return apply(effective.raw, false);
+    let raw = read_text(SOURCE);
+    if (raw == null) return { ok: false, error: `cannot read ${SOURCE}` };
+    return apply(raw);
 }
 function deactivate(reset) {
     let raw = read_text(APPLIED);
+    if (!raw) raw = read_text(SOURCE);
     if (!raw) {
-        let effective = effective_raw();
-        raw = effective ? effective.raw : null;
-    }
-    if (!raw) {
-        if (reset) { fs.unlink(APPLIED); fs.unlink(CANDIDATE); }
+        if (reset) fs.unlink(APPLIED);
         return { ok: true, route_active: false };
     }
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
     let removed = remove_state(parsed.state, null);
     if (!removed.ok) return removed;
-    if (reset) { fs.unlink(APPLIED); fs.unlink(CANDIDATE); }
+    if (reset) fs.unlink(APPLIED);
     return { ok: true, route_active: false };
 }
 function file_input(path) {
@@ -371,7 +320,7 @@ function dispatch(command, args) {
         if (!input.ok) return input;
         if (command == 'validate-file') return validate(input.raw);
         if (command == 'save-file') return save(input.raw);
-        return apply(input.raw, true);
+        return apply(input.raw);
     }
     return { ok: false, error: `unsupported routing command: ${command}` };
 }

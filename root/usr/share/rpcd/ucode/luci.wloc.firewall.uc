@@ -11,7 +11,6 @@ let ubus = require('ubus').connect();
 const HELPER = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const SOURCE = '/etc/wloc/firewall.nft';
-const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const STATUS = `${RUNTIME}/status.json`;
 const STARTUP_GRACE_SECONDS = 20;
@@ -93,12 +92,8 @@ function firewall_ready() {
     return { ok: true, running, ready: running && armed, busy: starting, state };
 }
 
-function firewall_read_effective() {
-    let config = read_text(SOURCE), using_default = false;
-    if (config == null) {
-        config = read_text(DEFAULT_SOURCE);
-        using_default = true;
-    }
+function firewall_read() {
+    let config = read_text(SOURCE);
     if (config == null)
         return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
 
@@ -108,7 +103,6 @@ function firewall_read_effective() {
         path: SOURCE,
         config,
         bytes: length(config),
-        using_default,
         applied_config: applied || '',
         applied_path: APPLIED
     };
@@ -195,7 +189,7 @@ function args(request) {
 const methods = {
     read: {
         args: {},
-        call: () => firewall_read_effective()
+        call: () => firewall_read()
     },
     ready: {
         args: {},

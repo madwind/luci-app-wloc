@@ -19,7 +19,7 @@ const AP_TPROXY_CHAIN = 'ap_tproxy_dispatch';
 const OUTBOUND_CHAIN = 'outbound_prerouting';
 const MAX_PROFILE = 0xff;
 
-function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\''`)}'`; }
+function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
 function capture(command) {
     let proc = fs.popen(`${command} 2>&1`, 'r');
     if (!proc) return { ok: false, output: '', error: 'unable to execute command' };
@@ -88,10 +88,6 @@ function target_sets(values) {
     }
     return { ok: true, v4, v6 };
 }
-function read_location_targets() {
-    let raw = fs.readfile(LOCATION_STATE);
-    return raw ? split(trim(raw), /\r?\n/) : [];
-}
 function write_location_targets(targets) {
     let values = [];
     for (let target in targets.v4) push(values, target);
@@ -154,19 +150,13 @@ function update_targets(target_args) {
     let targets = target_sets(target_args);
     if (!targets.ok) return targets;
     if (location_state_matches(targets)) return { ok: true, changed: false, location_count: length(targets.v4) + length(targets.v6) };
-    let previous = target_sets(read_location_targets());
-    if (!previous.ok) return previous;
     let configured = configured_rules();
     if (!configured.ok) return configured;
     let saved = write_location_targets(targets);
     if (!saved.ok) return saved;
     let refreshed = run_firewall('refresh-runtime');
-    if (!refreshed.ok) {
-        let restored_state = write_location_targets(previous);
-        let restored_firewall = restored_state.ok ? run_firewall('refresh-runtime') : { ok: false, error: restored_state.error };
-        let rollback = restored_firewall.ok ? '' : `; rollback failed: ${restored_firewall.error || 'unable to restore previous firewall'}`;
-        return { ok: false, error: `firewall target refresh failed: ${refreshed.error || 'unable to render location targets'}${rollback}` };
-    }
+    if (!refreshed.ok)
+        return { ok: false, error: `firewall target refresh failed: ${refreshed.error || 'unable to render location targets'}` };
     return { ok: true, changed: true, location_count: length(targets.v4) + length(targets.v6) };
 }
 function bootstrap(port) {
