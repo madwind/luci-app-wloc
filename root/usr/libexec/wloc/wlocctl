@@ -16,8 +16,7 @@ collect_wifi() {
 }
 
 rule_index() {
-    target="$1"
-    index=0
+    local target="$1" section index=0
     for section in $wifi_sections; do
         [ "$section" = "$target" ] && { printf '%s\n' "$index"; return 0; }
         index=$((index + 1))
@@ -25,23 +24,19 @@ rule_index() {
     return 1
 }
 
-run_check() {
+run_from_uci() {
+    local mode="$1" listen_port debug section enabled iface latitude longitude outbound tproxy_port index profile rc
+
     config_load wloc
     config_get listen_port main listen_port 61520
     config_get_bool debug main debug 0
 
-    case "$listen_port" in ''|*[!0-9]*) printf '%s\n' 'invalid local listen port' >&2; return 1;; esac
-    [ "$listen_port" -ge 1 ] 2>/dev/null && [ "$listen_port" -le 65535 ] 2>/dev/null || {
-        printf '%s\n' 'invalid local listen port' >&2
-        return 1
-    }
-
     wifi_sections=''
     config_foreach collect_wifi wifi
-    set -- "$WLOCD" --check --listen-port "$listen_port" --rules-helper "$RULES"
+
+    set -- "$WLOCD" --listen-port "$listen_port" --rules-helper "$RULES"
     [ "$debug" -eq 1 ] && set -- "$@" --debug
 
-    count=0
     for section in $wifi_sections; do
         config_get_bool enabled "$section" enabled 1
         [ "$enabled" -eq 1 ] || continue
@@ -72,11 +67,6 @@ run_check() {
                     return 1
                 }
                 [ -n "$tproxy_port" ] || tproxy_port=$((12345 + index))
-                case "$tproxy_port" in ''|*[!0-9]*) printf 'invalid TPROXY port for AP: %s\n' "$iface" >&2; return 1;; esac
-                [ "$tproxy_port" -ge 1 ] 2>/dev/null && [ "$tproxy_port" -le 65535 ] 2>/dev/null || {
-                    printf 'invalid TPROXY port for AP: %s\n' "$iface" >&2
-                    return 1
-                }
                 set -- "$@" --rule-tproxy "$section" "$tproxy_port" "$profile"
                 ;;
             *)
@@ -84,11 +74,19 @@ run_check() {
                 return 1
                 ;;
         esac
-        count=$((count + 1))
     done
 
-    [ "$count" -gt 0 ] || { printf '%s\n' 'no enabled rules' >&2; return 1; }
-    "$@"
+    if [ "$mode" = check ]; then
+        "$@" --check
+        return $?
+    fi
+
+    "$@" &
+    child_pid=$!
+    wait "$child_pid"
+    rc=$?
+    child_pid=''
+    return "$rc"
 }
 
 cleanup_guarded() {
@@ -105,20 +103,13 @@ terminate_child() {
 }
 
 run_guarded() {
-    shift
-    [ "$#" -gt 0 ] || { printf '%s\n' 'missing daemon command' >&2; return 1; }
     trap 'terminate_child; cleanup_guarded' TERM INT
     trap 'cleanup_guarded' EXIT
-    "$@" &
-    child_pid=$!
-    wait "$child_pid"
-    rc=$?
-    child_pid=''
-    return "$rc"
+    run_from_uci run
 }
 
 case "${1:-}" in
-    check) run_check ;;
-    run-guarded) run_guarded "$@" ;;
+    check) run_from_uci check ;;
+    run-guarded) run_guarded ;;
     *) printf '%s\n' 'unsupported wlocctl command' >&2; exit 1 ;;
 esac
