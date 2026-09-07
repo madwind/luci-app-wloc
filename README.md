@@ -28,8 +28,10 @@ Supported release targets:
 - Per-interface daily enable/disable schedule
 - Generate and manage the local CA profile required for WLOC interception
 - Intercept `gs-loc.apple.com` and `gs-loc-cn.apple.com`
-- Edit, validate, install and uninstall nftables rules independently from wlocd
-- Edit, install and uninstall policy routing independently from wlocd
+- Edit, save, install and uninstall nftables rules from the editor
+- Edit, save, install and uninstall policy routing from the editor
+- Automatically install firewall and routing when WLOC starts
+- Automatically remove firewall and routing when WLOC stops or exits unexpectedly
 - Use `%port%` in firewall rules to follow the configured WLOC listener port
 - View service, interception and runtime status in LuCI
 - Check and update WLOC from GitHub Releases
@@ -44,7 +46,7 @@ table inet wloc
 
 The packaged firewall uses the selected wireless interfaces for ingress matching and WLOC interception. A rule may send its outbound sockets directly or dispatch them to a user-defined TPROXY listener port; WLOC assigns the internal profile marks automatically from rule order. TCP, UDP, DNS-over-HTTPS upstreams and Apple WLOC MITM traffic all use the same selected outbound.
 
-Firewall and Routing are independent services. Installing either component enables it at boot, and stopping wlocd does not remove it. The Firewall template is rendered even when no dynamic location targets are available; wlocd refreshes those target values while it runs and clears them when it stops.
+Firewall and Routing are part of the WLOC runtime lifecycle. Startup installs both from the saved configuration; normal stop and guarded failure cleanup remove both. The Firewall template is rendered even when no dynamic location targets are available, and wlocd refreshes those target values while it runs.
 
 ## Usage
 

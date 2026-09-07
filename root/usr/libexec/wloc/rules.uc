@@ -10,10 +10,6 @@ const FIREWALL = '/usr/libexec/wloc/firewall.uc';
 const RUNTIME = '/var/run/wloc';
 const LOCATION_STATE = `${RUNTIME}/location.targets`;
 const FIREWALL_APPLIED = `${RUNTIME}/firewall.applied.nft`;
-const COMPONENTS = {
-    firewall: { init: '/etc/init.d/wloc-firewall', option: 'firewall_installed' },
-    routing: { init: '/etc/init.d/wloc-routing', option: 'routing_installed' }
-};
 const MAX_PROFILE = 0xff;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -24,7 +20,6 @@ function capture(command) {
     let rc = proc.close();
     return { ok: rc === 0, output, error: rc === 0 ? null : (trim(output) || 'command failed') };
 }
-function quiet(command) { return system(`${command} >/dev/null 2>&1`) === 0; }
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
     for (let i = length(lines) - 1; i >= 0; i--) {
@@ -50,17 +45,6 @@ function run_firewall(command, args) {
     if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'firewall controller failed' };
     return parsed;
 }
-function component_enabled(kind) {
-    let spec = COMPONENTS[kind], value = null;
-    if (!spec) return false;
-    try { value = cursor().get('wloc', 'main', spec.option); } catch (e) {}
-    return value === true || value === 1 || value == '1';
-}
-function set_component_flag(option, enabled) {
-    let ctx = cursor();
-    ctx.set('wloc', 'main', option, enabled ? '1' : '0');
-    return ctx.commit('wloc') === true;
-}
 function component_action(kind, installing) {
     if (kind == 'firewall')
         return run_firewall(installing ? 'apply-effective' : 'remove-runtime');
@@ -69,26 +53,12 @@ function component_action(kind, installing) {
     return { ok: false, error: 'unsupported component action' };
 }
 function component(kind, operation) {
-    let spec = COMPONENTS[kind];
-    if (!spec || (operation != 'install' && operation != 'uninstall'))
+    if ((kind != 'firewall' && kind != 'routing') || (operation != 'install' && operation != 'uninstall'))
         return { ok: false, error: 'unsupported component action' };
 
     let installing = operation == 'install';
     let result = component_action(kind, installing);
-    if (result.ok !== true) return result;
-
-    if (!set_component_flag(spec.option, installing)) {
-        if (installing) component_action(kind, false);
-        return { ok: false, error: `cannot save ${kind} installation state` };
-    }
-
-    if (!quiet(`${q(spec.init)} ${installing ? 'enable' : 'disable'}`)) {
-        set_component_flag(spec.option, !installing);
-        if (installing) component_action(kind, false);
-        return { ok: false, error: `cannot ${installing ? 'enable' : 'disable'} ${kind} startup` };
-    }
-
-    result.installed = installing;
+    if (result.ok === true) result.installed = installing;
     return result;
 }
 function number(value) {
@@ -192,12 +162,20 @@ function bootstrap_result(configured, route_active, firewall_active) {
     return { ok: true, interfaces: configured.interfaces, route_active, firewall_active, outbound_count: length(configured.outbounds), location_count: 0 };
 }
 function cleanup() {
+    let errors = [];
     fs.unlink(LOCATION_STATE);
-    if (fs.readfile(FIREWALL_APPLIED) == null) return { ok: true, firewall_active: false };
-    let refreshed = run_firewall('refresh-runtime');
-    return refreshed.ok
-        ? { ok: true, firewall_active: true }
-        : { ok: false, error: `firewall dynamic-state cleanup failed: ${refreshed.error || 'unable to render empty location targets'}` };
+
+    let firewall = component_action('firewall', false);
+    if (!firewall.ok)
+        push(errors, `firewall cleanup failed: ${firewall.detail || firewall.error || 'unable to remove WLOC firewall'}`);
+
+    let routing = component_action('routing', false);
+    if (!routing.ok)
+        push(errors, `routing cleanup failed: ${routing.detail || routing.error || 'unable to remove WLOC routing'}`);
+
+    return length(errors)
+        ? { ok: false, firewall_active: false, route_active: false, error: join('; ', errors) }
+        : { ok: true, firewall_active: false, route_active: false };
 }
 function bootstrap(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
@@ -205,21 +183,21 @@ function bootstrap(port) {
     if (!configured.ok) return configured;
     fs.unlink(LOCATION_STATE);
 
-    let route_active = component_enabled('routing');
-    if (route_active) {
-        let route = run_routing('apply-effective');
-        if (!route.ok)
-            return { ok: false, error: `routing refresh failed: ${route.error || 'unable to ensure TPROXY policy routing'}` };
+    let route = component_action('routing', true);
+    if (!route.ok)
+        return { ok: false, error: `routing installation failed: ${route.error || 'unable to ensure TPROXY policy routing'}` };
+
+    let firewall = component_action('firewall', true);
+    if (!firewall.ok) {
+        let rollback = component_action('routing', false);
+        return {
+            ok: false,
+            error: `firewall installation failed: ${firewall.detail || firewall.error || 'unable to load WLOC firewall'}`,
+            detail: rollback.ok ? null : `routing rollback failed: ${rollback.error || 'unable to remove TPROXY policy routing'}`
+        };
     }
 
-    let firewall_active = component_enabled('firewall');
-    if (firewall_active) {
-        let firewall = run_firewall('apply-effective');
-        if (!firewall.ok)
-            return { ok: false, error: `firewall refresh failed: ${firewall.detail || firewall.error || 'unable to load WLOC firewall'}` };
-    }
-
-    return bootstrap_result(configured, route_active, firewall_active);
+    return bootstrap_result(configured, true, true);
 }
 function dispatch(command, args) {
     if (command == 'bootstrap') return bootstrap(args[0]);
