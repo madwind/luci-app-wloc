@@ -55,17 +55,14 @@ table inet wloc {
     chain ap_tproxy_dispatch {
         %ap_tproxy_dispatch_rules%
     }
-    chain location_tproxy {
-        meta l4proto tcp th dport 443 counter tproxy to :%port% accept comment "wloc location"
-    }
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
         policy accept;
         meta mark & 0x2 == 0 return
         meta mark & 0x10000 != 0 return
         ct direction reply return
-        ip daddr @location_v4 jump location_tproxy
-        ip6 daddr @location_v6 jump location_tproxy
+        ip daddr @location_v4 meta l4proto tcp th dport 443 counter tproxy ip to :%port% accept comment "wloc location"
+        ip6 daddr @location_v6 meta l4proto tcp th dport 443 counter tproxy ip6 to :%port% accept comment "wloc location"
         meta l4proto { tcp, udp } th dport 53 counter tproxy to :%port% accept comment "wloc dns"
         fib daddr type local meta mark set 0 return
         ip daddr @bypass_v4 meta mark set 0 return
