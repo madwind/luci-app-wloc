@@ -217,7 +217,8 @@ return view.extend({
             E('div', {}, [ E('code', {}, '%ap_interfaces%'), ' — ', _('Enabled WLOC AP interfaces inserted into the bridge ingress set.') ]),
             E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime Apple location target addresses.') ]),
             E('div', {}, [ E('code', {}, '%ap_tproxy_mark_rules%'), ' — ', _('Per-AP profile mark rules inserted into ap_tproxy_marks.') ]),
-            E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Generated TPROXY dispatch rules.') ]),
+            E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', _('Per-AP TPROXY dispatch rules inserted into ap_tproxy_dispatch.') ]),
+            E('div', {}, [ E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Dispatch rules for WLOC-originated marked sockets inserted into outbound_prerouting.') ]),
             E('div', {}, _('Keep the template jumps from mark_prerouting to ap_tproxy_marks and from transparent_prerouting to ap_tproxy_dispatch so the generated rules are reachable.'))
         ]);
 
