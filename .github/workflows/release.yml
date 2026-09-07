@@ -50,6 +50,12 @@ jobs:
           path: .build/openwrt-25.12.5/${{ matrix.target }}/${{ matrix.subtarget }}/downloads
           key: openwrt-sdk-${{ runner.os }}-25.12.5-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.sdk_sha256 }}
 
+      - name: Cache OpenWrt SDK build tree
+        uses: actions/cache@v6
+        with:
+          path: .build/openwrt-25.12.5/${{ matrix.target }}/${{ matrix.subtarget }}/sdk
+          key: openwrt-sdk-build-${{ runner.os }}-25.12.5-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.sdk_sha256 }}-rust-1.89.0-v1
+
       - name: Cache Cargo downloads
         uses: actions/cache@v6
         with:
