@@ -7,10 +7,20 @@ var luciUi = ui;
 function errorMessage(error, fallback) {
     var message = error;
 
-    if (error && error.message)
+    if (error && error.message) {
         message = error.message;
-    else if (error && error.error)
-        message = error.error;
+    } else if (error && (error.error || error.detail)) {
+        var parts = [];
+        var primary = error.error === undefined || error.error === null ? '' : String(error.error);
+        var detail = error.detail === undefined || error.detail === null ? '' : String(error.detail);
+
+        if (primary)
+            parts.push(primary);
+        if (detail && detail !== primary)
+            parts.push(detail);
+
+        message = parts.join(': ');
+    }
 
     if (message === undefined || message === null || String(message) === '')
         message = fallback || _('The request failed.');
@@ -64,7 +74,7 @@ function setState(node, state, value) {
     node.classList.remove('success', 'warning', 'error', 'notice');
     node.hidden = value === undefined || value === null || String(value) === '';
     node.style.maxWidth = '100%';
-    node.style.whiteSpace = 'normal';
+    node.style.whiteSpace = 'pre-wrap';
     node.style.overflowWrap = 'anywhere';
     setText(node, value);
 
