@@ -39,7 +39,7 @@ function valueRow(label, field) {
     ]);
 }
 
-function activeStatus(status) { return [ 'starting', 'running', 'stopping' ].indexOf(status) >= 0; }
+function activeStatus(status) { return [ 'starting', 'running' ].indexOf(status) >= 0; }
 function phaseText(operation) {
     var phase = operation && (operation.phase || operation.status) || '';
     if (phase === 'starting') return _('Starting update...');
@@ -122,7 +122,7 @@ return view.extend({
             else if (result.update_available !== undefined && result.update_available !== null) state.available = result.update_available === true;
             if (result.checked != null) state.checked = Number(result.checked) || 0;
             if (result.last_update != null) state.lastUpdate = Number(result.last_update) || 0;
-            if (state.starting && (activeStatus(operation.status) || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0))
+            if (state.starting && (activeStatus(operation.status) || [ 'done', 'failed' ].indexOf(operation.status) >= 0))
                 state.starting = false;
             state.locked = activeStatus(operation.status);
             renderVersion(); renderHistory();
@@ -130,7 +130,6 @@ return view.extend({
             else if (state.starting) wlocUi.setState(status, 'notice', _('Starting update...'));
             else if (activeStatus(operation.status)) wlocUi.setState(status, 'notice', phaseText(operation));
             else if (operation.status === 'failed') wlocUi.setState(status, 'error', operation.error || _('Update failed'));
-            else if (operation.status === 'stopped') wlocUi.setState(status, 'notice', _('Stopped'));
             else if (operation.status === 'done' && operation.updated === true && result.post_check_error)
                 wlocUi.setState(status, 'warn', _('Updated') + ' · ' + result.post_check_error);
             else if (result.check_ok === false && result.last_check_error) wlocUi.setState(status, 'error', result.last_check_error);
@@ -222,6 +221,9 @@ return view.extend({
                 wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to change automatic update setting.')));
             });
         }
+        function pollUpdateStatus() {
+            return state.locked || state.starting ? refresh() : Promise.resolve();
+        }
 
         updateButton.addEventListener('click', function() { runUpdate(); });
         checkEnabled.addEventListener('change', setCheckSetting);
@@ -235,15 +237,16 @@ return view.extend({
 
         refreshCheck();
 
-        poll.add(function() {
-            return state.locked || state.starting ? refresh() : Promise.resolve();
-        }, 2);
+        poll.add(pollUpdateStatus, 2);
         window.setInterval(function() {
             if (!pageVisible) return;
             renderHistory();
             refreshSettings();
         }, 60000);
-        window.addEventListener('pagehide', function() { pageVisible = false; poll.remove(refresh); }, { once: true });
+        window.addEventListener('pagehide', function() {
+            pageVisible = false;
+            poll.remove(pollUpdateStatus);
+        }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),

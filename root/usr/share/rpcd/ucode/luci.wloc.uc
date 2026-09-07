@@ -279,18 +279,6 @@ const firewall_methods = {
         args: {},
         call: request => defer_ucode(request, FIREWALL_CONTROLLER, [ 'active' ], 'Firewall runtime read')
     },
-    validate: {
-        args: { config: '' },
-        call: request => defer_payload(
-            request,
-            FIREWALL_CONTROLLER,
-            'validate',
-            request_args(request).config || '',
-            'rpc-firewall-validate',
-            'Firewall validate',
-            'Firewall file is larger than 32 KiB.'
-        )
-    },
     save: {
         args: { config: '' },
         call: request => defer_payload(
@@ -315,18 +303,6 @@ const routing_methods = {
     runtime: {
         args: {},
         call: request => defer_ucode(request, ROUTING_CONTROLLER, [ 'active' ], 'Routing runtime read')
-    },
-    validate: {
-        args: { config: '' },
-        call: request => defer_payload(
-            request,
-            ROUTING_CONTROLLER,
-            'validate',
-            request_args(request).config || '',
-            'rpc-routing',
-            'Routing validate',
-            'routing file is larger than 32 KiB'
-        )
     },
     save: {
         args: { config: '' },
@@ -363,10 +339,6 @@ const update_methods = {
     install: {
         args: {},
         call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'install' ], 'Update start')
-    },
-    stop: {
-        args: {},
-        call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'stop' ], 'Update stop')
     },
     settings: {
         args: {},

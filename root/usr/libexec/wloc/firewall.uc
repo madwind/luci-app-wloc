@@ -260,8 +260,7 @@ function active() {
         ok: true,
         active: length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n',
         table_count: length(managed.tables),
-        firewall_active: length(managed.tables) > 0,
-        installed: quiet('/etc/init.d/wloc-firewall enabled')
+        firewall_active: length(managed.tables) > 0
     };
 }
 function transaction(current_tables, desired) {
@@ -400,11 +399,6 @@ function prepare(raw) {
     if (!result.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'nftables syntax check failed', detail: trim(result.output || '') || 'validation failed' };
     return { ok: true, valid: true, config: runtime.source, compiled: runtime.compiled, bytes: length(runtime.source), tables: parsed.tables };
 }
-function validate(raw) {
-    let checked = prepare(raw);
-    if (type(checked) == 'object') delete checked.compiled;
-    return checked;
-}
 function remove_tables() {
     let managed = managed_tables();
     if (!managed.ok) return managed;
@@ -497,10 +491,9 @@ function dispatch(command, args) {
     if (command == 'apply-effective') return apply_effective();
     if (command == 'remove-runtime') return remove_runtime();
     if (command == 'refresh-runtime') return refresh_runtime();
-    if (command == 'validate-file' || command == 'save-file') {
+    if (command == 'save-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;
-        if (command == 'validate-file') return validate(input.raw);
         return save(input.raw);
     }
     return { ok: false, error: `unsupported firewall command: ${command}` };

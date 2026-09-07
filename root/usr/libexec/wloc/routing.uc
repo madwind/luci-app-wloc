@@ -192,16 +192,6 @@ function runtime_text(state) {
     }
     return { ok: true, active: join('\n\n', output) + '\n' };
 }
-function validate(raw) {
-    let parsed = parse_config(raw);
-    if (!parsed.ok) return { ok: false, valid: false, error: parsed.error };
-    let state = parsed.state;
-    return {
-        ok: true, valid: true, config: state.normalized, bytes: length(state.normalized), commands: state.commands,
-        route_commands: state.route_commands, rule_commands: state.rule_commands, ipv6_enabled: state.ipv6_enabled,
-        firewall_mark: state.mark, routing_table: state.table
-    };
-}
 function read_current() {
     let raw = read_text(SOURCE);
     if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
@@ -221,11 +211,11 @@ function runtime_current() {
     let status = snapshot_status(read_text(APPLIED));
     if (!status.ok) return status;
     if (!status.active)
-        return { ok: true, active: '# No active policy routing commands are installed.\n', installed: quiet('/etc/init.d/wloc-routing enabled'), route_active: false, route_ipv4: false, route_ipv6: false };
+        return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
     let runtime = runtime_text(status.state);
     if (!runtime.ok) return runtime;
     return {
-        ok: true, active: runtime.active, installed: quiet('/etc/init.d/wloc-routing enabled'), route_active: true, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
+        ok: true, active: runtime.active, route_active: true, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
         ipv6_enabled: status.state.ipv6_enabled, firewall_mark: status.state.mark, routing_table: status.state.table
     };
 }
@@ -289,10 +279,9 @@ function dispatch(command, args) {
     if (command == 'active') return runtime_current();
     if (command == 'apply-effective') return apply_effective();
     if (command == 'deactivate') return deactivate();
-    if (command == 'validate-file' || command == 'save-file') {
+    if (command == 'save-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;
-        if (command == 'validate-file') return validate(input.raw);
         return save(input.raw);
     }
     return { ok: false, error: `unsupported routing command: ${command}` };

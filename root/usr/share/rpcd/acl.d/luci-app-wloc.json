@@ -6,8 +6,8 @@
         "log": [ "read", ":subscribe" ],
         "luci.wloc": [ "status", "configured_access_points" ],
         "luci.wloc.defaults": [ "firewall", "routing" ],
-        "luci.wloc.firewall": [ "read", "ready", "runtime", "validate" ],
-        "luci.wloc.routing": [ "read", "runtime", "validate" ],
+        "luci.wloc.firewall": [ "read", "ready", "runtime" ],
+        "luci.wloc.routing": [ "read", "runtime" ],
         "luci.wloc.update": [ "status", "settings" ]
       },
       "uci": [ "wloc", "wireless" ]
@@ -18,7 +18,7 @@
         "luci.wloc.service": [ "sync", "start", "stop", "restart" ],
         "luci.wloc.firewall": [ "save", "install", "uninstall" ],
         "luci.wloc.routing": [ "save", "install", "uninstall" ],
-        "luci.wloc.update": [ "check", "install", "stop", "set_check", "set_auto" ]
+        "luci.wloc.update": [ "check", "install", "set_check", "set_auto" ]
       },
       "uci": [ "wloc" ]
     }

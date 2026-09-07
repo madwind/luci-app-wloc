@@ -18,7 +18,7 @@ function createEditor(options) {
     var minHeight = options.minHeight || '24em';
     var rows = options.rows || 24;
     var savedValue = String(options.value === undefined || options.value === null ? '' : options.value);
-    var installed = options.installed === true;
+    var installed = false;
     var installToggleButton = null;
     var textarea = E('textarea', {
         'id': id,
@@ -44,7 +44,6 @@ function createEditor(options) {
     }, [ leftActions, rightActions ]);
     var hasActions = !options.readonly && [
         options.format,
-        options.check,
         options.loadDefault,
         options.reload,
         options.save,
@@ -179,23 +178,17 @@ function createEditor(options) {
     }
 
     api = {
-        byteLength: function() { return editorByteLength(textarea.value); },
         focus: focus,
         getValue: function() { return textarea.value; },
         isDirty: isDirty,
-        isInstalled: function() { return installed; },
         markSaved: markSaved,
-        maxBytes: maxBytes,
         root: root,
         setInstalled: setInstalled,
         setValue: setValue,
-        textarea: textarea,
-        update: updateState,
         withinLimit: withinLimit
     };
 
     addInjectedAction(leftActions, options.formatLabel || _('Format'), 'cbi-button-action', options.format, null);
-    addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, null);
     addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-negative', options.reload,
         _('Reload the saved file? This will replace the current editor contents. Any unsaved changes will be lost.'));
     addInjectedAction(leftActions, _('Load default'), 'cbi-button-negative', options.loadDefault,
@@ -217,18 +210,9 @@ function createEditor(options) {
     textarea.addEventListener('select', updateCursorPosition);
     updateState();
 
-    api.destroy = function() {
-        textarea.removeEventListener('input', handleInput);
-        textarea.removeEventListener('keyup', updateCursorPosition);
-        textarea.removeEventListener('click', updateCursorPosition);
-        textarea.removeEventListener('select', updateCursorPosition);
-    };
-
     return api;
 }
 
 return baseclass.extend({
-    MAX_EDITOR_BYTES: MAX_EDITOR_BYTES,
-    byteLength: editorByteLength,
     create: createEditor
 });

@@ -129,7 +129,7 @@ function read_state() {
     state.kind = 'wloc';
     state.status = state.status || 'idle';
     let cached = cached_version();
-    if (cached && state.status != 'starting' && state.status != 'running' && state.status != 'stopping') state.installed_version = cached;
+    if (cached && state.status != 'starting' && state.status != 'running') state.installed_version = cached;
     else if (cached && !state.installed_version) state.installed_version = cached;
     return state;
 }
@@ -174,7 +174,7 @@ function acquire_update_lock() {
 function release_update_lock() {
     if (lock_owner() == pid()) quiet(`rm -rf ${q(LOCK_DIR)}`);
 }
-function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
+function active_status(state) { return state && (state.status == 'starting' || state.status == 'running'); }
 function operation_active(state) { return active_status(state) && process_alive(state.pid); }
 function normalize_state(state) {
     if (active_status(state) && state.pid && !process_alive(state.pid)) {
@@ -341,50 +341,6 @@ function start_update() {
     if (state.status == 'starting' && int(state.pid || 0) <= 1) { state.pid = worker_pid; save_state(state); }
     return status_result();
 }
-function worker_matches(process_pid) {
-    let raw = read_text(`/proc/${process_pid}/cmdline`) || '';
-    let command = replace(raw, /\0/g, ' ');
-    return index(command, SELF) >= 0 && index(command, 'worker') >= 0;
-}
-function collect_children(parent, output) {
-    let raw = trim(read_text(`/proc/${parent}/task/${parent}/children`) || '');
-    for (let value in split(raw, /[[:space:]]+/)) {
-        let child = int(value || 0);
-        if (child <= 1) continue;
-        collect_children(child, output); push(output, child);
-    }
-}
-function any_alive(process_pid, children) {
-    if (process_alive(process_pid)) return true;
-    for (let child in children) if (process_alive(child)) return true;
-    return false;
-}
-function terminate_tree(process_pid) {
-    let children = []; collect_children(process_pid, children);
-    for (let child in children) quiet(`kill -TERM ${child}`);
-    quiet(`kill -TERM ${process_pid}`);
-    for (let attempt = 0; attempt < 3; attempt++) { if (!any_alive(process_pid, children)) return true; system('sleep 1'); }
-    for (let child in children) if (process_alive(child)) quiet(`kill -KILL ${child}`);
-    if (process_alive(process_pid)) quiet(`kill -KILL ${process_pid}`);
-    return !any_alive(process_pid, children);
-}
-function stop_update() {
-    let state = normalize_state(read_state()), process_pid = int(state.pid || 0);
-    if (!operation_active(state)) return { ok: false, error: 'No active WLOC update to stop.' };
-    if (state.phase != 'starting' && state.phase != 'downloading' && state.phase != 'verifying')
-        return { ok: false, error: 'WLOC update cannot be stopped after the maintenance phase has started.' };
-    if (!worker_matches(process_pid)) return { ok: false, error: 'Refusing to stop an unexpected process.' };
-    state.status = 'stopping'; state.phase = 'stopping'; state.message = 'Stopping update'; state.error = null; save_state(state);
-    if (!terminate_tree(process_pid)) {
-        state.status = 'running'; state.phase = 'stopping'; state.pid = process_pid;
-        state.error = 'Unable to stop the WLOC update worker.'; state.message = 'Unable to stop update';
-        save_state(state); return { ok: false, error: state.error };
-    }
-    if (lock_owner() == process_pid) quiet(`rm -rf ${q(LOCK_DIR)}`);
-    quiet(`rm -f ${q(STATE_DIR)}/*.tmp.${process_pid}.* ${q(STATE_DIR)}/apk-install.log.${process_pid}`);
-    state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = 'Update stopped'; save_state(state);
-    return status_result();
-}
 
 function flag(option) {
     try { let ctx = cursor(); return bool(ctx.get('wloc', 'main', option)); }
@@ -469,7 +425,6 @@ function dispatch(command, args) {
     if (command == 'status') return status_result();
     if (command == 'check') return check_update();
     if (command == 'install') return start_update();
-    if (command == 'stop') return stop_update();
     if (command == 'worker') { let state = worker_update(); return { ok: state.status == 'done', state }; }
     if (command == 'auto-status') return auto_status();
     if (command == 'auto-set-check') return auto_set('update_check_enabled', args[0]);
