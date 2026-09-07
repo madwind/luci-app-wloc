@@ -158,6 +158,25 @@ return view.extend({
             if (!pageVisible) return Promise.resolve();
             return callSettings().then(applySettings).catch(function() { return false; });
         }
+        function refreshCheck() {
+            if (state.starting || state.locked || state.checking) return Promise.resolve(null);
+
+            state.checking = true;
+            updateButtonState({});
+            wlocUi.setState(status, 'notice', _('Checking for updates...'));
+            return callCheck().then(function(result) {
+                state.checking = false;
+                result = wlocUi.requireOk(result, _('Unable to check WLOC updates.'));
+                applyStatus(result);
+                return result;
+            }).catch(function(error) {
+                state.checking = false;
+                state.available = null;
+                updateButtonState({});
+                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
+                return null;
+            });
+        }
         function installUpdate() {
             if (state.starting || state.locked) return Promise.resolve();
             state.starting = true;
@@ -178,22 +197,9 @@ return view.extend({
         }
         function runUpdate() {
             if (state.starting || state.locked || state.checking) return Promise.resolve();
-            if (state.available === true) return installUpdate();
-
-            state.checking = true;
-            updateButtonState({});
-            wlocUi.setState(status, 'notice', _('Checking for updates...'));
-            return callCheck().then(function(result) {
-                state.checking = false;
-                applyStatus(wlocUi.requireOk(result, _('Unable to check WLOC updates.')));
-                if (state.available === true) return installUpdate();
-                return false;
-            }).catch(function(error) {
-                state.checking = false;
-                state.available = null;
-                updateButtonState({});
-                wlocUi.setState(status, 'error', wlocUi.errorMessage(error, _('Unable to check WLOC updates.')));
-                return false;
+            return refreshCheck().then(function(result) {
+                if (result && state.available === true) return installUpdate();
+                return result;
             });
         }
         function setCheckSetting() {
@@ -227,7 +233,11 @@ return view.extend({
         if (initialSettings && initialSettings.ok === true) applySettings(initialSettings);
         else wlocUi.setState(status, 'error', wlocUi.errorMessage(initialSettings, _('Unable to read update settings.')));
 
-        poll.add(refresh, 2);
+        refreshCheck();
+
+        poll.add(function() {
+            return state.locked || state.starting ? refresh() : Promise.resolve();
+        }, 2);
         window.setInterval(function() {
             if (!pageVisible) return;
             renderHistory();
@@ -237,7 +247,7 @@ return view.extend({
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Check WLOC on demand or weekly. Update checks automatically when needed; automatic update uses the latest checked version.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Update information is refreshed when this page opens and before every Update action. Weekly checks and automatic updates remain independent.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Update checks')),
                 valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', scheduleText ]))
