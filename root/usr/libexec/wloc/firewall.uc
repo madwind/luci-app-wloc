@@ -426,7 +426,6 @@ function apply(raw) {
     fs.unlink(NEXT);
     let staged = atomic_write(NEXT, checked.config, 0o600);
     if (!staged.ok) return { ok: false, error_code: 'snapshot_stage_failed', error: staged.error };
-
     let managed = managed_tables();
     if (!managed.ok) return { ok: false, valid: false, error_code: 'nft_apply_failed', error: managed.error };
     let loaded = run_transaction(transaction(managed.tables, checked.compiled));
@@ -463,9 +462,6 @@ function save(raw) {
     if (!checked.ok) return { ok: false, valid: false, error: 'The Firewall file could not be saved.', detail: checked.detail || checked.error };
     let saved = atomic_write(SOURCE, checked.config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: 'The Firewall file could not be saved.', detail: saved.error };
-    return read_current();
-}
-function read_current() {
     let config = read_text(SOURCE);
     if (config == null) return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
     config = format_nftables(config);
