@@ -20,7 +20,7 @@ var callLogRead = rpc.declare({
     expect: { log: [] }
 });
 
-var LOG_TAG = 'wlocd';
+var LOG_SOURCE = /^(?:wlocd|wlocctl)(?:\[\d+\])?:\s*/i;
 var LOG_FETCH_LINES = 1000;
 var LOG_LINES = LOG_FETCH_LINES;
 var LOG_PENDING_MAX = LOG_FETCH_LINES;
@@ -75,7 +75,7 @@ function actionText(action) {
 function formatLogEntry(entry) {
     var message = entry && entry.msg != null ? String(entry.msg) : '';
     return message
-        .replace(/^wlocd(?:\[\d+\])?:\s*/, '')
+        .replace(LOG_SOURCE, '')
         .replace(/^wlocd:\s*/, '');
 }
 
@@ -218,7 +218,7 @@ function runtimeLogSection(options) {
 
     function isRelevantLogEntry(entry) {
         var message = entry && entry.msg != null ? String(entry.msg) : '';
-        return message.toLowerCase().indexOf(LOG_TAG) !== -1;
+        return LOG_SOURCE.test(message);
     }
 
     function logEntryKey(entry) {
@@ -517,7 +517,6 @@ return view.extend({
         var transitionBusy = false;
         var runtimeLogController = null;
         var overviewController = wlocOverview.create(data && data[1] || {}, initial);
-
         function setMessage(state, value) {
             if (!value) {
                 message.className = 'cbi-section-descr';
