@@ -56,7 +56,7 @@ table inet wloc {
         %ap_tproxy_dispatch_rules%
     }
     chain location_tproxy {
-        counter tproxy to :%port% accept comment "wloc location"
+        meta l4proto tcp counter tproxy to :%port% accept comment "wloc location"
     }
     chain transparent_prerouting {
         type filter hook prerouting priority mangle - 2;
