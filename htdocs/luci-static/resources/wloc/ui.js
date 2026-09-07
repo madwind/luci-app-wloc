@@ -94,57 +94,13 @@ function byteLength(value) {
     return encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, 'x').length;
 }
 
-function truncateBytes(value, maxBytes) {
-    value = String(value === undefined || value === null ? '' : value);
-    maxBytes = Math.max(0, Number(maxBytes) || 0);
-
-    if (byteLength(value) <= maxBytes)
-        return value;
-
-    var low = 0;
-    var high = value.length;
-    var best = '';
-
-    while (low <= high) {
-        var middle = Math.floor((low + high) / 2);
-        var candidate = value.slice(0, middle);
-
-        if (byteLength(candidate) <= maxBytes) {
-            best = candidate;
-            low = middle + 1;
-        } else {
-            high = middle - 1;
-        }
-    }
-
-    return best;
-}
-
-function boundedLines(lines, maxLines, maxBytes) {
-    var selected = [];
-    var totalBytes = 0;
+function boundedLines(lines, maxLines) {
     var lineLimit = Math.max(0, Number(maxLines) || 0);
-    var byteLimit = Math.max(0, Number(maxBytes) || 0);
-
-    for (var index = lines.length - 1; index >= 0 && selected.length < lineLimit; index--) {
-        var line = String(lines[index] === undefined || lines[index] === null ? '' : lines[index]);
-        var separatorBytes = selected.length ? 1 : 0;
-        var available = byteLimit - totalBytes - separatorBytes;
-
-        if (available <= 0)
-            break;
-
-        if (byteLength(line) > available) {
-            line = truncateBytes(line, available);
-            selected.unshift(line);
-            break;
-        }
-
-        selected.unshift(line);
-        totalBytes += separatorBytes + byteLength(line);
-    }
-
-    return selected;
+    if (!lineLimit)
+        return [];
+    return lines.slice(-lineLimit).map(function(line) {
+        return String(line === undefined || line === null ? '' : line);
+    });
 }
 
 return baseclass.extend({
@@ -155,6 +111,5 @@ return baseclass.extend({
     notifyFatal: notifyFatal,
     requireOk: requireOk,
     setState: setState,
-    setText: setText,
-    truncateBytes: truncateBytes
+    setText: setText
 });

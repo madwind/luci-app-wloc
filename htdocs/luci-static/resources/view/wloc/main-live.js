@@ -22,8 +22,7 @@ var callLogRead = rpc.declare({
 
 var LOG_TAG = 'wlocd';
 var LOG_FETCH_LINES = 1000;
-var LOG_LINES = 300;
-var LOG_MAX_BYTES = 96 * 1024;
+var LOG_LINES = LOG_FETCH_LINES;
 var LOG_PENDING_MAX = LOG_FETCH_LINES;
 var LOG_RECONNECT_MS = 2000;
 var ACTION_TIMEOUT = 20000;
@@ -94,8 +93,8 @@ function runtimeLogSection(options) {
     });
     var logOutput = E('textarea', {
         'id': 'wloc-runtime-log', 'class': 'cbi-input-text',
-        'style': 'display: block; width: 100%; min-height: 22em; box-sizing: border-box;',
-        'rows': 20, 'wrap': 'off', 'spellcheck': 'false', 'readonly': true,
+        'style': 'display: block; width: 100%; min-height: 22em; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: anywhere;',
+        'rows': 20, 'wrap': 'soft', 'spellcheck': 'false', 'readonly': true,
         'role': 'log', 'aria-label': _('WLOC runtime log')
     });
     var logStopped = false;
@@ -163,7 +162,7 @@ function runtimeLogSection(options) {
 
     function appendRenderedLogLine(line) {
         var previous = logLines;
-        var next = wlocUi.boundedLines(previous.concat([ line ]), LOG_LINES, LOG_MAX_BYTES);
+        var next = wlocUi.boundedLines(previous.concat([ line ]), LOG_LINES);
         var retained = Math.max(0, next.length - 1);
         var dropped = previous.length - retained;
         var canAppend = dropped >= 0 && next.length > 0 && next[next.length - 1] === line;
@@ -275,7 +274,7 @@ function runtimeLogSection(options) {
                 merged.push(formatLogEntry(entry));
             });
             initialLogsLoaded = true;
-            logLines = wlocUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
+            logLines = wlocUi.boundedLines(merged, LOG_LINES);
             renderLogs();
             return;
         }
