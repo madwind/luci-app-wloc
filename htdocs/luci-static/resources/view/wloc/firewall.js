@@ -13,11 +13,6 @@ var callInstall = rpc.declare({ object: 'luci.wloc.firewall', method: 'install',
 var callUninstall = rpc.declare({ object: 'luci.wloc.firewall', method: 'uninstall', expect: { '': {} }, reject: true });
 var callDefault = rpc.declare({ object: 'luci.wloc.defaults', method: 'firewall', expect: { '': {} } });
 
-function firewallError(result, fallback) {
-    var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
-    return detail || fallback;
-}
-
 return view.extend({
     load: function() {
         return Promise.all([
@@ -69,8 +64,8 @@ return view.extend({
             wlocUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
             runtimeRequest = callRuntime().then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Unable to read runtime nftables rules.')));
+                return wlocUi.requireOk(next, _('Unable to read runtime nftables rules.'));
+            }).then(function(next) {
                 updateRuntime(next);
                 return next;
             }).catch(function(error) {
@@ -86,8 +81,8 @@ return view.extend({
         function reloadFirewall(current) {
             setMessage('notice', _('Reloading the saved Firewall file...'));
             return callRead().then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Unable to read the Firewall file.')));
+                return wlocUi.requireOk(next, _('Unable to read the Firewall file.'));
+            }).then(function(next) {
                 current.markSaved(next.config || '');
                 setMessage('ok', _('Saved Firewall file reloaded.'));
                 return true;
@@ -100,8 +95,8 @@ return view.extend({
         function loadDefaultFirewall(current) {
             setMessage('notice', _('Loading default Firewall template...'));
             return callDefault().then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Unable to read the default Firewall template.')));
+                return wlocUi.requireOk(next, _('Unable to read the default Firewall template.'));
+            }).then(function(next) {
                 current.setValue(wlocNftFormat.format(next.config || ''));
                 current.focus();
                 setMessage('notice', _('Default Firewall template loaded in the editor. Review before saving.'));
@@ -133,8 +128,8 @@ return view.extend({
             setMessage('notice', _('Saving Firewall file...'));
 
             return callSave(value).then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('The Firewall file could not be saved.')));
+                return wlocUi.requireOk(next, _('The Firewall file could not be saved.'));
+            }).then(function(next) {
                 current.markSaved(next.config === undefined ? value : next.config);
                 setMessage('ok', _('Firewall file saved.'));
                 return true;
@@ -152,8 +147,8 @@ return view.extend({
             }
             setMessage('notice', _('Installing Firewall rules...'));
             return callInstall().then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Firewall rules could not be installed.')));
+                return wlocUi.requireOk(next, _('Firewall rules could not be installed.'));
+            }).then(function(next) {
                 invalidateRuntime();
                 setMessage('ok', _('Firewall installed.'));
                 return refreshRuntime();
@@ -166,8 +161,8 @@ return view.extend({
         function uninstallFirewall() {
             setMessage('notice', _('Uninstalling Firewall rules...'));
             return callUninstall().then(function(next) {
-                if (!next || next.ok !== true)
-                    throw new Error(firewallError(next, _('Firewall rules could not be uninstalled.')));
+                return wlocUi.requireOk(next, _('Firewall rules could not be uninstalled.'));
+            }).then(function(next) {
                 invalidateRuntime();
                 setMessage('ok', _('Firewall uninstalled.'));
                 return refreshRuntime();
@@ -222,8 +217,7 @@ return view.extend({
             E('div', {}, [ E('code', {}, '%ap_interfaces%'), ' — ', _('Enabled WLOC AP interfaces inserted into the bridge ingress set.') ]),
             E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime Apple location target addresses.') ]),
             E('div', {}, [ E('code', {}, '%ap_tproxy_mark_rules%'), ' — ', _('Per-AP profile mark rules inserted into ap_tproxy_marks.') ]),
-            E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', _('Per-AP TPROXY dispatch rules inserted into ap_tproxy_dispatch.') ]),
-            E('div', {}, [ E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Dispatch rules for WLOC-originated marked sockets inserted into outbound_prerouting.') ]),
+            E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Generated TPROXY dispatch rules.') ]),
             E('div', {}, _('Keep the template jumps from mark_prerouting to ap_tproxy_marks and from transparent_prerouting to ap_tproxy_dispatch so the generated rules are reachable.'))
         ]);
 
