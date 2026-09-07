@@ -19,7 +19,7 @@ function errorMessage(error, fallback) {
         if (detail && detail !== primary)
             parts.push(detail);
 
-        message = parts.join(': ');
+        message = parts.join('\n');
     }
 
     if (message === undefined || message === null || String(message) === '')
