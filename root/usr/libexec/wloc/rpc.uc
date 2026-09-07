@@ -11,7 +11,6 @@ import { open, popen, unlink } from 'fs';
 const INIT = '/etc/init.d/wloc';
 const RULES = '/usr/libexec/wloc/rules.uc';
 const STATE = '/var/run/wloc/status.json';
-const START_ERROR = '/var/run/wloc/start-error';
 const CAINFO = '/etc/wloc/ca.info.json';
 const CA_KEY = '/etc/wloc/ca.key';
 const CA_DER = '/etc/wloc/ca.der';
@@ -113,18 +112,6 @@ function status() {
 
     let running = daemon_running(), firewall = firewall_status();
     let accepted = integer(state.accepted_connections, 0);
-    let reason = '';
-
-    if (!running) {
-        reason = trim(read_file(START_ERROR) || '');
-        if (!reason && enabled) reason = 'service is not running; check the system log';
-    } else if (!truthy(state.armed)) {
-        if (state.last_event === 'lease_failed')
-            reason = 'Runtime rule refresh failed' + (state.last_error ? `: ${state.last_error}` : '');
-        else if (state.last_event === 'cleanup_failed')
-            reason = 'Runtime rule cleanup failed' + (state.last_error ? `: ${state.last_error}` : '');
-    }
-
     let fingerprint = state.ca_fingerprint || '';
     if (!fingerprint) {
         let info = read_json(CAINFO) || {};
@@ -164,7 +151,6 @@ function status() {
         patch_failures: integer(state.patch_failures, 0),
         last_event: `${state.last_event || ''}`,
         last_error: `${state.last_error || ''}`,
-        service_reason: reason,
         session_started_at: integer(state.session_started_at, 0),
         updated_at: integer(state.updated_at, 0),
         fingerprint,

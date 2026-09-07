@@ -574,8 +574,6 @@ return view.extend({
             var routeIpv4 = routingKnown && truthy(routingResult.route_ipv4);
             var routeIpv6 = routingKnown && truthy(routingResult.route_ipv6);
             var ipv6Enabled = routingKnown && truthy(routingResult.ipv6_enabled);
-            var reason = String(result.service_reason || '');
-
             wlocUi.setState(service, running ? 'ok' : runningKnown ? 'warn' : 'notice',
                 runningKnown ? (running ? _('Running') : _('Stopped')) : _('Unavailable'));
             wlocUi.setText(uptime, running ? formatUptime(result.session_started_at) : '—');
@@ -594,9 +592,6 @@ return view.extend({
             } else {
                 wlocUi.setState(routing, 'warn', _('Inactive'));
             }
-
-            if (!actionInProgress)
-                setMessage(reason ? 'error' : 'notice', reason);
 
             overviewController.updateStatus(result);
             updateActionButtons();
@@ -644,11 +639,23 @@ return view.extend({
             return statusRequest;
         }
 
+        function refreshActionStatus() {
+            return callStatus().then(function(result) {
+                return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
+                    return applyStatus(result, routingResult);
+                });
+            });
+        }
+
         function waitForLifecycle(action) {
             return callReady().then(function(state) {
                 state = state || {};
-                if (state.ok === false)
+                if (state.ok === false && state.state !== 'failed')
                     throw new Error(state.error || _('Unable to read WLOC startup state.'));
+                if (state.state === 'failed') {
+                    transitionBusy = false;
+                    return refreshActionStatus();
+                }
 
                 var running = truthy(state.running);
                 var ready = truthy(state.ready);
@@ -656,14 +663,12 @@ return view.extend({
 
                 if (complete) {
                     transitionBusy = false;
-                    return callStatus().then(function(result) {
-                        return L.resolveDefault(callRouting(), {}).then(function(routingResult) {
-                            return applyStatus(result, routingResult);
-                        });
-                    });
+                    return refreshActionStatus();
                 }
-                if (Date.now() >= actionDeadline)
-                    throw new Error(_('WLOC did not reach the requested state within 20 seconds.'));
+                if (Date.now() >= actionDeadline) {
+                    transitionBusy = false;
+                    return refreshActionStatus();
+                }
 
                 setMessage('notice', action === 'stop' ? _('Stopping WLOC...') : _('Starting WLOC...'));
                 return new Promise(function(resolve) {
@@ -684,10 +689,21 @@ return view.extend({
             notifyLogLifecycle();
 
             return request().then(function(result) {
-                if (result && result.ok === false)
+                if (result && result.ok === false && action === 'stop')
                     throw new Error(result.error || _('Service action failed.'));
+                if (result && result.ok === false) {
+                    transitionBusy = false;
+                    return refreshActionStatus();
+                }
                 return waitForLifecycle(action);
             }).then(function(result) {
+                var completed = action === 'stop'
+                    ? result && !truthy(result.running)
+                    : result && truthy(result.running) && truthy(result.armed);
+                if (!completed) {
+                    setMessage('', '');
+                    return false;
+                }
                 setMessage('ok', action === 'start' ? _('WLOC started.') : action === 'stop' ? _('WLOC stopped.') : _('WLOC restarted.'));
                 return result;
             }).catch(function(error) {
