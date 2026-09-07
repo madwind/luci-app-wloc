@@ -5,8 +5,6 @@ START=95
 STOP=10
 
 UCODE=/usr/bin/ucode
-FIREWALL=/etc/wloc/firewall.nft
-FIREWALL_CTL=/usr/libexec/wloc/firewall.uc
 SCHEDULE=/usr/libexec/wloc/wifi-schedule.uc
 WLOC_CTL=/usr/libexec/wloc/wlocctl
 START_ERROR=/var/run/wloc/start-error
@@ -34,7 +32,7 @@ has_wifi_schedule() {
 }
 
 start_service() {
-    local enabled debug_log cleanup_detail check_detail
+    local enabled debug_log check_detail
 
     config_load wloc
     config_get_bool enabled main enabled 0
@@ -48,15 +46,6 @@ start_service() {
         startup_failure "wlocd configuration validation failed: $check_detail"
         return 1
     fi
-
-    cleanup_detail=''
-    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
-        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        startup_failure "runtime cleanup failed: $cleanup_detail"
-        return 1
-    fi
-
-    [ -r "$FIREWALL" ] || { startup_failure "firewall file is missing: $FIREWALL"; return 1; }
 
     mkdir -p /etc/wloc
     chmod 0700 /etc/wloc
@@ -85,25 +74,8 @@ start_service() {
     procd_close_instance
 }
 
-stop_service() {
-    local rc=0 cleanup_detail
-    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
-        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        logger -t wlocd "runtime cleanup failed while stopping service: $cleanup_detail"
-        rc=1
-    fi
-    return "$rc"
-}
-
 service_stopped() {
-    local rc=0 cleanup_detail
-    if ! cleanup_detail="$("$UCODE" "$FIREWALL_CTL" remove-runtime 2>&1)"; then
-        [ -n "$cleanup_detail" ] || cleanup_detail='unknown error'
-        logger -t wlocd "runtime cleanup failed after service stop: $cleanup_detail"
-        rc=1
-    fi
-    rm -f /var/run/wloc/status.json "$START_ERROR" || rc=1
-    return "$rc"
+    rm -f /var/run/wloc/status.json "$START_ERROR"
 }
 
 reload_service() {

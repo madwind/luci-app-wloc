@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+
+START=93
+STOP=17
+
+CONTROLLER=/usr/libexec/wloc/routing.uc
+
+start() {
+    /usr/bin/ucode "$CONTROLLER" apply-effective >/dev/null
+}
+
+stop() {
+    /usr/bin/ucode "$CONTROLLER" deactivate >/dev/null
+}

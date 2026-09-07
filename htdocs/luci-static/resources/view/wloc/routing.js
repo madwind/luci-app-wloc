@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require rpc';
+'require ui';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 
@@ -14,13 +15,6 @@ var callRead = rpc.declare({
 var callRuntime = rpc.declare({
     object: 'luci.wloc.routing',
     method: 'runtime',
-    expect: { '': {} },
-    reject: true
-});
-
-var callReady = rpc.declare({
-    object: 'luci.wloc.firewall',
-    method: 'ready',
     expect: { '': {} },
     reject: true
 });
@@ -41,10 +35,16 @@ var callSave = rpc.declare({
     reject: true
 });
 
-var callApply = rpc.declare({
+var callInstall = rpc.declare({
     object: 'luci.wloc.routing',
-    method: 'apply',
-    params: [ 'config' ],
+    method: 'install',
+    expect: { '': {} },
+    reject: true
+});
+
+var callUninstall = rpc.declare({
+    object: 'luci.wloc.routing',
+    method: 'uninstall',
     expect: { '': {} },
     reject: true
 });
@@ -63,10 +63,6 @@ function routingMessage(result, fallback) {
 
 function validationDetail(result) {
     return routingMessage(result, _('Routing command was rejected.'));
-}
-
-function runtimeTransitionBusy(state) {
-    return state && state.ok === true && (state.state === 'starting' || state.state === 'stopping');
 }
 
 function formatRouting(source) {
@@ -104,8 +100,8 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
-        var runtimeReadyTimer = null;
         var pageVisible = true;
+        var uninstallButton;
         var editor;
         var activeEditor = wlocEditor.create({
             id: 'wloc-routing-active',
@@ -133,11 +129,15 @@ return view.extend({
         }
 
         function updateRuntime(next) {
+            var installed = next && next.installed === true;
+            var active = next && next.route_active === true;
             activeEditor.markSaved(next && next.active
                 ? next.active
                 : _('# No active policy routing commands are installed.\n'));
-            wlocUi.setState(runtimeState, next && next.route_active === true ? 'ok' : 'warn',
-                next && next.route_active === true ? _('Loaded') : _('Inactive'));
+            wlocUi.setState(runtimeState, installed && active ? 'ok' : installed || active ? 'warn' : 'notice',
+                installed ? (active ? _('Installed') : _('Installed, but inactive')) : (active ? _('Active, but not installed') : _('Not installed')));
+            if (uninstallButton)
+                uninstallButton.disabled = !installed && !active;
         }
 
         function refreshRuntime() {
@@ -160,32 +160,6 @@ return view.extend({
             });
 
             return runtimeRequest;
-        }
-
-        function refreshRuntimeWhenReady() {
-            if (!pageVisible)
-                return Promise.resolve();
-            if (runtimeReadyTimer !== null) {
-                window.clearTimeout(runtimeReadyTimer);
-                runtimeReadyTimer = null;
-            }
-
-            return callReady().then(function(state) {
-                if (!state || state.ok !== true)
-                    throw new Error(routingMessage(state, _('Runtime refresh failed.')));
-                if (runtimeTransitionBusy(state)) {
-                    wlocUi.setState(runtimeState, 'notice', _('Waiting for service...'));
-                    runtimeReadyTimer = window.setTimeout(function() {
-                        runtimeReadyTimer = null;
-                        refreshRuntimeWhenReady();
-                    }, 1000);
-                    return false;
-                }
-                return refreshRuntime();
-            }).catch(function(error) {
-                wlocUi.setState(runtimeState, 'warn', wlocUi.errorMessage(error, _('Runtime refresh failed.')));
-                return false;
-            });
         }
 
         function reloadRouting(current) {
@@ -211,7 +185,7 @@ return view.extend({
             }).then(function(next) {
                 current.setValue(formatRouting(next.config || ''));
                 current.focus();
-                setMessage('notice', _('Default Routing template loaded in the editor. Review before saving and applying.'));
+                setMessage('notice', _('Default Routing template loaded in the editor. Review before saving.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', wlocUi.errorMessage(error, _('Unable to read the default Routing template.')));
@@ -231,7 +205,7 @@ return view.extend({
         function formatRoutingEditor(current) {
             current.setValue(formatRouting(current.getValue()));
             current.focus();
-            setMessage('ok', _('Formatted in the editor. Review before saving and applying.'));
+            setMessage('ok', _('Formatted in the editor. Review before saving.'));
             return Promise.resolve(true);
         }
 
@@ -251,30 +225,54 @@ return view.extend({
             });
         }
 
-        function saveApplyRouting(current) {
+        function saveRouting(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
 
-            var saved = false;
             var value = current.getValue();
-            setMessage('notice', _('Saving Routing file and applying commands...'));
+            setMessage('notice', _('Saving Routing file...'));
 
             return callSave(value).then(function(next) {
                 return requireOk(next, _('The Routing file could not be saved.'));
             }).then(function(next) {
-                saved = true;
                 current.markSaved(next.config === undefined ? value : next.config);
-                return callApply(value);
-            }).then(function(next) {
-                return requireOk(next, _('The Routing file was saved, but commands could not be applied.'));
-            }).then(function() {
-                invalidateRuntime();
-                setMessage('ok', _('Saved to the Routing file and applied to runtime.'));
+                setMessage('ok', _('Routing file saved.'));
                 return true;
             }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, saved
-                    ? _('The Routing file was saved, but commands could not be applied.')
-                    : _('The Routing file could not be saved.')));
+                setMessage('error', wlocUi.errorMessage(error, _('The Routing file could not be saved.')));
+                return false;
+            });
+        }
+
+        function installRouting() {
+            if (editor.isDirty()) {
+                editor.focus();
+                setMessage('error', _('Save the Routing file before installing it.'));
+                return Promise.resolve(false);
+            }
+            setMessage('notice', _('Installing Routing commands...'));
+            return callInstall().then(function(next) {
+                return requireOk(next, _('Routing commands could not be installed.'));
+            }).then(function() {
+                invalidateRuntime();
+                setMessage('ok', _('Routing installed.'));
+                return refreshRuntime();
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, _('Routing commands could not be installed.')));
+                return false;
+            });
+        }
+
+        function uninstallRouting() {
+            setMessage('notice', _('Uninstalling Routing commands...'));
+            return callUninstall().then(function(next) {
+                return requireOk(next, _('Routing commands could not be uninstalled.'));
+            }).then(function() {
+                invalidateRuntime();
+                setMessage('ok', _('Routing uninstalled.'));
+                return refreshRuntime();
+            }).catch(function(error) {
+                setMessage('error', wlocUi.errorMessage(error, _('Routing commands could not be uninstalled.')));
                 return false;
             });
         }
@@ -288,7 +286,7 @@ return view.extend({
             check: checkRouting,
             loadDefault: loadDefaultRouting,
             reload: reloadRouting,
-            saveApply: saveApplyRouting
+            save: saveRouting
         });
 
         if (result && result.ok === true) {
@@ -302,26 +300,29 @@ return view.extend({
             'type': 'button'
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() {
-            refreshRuntimeWhenReady();
+            refreshRuntime();
         });
+
+        var installButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Install'));
+        uninstallButton = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'type': 'button' }, _('Uninstall'));
+        installButton.addEventListener('click', ui.createHandlerFn(installButton, installRouting));
+        uninstallButton.addEventListener('click', ui.createHandlerFn(uninstallButton, uninstallRouting));
 
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
-        }, [ runtimeState, refreshButton ]);
+        }, [ runtimeState, E('span', {}, [ installButton, ' ', uninstallButton, ' ', refreshButton ]) ]);
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;
-            if (runtimeReadyTimer !== null)
-                window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
-        refreshRuntimeWhenReady();
+        refreshRuntime();
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Routing')),
             E('div', { 'class': 'cbi-map-descr' },
-                _('Edit the IPv4 TPROXY policy routing commands. Save & Apply writes the saved file first, then applies it to runtime. Failed runtime apply does not restore the previous file.')),
+                _('Edit and save policy routing independently. Install loads the saved commands into the system and enables them at boot; Uninstall removes them and disables startup. WLOC does not need to be running.')),
             E('div', { 'class': 'cbi-section' }, [
                 editor.root,
                 message

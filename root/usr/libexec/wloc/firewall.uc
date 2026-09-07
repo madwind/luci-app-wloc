@@ -10,8 +10,6 @@ const LOCATION_STATE = `${RUNTIME}/location.targets`;
 const SOURCE = '/etc/wloc/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const NEXT = `${APPLIED}.next`;
-const RULES = '/usr/libexec/wloc/rules.uc';
-const STATUS = '/var/run/wloc/status.json';
 const MAX_BYTES = 32 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
@@ -235,25 +233,6 @@ function fold_runtime(raw) {
     }
     return raw;
 }
-function parse_result(output) {
-    let lines = split(trim(output || ''), /\r?\n/);
-    for (let i = length(lines) - 1; i >= 0; i--) {
-        if (!trim(lines[i])) continue;
-        try {
-            let value = json(trim(lines[i]));
-            if (type(value) == 'object') return value;
-        } catch (e) {}
-    }
-    return { ok: false, error: trim(output || '') || 'controller returned no JSON' };
-}
-function run_ucode(path, args) {
-    let command = `/usr/bin/ucode ${q(path)}`;
-    for (let arg in args) command += ` ${q(arg)}`;
-    let result = capture(command);
-    let parsed = parse_result(result.output || '');
-    if (!result.ok && parsed.ok === true) return { ok: false, error: result.error || 'controller failed' };
-    return parsed;
-}
 function table_command(verb, spec) { return `${verb} table ${spec.family} ${spec.name}`; }
 function managed_tables() {
     let result = capture('nft list tables');
@@ -280,7 +259,9 @@ function active() {
     return {
         ok: true,
         active: length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n',
-        table_count: length(managed.tables)
+        table_count: length(managed.tables),
+        firewall_active: length(managed.tables) > 0,
+        installed: quiet('/etc/init.d/wloc-firewall enabled')
     };
 }
 function transaction(current_tables, desired) {
@@ -430,28 +411,9 @@ function remove_tables() {
     let removed = run_transaction(transaction(managed.tables, ''));
     return removed.ok ? { ok: true } : { ok: false, error: removed.detail || 'failed to remove WLOC nftables tables' };
 }
-function rules(command, args) {
-    let argv = [ command ];
-    for (let arg in (args || [])) push(argv, arg);
-    return run_ucode(RULES, argv);
-}
-function deactivate_runtime() {
-    let raw = read_text(APPLIED);
-    if (raw == null) { fs.unlink(NEXT); return { ok: true, active: false }; }
-    let parsed = inspect_source(format_nftables(raw));
-    if (!parsed.ok) return { ok: false, error: `invalid applied firewall snapshot: ${parsed.error}` };
-    let lines = [];
-    for (let spec in parsed.tables) push(lines, `flush table ${spec.family} ${spec.name}`);
-    let flushed = run_transaction(join('\n', lines));
-    if (!flushed.ok) return { ok: false, error: flushed.detail || 'failed to deactivate WLOC nftables tables' };
-    fs.unlink(APPLIED); fs.unlink(NEXT);
-    return { ok: true, active: false };
-}
 function fail_open(error_code, error, detail) {
     let errors = [];
     if (detail) push(errors, detail);
-    let cleaned = rules('cleanup', []);
-    if (!cleaned.ok) push(errors, `runtime cleanup failed: ${cleaned.error || 'unable to clear runtime state'}`);
     let removed = remove_tables();
     if (!removed.ok) push(errors, `firewall cleanup failed: ${removed.error}`);
     fs.unlink(APPLIED); fs.unlink(NEXT);
@@ -462,10 +424,6 @@ function fail_open(error_code, error, detail) {
         error,
         detail: join('; ', errors)
     };
-}
-function daemon_ready() {
-    let st = fs.stat(STATUS);
-    return quiet('pidof wlocd') && type(st) == 'object' && int(st.size || 0) > 0;
 }
 function apply(raw) {
     let checked = prepare(raw);
@@ -485,18 +443,15 @@ function apply(raw) {
         return fail_open('snapshot_promote_failed', 'The applied firewall snapshot could not be promoted.', 'nftables transaction succeeded but the applied snapshot could not be promoted');
     fs.chmod(APPLIED, 0o600);
 
-    let warning = '';
-    if (!daemon_ready()) {
-        let cleaned = rules('cleanup', []);
-        warning = cleaned.ok
-            ? 'WLOC is not running; interception remains disabled.'
-            : 'WLOC is not running and fail-open cleanup failed.';
-    }
-
     return {
         ok: true, valid: true, applied: true, path: SOURCE, config: checked.config, bytes: length(checked.config),
-        warning, applied_config: checked.config, applied_path: APPLIED
+        applied_config: checked.config, applied_path: APPLIED
     };
+}
+function apply_effective() {
+    let raw = read_text(SOURCE);
+    if (raw == null) return { ok: false, error: `cannot read ${SOURCE}` };
+    return apply(raw);
 }
 function refresh_runtime() {
     let raw = read_text(APPLIED);
@@ -526,13 +481,10 @@ function read_current() {
     };
 }
 function remove_runtime() {
-    let errors = [];
-    let cleaned = rules('cleanup', []);
-    if (!cleaned.ok) push(errors, cleaned.error || 'unable to clean runtime rules');
     let removed = remove_tables();
-    if (!removed.ok) push(errors, removed.error);
+    if (!removed.ok) return removed;
     fs.unlink(APPLIED); fs.unlink(NEXT);
-    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
+    return { ok: true, firewall_active: false };
 }
 function file_input(path) {
     path = `${path ?? ''}`;
@@ -542,14 +494,13 @@ function file_input(path) {
 }
 function dispatch(command, args) {
     if (command == 'active') return active();
-    if (command == 'deactivate-runtime') return deactivate_runtime();
+    if (command == 'apply-effective') return apply_effective();
     if (command == 'remove-runtime') return remove_runtime();
     if (command == 'refresh-runtime') return refresh_runtime();
-    if (command == 'validate-file' || command == 'apply-file' || command == 'save-file') {
+    if (command == 'validate-file' || command == 'save-file') {
         let input = file_input(args[0]);
         if (!input.ok) return input;
         if (command == 'validate-file') return validate(input.raw);
-        if (command == 'apply-file') return apply(input.raw);
         return save(input.raw);
     }
     return { ok: false, error: `unsupported firewall command: ${command}` };

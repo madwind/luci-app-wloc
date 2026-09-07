@@ -16,8 +16,8 @@
       "ubus": {
         "luci.wloc": [ "regenerate_ca" ],
         "luci.wloc.service": [ "sync", "start", "stop", "restart" ],
-        "luci.wloc.firewall": [ "save", "apply" ],
-        "luci.wloc.routing": [ "save", "apply" ],
+        "luci.wloc.firewall": [ "save", "install", "uninstall" ],
+        "luci.wloc.routing": [ "save", "install", "uninstall" ],
         "luci.wloc.update": [ "check", "install", "stop", "set_check", "set_auto" ]
       },
       "uci": [ "wloc" ]

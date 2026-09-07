@@ -12,6 +12,7 @@ let ubus = require('ubus').connect();
 const RPC_CONTROLLER = '/usr/libexec/wloc/rpc.uc';
 const FIREWALL_CONTROLLER = '/usr/libexec/wloc/firewall.uc';
 const ROUTING_CONTROLLER = '/usr/libexec/wloc/routing.uc';
+const RULES_CONTROLLER = '/usr/libexec/wloc/rules.uc';
 const UPDATE_CONTROLLER = '/usr/libexec/wloc/update.uc';
 const INIT = '/etc/init.d/wloc';
 const RUNTIME = '/var/run/wloc';
@@ -204,28 +205,6 @@ function defer_payload(request, controller, command, value, prefix, label, too_l
     });
 }
 
-function firewall_apply(request) {
-    let current = firewall_ready();
-    if (current.ready !== true)
-        return {
-            ok: false,
-            error: current.busy
-                ? 'WLOC is changing state. Apply the Firewall after the service is ready.'
-                : 'WLOC must be running and ready before Firewall rules can be applied.',
-            state: current.state
-        };
-
-    return defer_payload(
-        request,
-        FIREWALL_CONTROLLER,
-        'apply',
-        request_args(request).config || '',
-        'rpc-firewall-apply',
-        'Firewall apply',
-        'Firewall file is larger than 32 KiB.'
-    );
-}
-
 function sync_boot() {
     let enabled = service_enabled();
     let action = enabled ? 'enable' : 'disable';
@@ -312,10 +291,6 @@ const firewall_methods = {
             'Firewall file is larger than 32 KiB.'
         )
     },
-    apply: {
-        args: { config: '' },
-        call: request => firewall_apply(request)
-    },
     save: {
         args: { config: '' },
         call: request => defer_payload(
@@ -327,7 +302,9 @@ const firewall_methods = {
             'Firewall save',
             'Firewall file is larger than 32 KiB.'
         )
-    }
+    },
+    install: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'firewall', 'install' ], 'Firewall install') },
+    uninstall: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'firewall', 'uninstall' ], 'Firewall uninstall') }
 };
 
 const routing_methods = {
@@ -363,18 +340,8 @@ const routing_methods = {
             'routing file is larger than 32 KiB'
         )
     },
-    apply: {
-        args: { config: '' },
-        call: request => defer_payload(
-            request,
-            ROUTING_CONTROLLER,
-            'apply',
-            request_args(request).config || '',
-            'rpc-routing',
-            'Routing apply',
-            'routing file is larger than 32 KiB'
-        )
-    }
+    install: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'routing', 'install' ], 'Routing install') },
+    uninstall: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'routing', 'uninstall' ], 'Routing uninstall') }
 };
 
 const service_methods = {

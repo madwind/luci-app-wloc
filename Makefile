@@ -64,6 +64,16 @@ chmod 0644 "$${version_cache}" 2>/dev/null || true
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
 	/usr/bin/ucode /usr/libexec/wloc/update.uc auto-sync >/dev/null 2>&1 || logger -t wloc "cannot synchronize automatic update check schedule"
+	for component in routing firewall; do
+		component_service="/etc/init.d/wloc-$${component}"
+		if [ "$$(uci -q get wloc.main.$${component}_installed 2>/dev/null)" = "1" ]; then
+			"$${component_service}" enable >/dev/null 2>&1 || true
+			"$${component_service}" start >/dev/null 2>&1 || logger -t wloc "cannot install $${component}"
+		else
+			"$${component_service}" stop >/dev/null 2>&1 || true
+			"$${component_service}" disable >/dev/null 2>&1 || true
+		fi
+	done
 	if [ "$$(uci -q get wloc.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/wloc enable >/dev/null 2>&1 || true
 		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ] && [ -f "$${upgrade_running}" ]; then
@@ -90,10 +100,15 @@ define Package/luci-app-wloc/prerm
 		*)
 			[ -f /usr/libexec/wloc/update.uc ] && /usr/bin/ucode /usr/libexec/wloc/update.uc auto-remove >/dev/null 2>&1 || true
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
+			for component in firewall routing; do
+				component_service="/etc/init.d/wloc-$${component}"
+				[ -x "$${component_service}" ] || continue
+				"$${component_service}" stop >/dev/null 2>&1 || true
+				"$${component_service}" disable >/dev/null 2>&1 || true
+			done
 			rm -f /usr/share/wloc/installed-version /tmp/wloc-upgrade.running
 			;;
 	esac
-	[ -f /usr/libexec/wloc/firewall.uc ] && /usr/bin/ucode /usr/libexec/wloc/firewall.uc remove-runtime >/dev/null 2>&1 || true
 }
 exit 0
 endef

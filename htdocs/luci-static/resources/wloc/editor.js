@@ -45,7 +45,7 @@ function createEditor(options) {
         options.check,
         options.loadDefault,
         options.reload,
-        options.saveApply
+        options.save
     ].some(function(handler) {
         return typeof handler === 'function';
     });
@@ -187,7 +187,7 @@ function createEditor(options) {
         _('Reload the saved file? This will replace the current editor contents. Any unsaved changes will be lost.'));
     addInjectedAction(leftActions, _('Load default'), 'cbi-button-negative', options.loadDefault,
         _('Load the default template? This will replace the current editor contents. Any unsaved changes will be lost.'));
-    addInjectedAction(rightActions, _('Save & Apply'), 'cbi-button-save', options.saveApply, null);
+    addInjectedAction(rightActions, options.saveLabel || _('Save'), 'cbi-button-save', options.save, null);
 
     textarea.addEventListener('input', handleInput);
     textarea.addEventListener('keyup', updateCursorPosition);
