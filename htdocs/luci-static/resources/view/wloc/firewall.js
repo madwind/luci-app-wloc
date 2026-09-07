@@ -2,14 +2,12 @@
 'require view';
 'require rpc';
 'require uci';
-'require ui';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 'require wloc.nftformat as wlocNftFormat';
 
 var callRead = rpc.declare({ object: 'luci.wloc.firewall', method: 'read', expect: { '': {} } });
 var callRuntime = rpc.declare({ object: 'luci.wloc.firewall', method: 'runtime', expect: { '': {} } });
-var callValidate = rpc.declare({ object: 'luci.wloc.firewall', method: 'validate', params: [ 'config' ], expect: { '': {} } });
 var callSave = rpc.declare({ object: 'luci.wloc.firewall', method: 'save', params: [ 'config' ], expect: { '': {} } });
 var callInstall = rpc.declare({ object: 'luci.wloc.firewall', method: 'install', expect: { '': {} }, reject: true });
 var callUninstall = rpc.declare({ object: 'luci.wloc.firewall', method: 'uninstall', expect: { '': {} }, reject: true });
@@ -37,7 +35,6 @@ return view.extend({
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var pageVisible = true;
-        var uninstallButton;
         var editor;
         var activeEditor = wlocEditor.create({
             id: 'wloc-firewall-runtime',
@@ -59,13 +56,11 @@ return view.extend({
         }
 
         function updateRuntime(next) {
-            var installed = next && next.installed === true;
             var active = next && next.firewall_active === true;
             activeEditor.markSaved(next && next.active ? next.active : _('# No WLOC nftables tables are active.\n'));
-            wlocUi.setState(runtimeState, installed && active ? 'ok' : installed || active ? 'warn' : 'notice',
-                installed ? (active ? _('Installed') : _('Installed, but inactive')) : (active ? _('Active, but not installed') : _('Not installed')));
-            if (uninstallButton)
-                uninstallButton.disabled = !installed && !active;
+            wlocUi.setState(runtimeState, active ? 'ok' : 'notice', active ? _('Installed') : _('Not installed'));
+            if (editor)
+                editor.setInstalled(active);
         }
 
         function refreshRuntime() {
@@ -131,20 +126,6 @@ return view.extend({
             return Promise.resolve(true);
         }
 
-        function checkFirewall(current) {
-            if (!withinLimit(current)) return Promise.resolve(false);
-            setMessage('notice', _('Checking Firewall syntax...'));
-            return callValidate(current.getValue()).then(function(next) {
-                if (!next || next.valid !== true)
-                    throw new Error(firewallError(next, _('Firewall syntax check failed.')));
-                setMessage('ok', _('Firewall syntax check passed.'));
-                return true;
-            }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, _('Firewall syntax check failed.')));
-                return false;
-            });
-        }
-
         function saveFirewall(current) {
             if (!withinLimit(current)) return Promise.resolve(false);
 
@@ -163,9 +144,9 @@ return view.extend({
             });
         }
 
-        function installFirewall() {
-            if (editor.isDirty()) {
-                editor.focus();
+        function installFirewall(current) {
+            if (current.isDirty()) {
+                current.focus();
                 setMessage('error', _('Save the Firewall file before installing it.'));
                 return Promise.resolve(false);
             }
@@ -196,16 +177,20 @@ return view.extend({
             });
         }
 
+        function toggleFirewall(current, installed) {
+            return installed ? uninstallFirewall() : installFirewall(current);
+        }
+
         editor = wlocEditor.create({
             id: 'wloc-firewall-editor',
             label: _('nftables ruleset'),
             minHeight: '32em',
             rows: 32,
             format: formatFirewall,
-            check: checkFirewall,
             loadDefault: loadDefaultFirewall,
             reload: reloadFirewall,
-            save: saveFirewall
+            save: saveFirewall,
+            installToggle: toggleFirewall
         });
 
         if (result && result.ok === true) {
@@ -220,15 +205,10 @@ return view.extend({
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() { refreshRuntime(); });
 
-        var installButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Install'));
-        uninstallButton = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'type': 'button' }, _('Uninstall'));
-        installButton.addEventListener('click', ui.createHandlerFn(installButton, installFirewall));
-        uninstallButton.addEventListener('click', ui.createHandlerFn(uninstallButton, uninstallFirewall));
-
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
-        }, [ runtimeState, E('span', {}, [ installButton, ' ', uninstallButton, ' ', refreshButton ]) ]);
+        }, [ runtimeState, refreshButton ]);
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;
@@ -237,7 +217,7 @@ return view.extend({
         refreshRuntime();
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
-            E('div', {}, _('Template variables are rendered automatically when the firewall is checked, installed, or refreshed:')),
+            E('div', {}, _('Template variables are rendered automatically when the firewall is installed or refreshed:')),
             E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port), ' — ', _('WLOC local transparent-proxy listener port.') ]),
             E('div', {}, [ E('code', {}, '%ap_interfaces%'), ' — ', _('Enabled WLOC AP interfaces inserted into the bridge ingress set.') ]),
             E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime Apple location target addresses.') ]),
@@ -249,7 +229,7 @@ return view.extend({
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Edit and save the WLOC nftables template independently. Install renders the saved template, loads it into the system, and enables it at boot; Uninstall removes it and disables startup. Dynamic target sets remain visible as empty until WLOC supplies values.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Edit and save the WLOC nftables template. Use the editor toggle to install or uninstall it manually. WLOC automatically installs saved rules when the service starts and removes them when it stops or exits unexpectedly.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),

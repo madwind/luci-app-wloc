@@ -18,6 +18,8 @@ function createEditor(options) {
     var minHeight = options.minHeight || '24em';
     var rows = options.rows || 24;
     var savedValue = String(options.value === undefined || options.value === null ? '' : options.value);
+    var installed = options.installed === true;
+    var installToggleButton = null;
     var textarea = E('textarea', {
         'id': id,
         'class': 'cbi-input-text',
@@ -45,7 +47,8 @@ function createEditor(options) {
         options.check,
         options.loadDefault,
         options.reload,
-        options.save
+        options.save,
+        options.installToggle
     ].some(function(handler) {
         return typeof handler === 'function';
     });
@@ -159,6 +162,14 @@ function createEditor(options) {
         updateState();
     }
 
+    function setInstalled(value) {
+        installed = value === true;
+        if (!installToggleButton)
+            return;
+        installToggleButton.className = 'btn cbi-button ' + (installed ? 'cbi-button-negative' : 'cbi-button-apply');
+        wlocUi.setText(installToggleButton, installed ? _('Uninstall') : _('Install'));
+    }
+
     function withinLimit() {
         return editorByteLength(textarea.value) <= maxBytes;
     }
@@ -172,9 +183,11 @@ function createEditor(options) {
         focus: focus,
         getValue: function() { return textarea.value; },
         isDirty: isDirty,
+        isInstalled: function() { return installed; },
         markSaved: markSaved,
         maxBytes: maxBytes,
         root: root,
+        setInstalled: setInstalled,
         setValue: setValue,
         textarea: textarea,
         update: updateState,
@@ -188,6 +201,15 @@ function createEditor(options) {
     addInjectedAction(leftActions, _('Load default'), 'cbi-button-negative', options.loadDefault,
         _('Load the default template? This will replace the current editor contents. Any unsaved changes will be lost.'));
     addInjectedAction(rightActions, options.saveLabel || _('Save'), 'cbi-button-save', options.save, null);
+
+    if (typeof options.installToggle === 'function') {
+        installToggleButton = E('button', { 'class': 'btn cbi-button', 'type': 'button' });
+        installToggleButton.addEventListener('click', ui.createHandlerFn(installToggleButton, function() {
+            return Promise.resolve(options.installToggle(api, installed));
+        }));
+        rightActions.appendChild(installToggleButton);
+        setInstalled(installed);
+    }
 
     textarea.addEventListener('input', handleInput);
     textarea.addEventListener('keyup', updateCursorPosition);

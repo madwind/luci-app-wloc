@@ -1,7 +1,6 @@
 'use strict';
 'require view';
 'require rpc';
-'require ui';
 'require wloc.ui as wlocUi';
 'require wloc.editor as wlocEditor';
 
@@ -15,14 +14,6 @@ var callRead = rpc.declare({
 var callRuntime = rpc.declare({
     object: 'luci.wloc.routing',
     method: 'runtime',
-    expect: { '': {} },
-    reject: true
-});
-
-var callValidate = rpc.declare({
-    object: 'luci.wloc.routing',
-    method: 'validate',
-    params: [ 'config' ],
     expect: { '': {} },
     reject: true
 });
@@ -61,10 +52,6 @@ function routingMessage(result, fallback) {
         .filter(Boolean).join(': ') || fallback;
 }
 
-function validationDetail(result) {
-    return routingMessage(result, _('Routing command was rejected.'));
-}
-
 function formatRouting(source) {
     var input = String(source || '').replace(/\r\n?/g, '\n').split('\n');
     var output = [];
@@ -101,7 +88,6 @@ return view.extend({
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var pageVisible = true;
-        var uninstallButton;
         var editor;
         var activeEditor = wlocEditor.create({
             id: 'wloc-routing-active',
@@ -129,15 +115,13 @@ return view.extend({
         }
 
         function updateRuntime(next) {
-            var installed = next && next.installed === true;
             var active = next && next.route_active === true;
             activeEditor.markSaved(next && next.active
                 ? next.active
                 : _('# No active policy routing commands are installed.\n'));
-            wlocUi.setState(runtimeState, installed && active ? 'ok' : installed || active ? 'warn' : 'notice',
-                installed ? (active ? _('Installed') : _('Installed, but inactive')) : (active ? _('Active, but not installed') : _('Not installed')));
-            if (uninstallButton)
-                uninstallButton.disabled = !installed && !active;
+            wlocUi.setState(runtimeState, active ? 'ok' : 'notice', active ? _('Installed') : _('Not installed'));
+            if (editor)
+                editor.setInstalled(active);
         }
 
         function refreshRuntime() {
@@ -209,22 +193,6 @@ return view.extend({
             return Promise.resolve(true);
         }
 
-        function checkRouting(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
-
-            setMessage('notice', _('Checking Routing commands...'));
-            return callValidate(current.getValue()).then(function(next) {
-                if (!next || next.valid !== true)
-                    throw new Error(validationDetail(next));
-                setMessage('ok', _('Routing syntax check passed.'));
-                return true;
-            }).catch(function(error) {
-                setMessage('error', wlocUi.errorMessage(error, _('Routing syntax check failed.')));
-                return false;
-            });
-        }
-
         function saveRouting(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
@@ -244,9 +212,9 @@ return view.extend({
             });
         }
 
-        function installRouting() {
-            if (editor.isDirty()) {
-                editor.focus();
+        function installRouting(current) {
+            if (current.isDirty()) {
+                current.focus();
                 setMessage('error', _('Save the Routing file before installing it.'));
                 return Promise.resolve(false);
             }
@@ -277,16 +245,20 @@ return view.extend({
             });
         }
 
+        function toggleRouting(current, installed) {
+            return installed ? uninstallRouting() : installRouting(current);
+        }
+
         editor = wlocEditor.create({
             id: 'wloc-routing-editor',
             label: _('Policy routing commands'),
             minHeight: '16em',
             rows: 16,
             format: formatRoutingEditor,
-            check: checkRouting,
             loadDefault: loadDefaultRouting,
             reload: reloadRouting,
-            save: saveRouting
+            save: saveRouting,
+            installToggle: toggleRouting
         });
 
         if (result && result.ok === true) {
@@ -303,15 +275,10 @@ return view.extend({
             refreshRuntime();
         });
 
-        var installButton = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Install'));
-        uninstallButton = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'type': 'button' }, _('Uninstall'));
-        installButton.addEventListener('click', ui.createHandlerFn(installButton, installRouting));
-        uninstallButton.addEventListener('click', ui.createHandlerFn(uninstallButton, uninstallRouting));
-
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
-        }, [ runtimeState, E('span', {}, [ installButton, ' ', uninstallButton, ' ', refreshButton ]) ]);
+        }, [ runtimeState, refreshButton ]);
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;
@@ -322,7 +289,7 @@ return view.extend({
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Routing')),
             E('div', { 'class': 'cbi-map-descr' },
-                _('Edit and save policy routing independently. Install loads the saved commands into the system and enables them at boot; Uninstall removes them and disables startup. WLOC does not need to be running.')),
+                _('Edit and save policy routing. Use the editor toggle to install or uninstall it manually. WLOC automatically installs saved routing when the service starts and removes it when the service stops or exits unexpectedly.')),
             E('div', { 'class': 'cbi-section' }, [
                 editor.root,
                 message
