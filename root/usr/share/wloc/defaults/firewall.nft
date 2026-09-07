@@ -47,6 +47,11 @@ table inet wloc {
         auto-merge
         elements = { %location_ipv6% }
     }
+    chain outbound_output {
+        type route hook output priority mangle - 3;
+        policy accept;
+        meta mark & 0x10000 != 0 meta mark & 0xff00 != 0 meta mark & 0xff == 0 meta l4proto { tcp, udp } counter meta mark set meta mark | 0x2 comment "wloc outbound route"
+    }
     chain outbound_prerouting {
         type filter hook prerouting priority mangle - 3;
         policy accept;
