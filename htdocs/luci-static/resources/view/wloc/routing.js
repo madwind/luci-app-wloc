@@ -177,15 +177,6 @@ return view.extend({
             });
         }
 
-        function withinLimit(current) {
-            if (current.withinLimit())
-                return true;
-
-            current.focus();
-            setMessage('error', _('The Routing file is larger than 32 KiB.'));
-            return false;
-        }
-
         function formatRoutingEditor(current) {
             current.setValue(formatRouting(current.getValue()));
             current.focus();
@@ -194,9 +185,6 @@ return view.extend({
         }
 
         function saveRouting(current) {
-            if (!withinLimit(current))
-                return Promise.resolve(false);
-
             var value = current.getValue();
             setMessage('notice', _('Saving Routing file...'));
 

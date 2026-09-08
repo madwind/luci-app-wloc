@@ -3,8 +3,6 @@
 'require ui';
 'require wloc.ui as wlocUi';
 
-var MAX_EDITOR_BYTES = 32 * 1024;
-
 function editorByteLength(value) {
     return wlocUi.byteLength(value);
 }
@@ -14,7 +12,6 @@ function createEditor(options) {
 
     var id = options.id || 'wloc-editor';
     var label = options.label || _('Text editor');
-    var maxBytes = Number(options.maxBytes) || MAX_EDITOR_BYTES;
     var minHeight = options.minHeight || '24em';
     var rows = options.rows || 24;
     var savedValue = String(options.value === undefined || options.value === null ? '' : options.value);
@@ -33,7 +30,6 @@ function createEditor(options) {
         'aria-label': label
     });
     var byteCount = E('span', {}, wlocUi.formatBytes(editorByteLength(savedValue)));
-    var byteLimit = E('span', { 'aria-live': 'polite' });
     var state = E('span', { 'aria-live': 'polite' }, options.readonly ? _('Read-only') : _('Saved file'));
     var cursorPosition = E('span', { 'aria-live': 'polite' }, _('Ln 1, Col 1'));
     var leftActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem;' });
@@ -55,8 +51,7 @@ function createEditor(options) {
         E('label', { 'class': 'cbi-section-descr', 'for': id }, label),
         textarea,
         E('div', { 'class': 'cbi-section-descr' }, [
-            _('Size'), ': ', byteCount, ' / ', wlocUi.formatBytes(maxBytes), ' · ', state,
-            ' · ', cursorPosition, ' ', byteLimit
+            _('Size'), ': ', byteCount, ' · ', state, ' · ', cursorPosition
         ])
     ];
     var api;
@@ -82,19 +77,9 @@ function createEditor(options) {
     }
 
     function updateState() {
-        var bytes = editorByteLength(textarea.value);
-
-        wlocUi.setText(byteCount, wlocUi.formatBytes(bytes));
+        wlocUi.setText(byteCount, wlocUi.formatBytes(editorByteLength(textarea.value)));
         wlocUi.setText(state, options.readonly ? _('Read-only') : isDirty() ? _('Unsaved edits') : _('Saved file'));
         updateCursorPosition();
-
-        if (bytes > maxBytes) {
-            wlocUi.setState(byteLimit, 'error', _('%s maximum; current size is %s.').format(
-                wlocUi.formatBytes(maxBytes), wlocUi.formatBytes(bytes)
-            ));
-        } else {
-            wlocUi.setState(byteLimit, '', '');
-        }
     }
 
     function handleInput() {
@@ -169,10 +154,6 @@ function createEditor(options) {
         wlocUi.setText(installToggleButton, installed ? _('Uninstall') : _('Install'));
     }
 
-    function withinLimit() {
-        return editorByteLength(textarea.value) <= maxBytes;
-    }
-
     function focus() {
         textarea.focus();
     }
@@ -184,8 +165,7 @@ function createEditor(options) {
         markSaved: markSaved,
         root: root,
         setInstalled: setInstalled,
-        setValue: setValue,
-        withinLimit: withinLimit
+        setValue: setValue
     };
 
     addInjectedAction(leftActions, options.formatLabel || _('Format'), 'cbi-button-action', options.format, null);

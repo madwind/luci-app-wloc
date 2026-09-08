@@ -56,10 +56,7 @@ function component(kind, operation) {
     if ((kind != 'firewall' && kind != 'routing') || (operation != 'install' && operation != 'uninstall'))
         return { ok: false, error: 'unsupported component action' };
 
-    let installing = operation == 'install';
-    let result = component_action(kind, installing);
-    if (result.ok === true) result.installed = installing;
-    return result;
+    return component_action(kind, operation == 'install');
 }
 function number(value) {
     if (value == null) return null;

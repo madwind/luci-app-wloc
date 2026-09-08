@@ -7,7 +7,6 @@ import * as fs from 'fs';
 const SOURCE = '/etc/wloc/routing.conf';
 const RUNTIME = '/var/run/wloc';
 const APPLIED = `${RUNTIME}/routing.applied.conf`;
-const MAX_BYTES = 32 * 1024;
 let sequence = 0;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
@@ -49,7 +48,6 @@ function number(value) {
 }
 function parse_config(raw) {
     raw = `${raw ?? ''}`;
-    if (length(raw) > MAX_BYTES) return { ok: false, error: 'routing file is larger than 32 KiB' };
     if (index(raw, '\0') >= 0) return { ok: false, error: 'routing file contains a NUL byte' };
     raw = replace(replace(raw, /\r\n/g, '\n'), /\r/g, '\n');
 
@@ -187,46 +185,35 @@ function runtime_text(state) {
 }
 function read_current() {
     let raw = read_text(SOURCE);
-    if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
+    if (raw == null) return { ok: false, error: `cannot read ${SOURCE}` };
     let parsed = parse_config(raw);
-    if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
-    let state = parsed.state, applied_raw = read_text(APPLIED), status = snapshot_status(applied_raw);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    let state = parsed.state, status = snapshot_status(read_text(APPLIED));
     if (!status.ok) return status;
     return {
         ok: true,
-        path: SOURCE,
         config: state.normalized,
-        bytes: length(state.normalized),
         ipv6_enabled: state.ipv6_enabled,
         route_active: status.active,
         route_ipv4: status.ipv4,
-        route_ipv6: status.ipv6,
-        applied_config: applied_raw || '',
-        applied_path: APPLIED
+        route_ipv6: status.ipv6
     };
 }
 function runtime_current() {
     let status = snapshot_status(read_text(APPLIED));
     if (!status.ok) return status;
     if (!status.active)
-        return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
+        return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false };
     let runtime = runtime_text(status.state);
     if (!runtime.ok) return runtime;
-    return {
-        ok: true,
-        active: runtime.active,
-        route_active: true,
-        route_ipv4: status.ipv4,
-        route_ipv6: status.ipv6,
-        ipv6_enabled: status.state.ipv6_enabled
-    };
+    return { ok: true, active: runtime.active, route_active: true };
 }
 function save(raw) {
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, valid: false, error: parsed.error };
     let result = atomic_write(SOURCE, parsed.state.normalized);
     return result.ok
-        ? { ok: true, valid: true, path: SOURCE, config: parsed.state.normalized, bytes: length(parsed.state.normalized) }
+        ? { ok: true, valid: true, config: parsed.state.normalized }
         : { ok: false, valid: true, error: result.error };
 }
 function applied_result(state) {

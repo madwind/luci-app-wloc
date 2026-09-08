@@ -107,13 +107,6 @@ return view.extend({
             });
         }
 
-        function withinLimit(current) {
-            if (current.withinLimit()) return true;
-            current.focus();
-            setMessage('error', _('The Firewall file is larger than 32 KiB.'));
-            return false;
-        }
-
         function formatFirewall(current) {
             current.setValue(wlocNftFormat.format(current.getValue()));
             current.focus();
@@ -122,8 +115,6 @@ return view.extend({
         }
 
         function saveFirewall(current) {
-            if (!withinLimit(current)) return Promise.resolve(false);
-
             var value = current.getValue();
             setMessage('notice', _('Saving Firewall file...'));
 

@@ -17,13 +17,11 @@ const UPDATE_CONTROLLER = '/usr/libexec/wloc/update.uc';
 const INIT = '/etc/init.d/wloc';
 const RUNTIME = '/var/run/wloc';
 const FIREWALL_SOURCE = '/etc/wloc/firewall.nft';
-const FIREWALL_APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const STATUS = `${RUNTIME}/status.json`;
 const START_ERROR = `${RUNTIME}/start-error`;
 const STARTUP_GRACE_SECONDS = 20;
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
-const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
 
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
@@ -146,18 +144,7 @@ function firewall_ready() {
 
 function firewall_read() {
     let config = read_text(FIREWALL_SOURCE);
-    if (config == null)
-        return { ok: false, error: 'Unable to read the Firewall file.', path: FIREWALL_SOURCE };
-
-    let applied = read_text(FIREWALL_APPLIED);
-    return {
-        ok: true,
-        path: FIREWALL_SOURCE,
-        config,
-        bytes: length(config),
-        applied_config: applied || '',
-        applied_path: FIREWALL_APPLIED
-    };
+    return config == null ? { ok: false, error: 'Unable to read the Firewall file.' } : { ok: true, config };
 }
 
 function remove_payload(payload) {
@@ -168,7 +155,6 @@ function remove_payload(payload) {
 
 function create_payload(value, prefix) {
     let content = `${value == null ? '' : value}`;
-    if (length(content) > RPC_PAYLOAD_MAX_BYTES) return null;
     if (access(RUNTIME, 'f') !== true && mkdir(RUNTIME, RPC_DIRECTORY_MODE) !== true && access(RUNTIME, 'f') !== true) return null;
 
     let directory = mkdtemp(`${RUNTIME}/${prefix}-XXXXXX`);
@@ -191,12 +177,8 @@ function create_payload(value, prefix) {
     return { directory, path };
 }
 
-function defer_payload(request, controller, command, value, prefix, label, too_large_error) {
-    let content = `${value == null ? '' : value}`;
-    if (length(content) > RPC_PAYLOAD_MAX_BYTES)
-        return { ok: false, error: too_large_error };
-
-    let payload = create_payload(content, prefix);
+function defer_payload(request, controller, command, value, prefix, label) {
+    let payload = create_payload(value, prefix);
     if (!payload)
         return { ok: false, error: 'unable to create secure RPC temporary file' };
 
@@ -287,8 +269,7 @@ const firewall_methods = {
             'save',
             request_args(request).config || '',
             'rpc-firewall-save',
-            'Firewall save',
-            'Firewall file is larger than 32 KiB.'
+            'Firewall save'
         )
     },
     install: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'firewall', 'install' ], 'Firewall install') },
@@ -312,8 +293,7 @@ const routing_methods = {
             'save',
             request_args(request).config || '',
             'rpc-routing',
-            'Routing save',
-            'routing file is larger than 32 KiB'
+            'Routing save'
         )
     },
     install: { args: {}, call: request => defer_ucode(request, RULES_CONTROLLER, [ 'component', 'routing', 'install' ], 'Routing install') },

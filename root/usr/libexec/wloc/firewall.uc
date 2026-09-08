@@ -10,7 +10,6 @@ const LOCATION_STATE = `${RUNTIME}/location.targets`;
 const SOURCE = '/etc/wloc/firewall.nft';
 const APPLIED = `${RUNTIME}/firewall.applied.nft`;
 const NEXT = `${APPLIED}.next`;
-const MAX_BYTES = 32 * 1024;
 const FOLD_THRESHOLD = 10;
 const OWNED_TABLE = 'wloc';
 const MAX_PROFILE = 0xff;
@@ -259,7 +258,6 @@ function active() {
     return {
         ok: true,
         active: length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n',
-        table_count: length(managed.tables),
         firewall_active: length(managed.tables) > 0
     };
 }
@@ -387,7 +385,6 @@ function compile_runtime(raw) {
 function prepare(raw) {
     let runtime = compile_runtime(raw);
     if (!runtime.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: runtime.error };
-    if (length(runtime.source) > MAX_BYTES) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Firewall file is larger than 32 KiB.' };
     let parsed = inspect_source(runtime.source);
     if (!parsed.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: parsed.error };
     if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Unable to create WLOC runtime directory.' };
@@ -397,7 +394,7 @@ function prepare(raw) {
     let result = capture(`nft --check --file ${q(check)}`);
     fs.unlink(check);
     if (!result.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'nftables syntax check failed', detail: trim(result.output || '') || 'validation failed' };
-    return { ok: true, valid: true, config: runtime.source, compiled: runtime.compiled, bytes: length(runtime.source), tables: parsed.tables };
+    return { ok: true, valid: true, config: runtime.source, compiled: runtime.compiled };
 }
 function remove_tables() {
     let managed = managed_tables();
@@ -436,10 +433,7 @@ function apply(raw) {
         return fail_open('snapshot_promote_failed', 'The applied firewall snapshot could not be promoted.', 'nftables transaction succeeded but the applied snapshot could not be promoted');
     fs.chmod(APPLIED, 0o600);
 
-    return {
-        ok: true, valid: true, applied: true, path: SOURCE, config: checked.config, bytes: length(checked.config),
-        applied_config: checked.config, applied_path: APPLIED
-    };
+    return { ok: true, valid: true, applied: true, config: checked.config };
 }
 function apply_effective() {
     let raw = read_text(SOURCE);
@@ -463,12 +457,8 @@ function save(raw) {
     let saved = atomic_write(SOURCE, checked.config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: 'The Firewall file could not be saved.', detail: saved.error };
     let config = read_text(SOURCE);
-    if (config == null) return { ok: false, error: 'Unable to read the Firewall file.', path: SOURCE };
-    config = format_nftables(config);
-    return {
-        ok: true, path: SOURCE, config, bytes: length(config),
-        applied_config: read_text(APPLIED) || '', applied_path: APPLIED
-    };
+    if (config == null) return { ok: false, error: 'Unable to read the Firewall file.' };
+    return { ok: true, config: format_nftables(config) };
 }
 function remove_runtime() {
     let removed = remove_tables();

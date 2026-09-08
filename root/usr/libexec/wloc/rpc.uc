@@ -17,7 +17,6 @@ const CA_DER = '/etc/wloc/ca.der';
 const CA_PEM = '/etc/wloc/ca.pem';
 const CA_PROFILE = '/www/wloc-ca.mobileconfig';
 const INSTALLED_VERSION = '/usr/share/wloc/installed-version';
-const FIREWALL_CONFIG = '/etc/wloc/firewall.nft';
 const FIREWALL_RUNTIME = '/var/run/wloc/firewall.applied.nft';
 
 function q(value) {
@@ -95,12 +94,8 @@ function package_version() {
     return version && match(version, /^[A-Za-z0-9._+~-]+$/) ? version : '';
 }
 
-function firewall_status() {
-    let applied = read_file(FIREWALL_RUNTIME) != null;
-    return {
-        present: applied || read_file(FIREWALL_CONFIG) != null,
-        active: applied
-    };
+function firewall_active() {
+    return read_file(FIREWALL_RUNTIME) != null;
 }
 
 function status() {
@@ -110,8 +105,6 @@ function status() {
     let enabled = false;
     try { enabled = truthy(ctx.get('wloc', 'main', 'enabled')); } catch (e) {}
 
-    let running = daemon_running(), firewall = firewall_status();
-    let accepted = integer(state.accepted_connections, 0);
     let fingerprint = state.ca_fingerprint || '';
     if (!fingerprint) {
         let info = read_json(CAINFO) || {};
@@ -137,22 +130,10 @@ function status() {
         configured,
         enabled,
         version: package_version(),
-        running,
-        rules_present: firewall.present,
-        firewall_active: firewall.active,
+        running: daemon_running(),
+        firewall_active: firewall_active(),
         armed: truthy(state.armed),
-        configured_aps: integer(state.configured_aps, 0),
-        accepted_connections: accepted,
-        passthrough_connections: integer(state.passthrough_connections, 0),
-        tls_intercepted: integer(state.tls_intercepted, 0),
-        wloc_requests: integer(state.wloc_requests, 0),
-        patched_responses: integer(state.patched_responses, 0),
-        delivered_responses: integer(state.delivered_responses, 0),
-        patch_failures: integer(state.patch_failures, 0),
-        last_event: `${state.last_event || ''}`,
-        last_error: `${state.last_error || ''}`,
         session_started_at: integer(state.session_started_at, 0),
-        updated_at: integer(state.updated_at, 0),
         fingerprint,
         profile_url: '/wloc-ca.mobileconfig',
         ap_activity: activity
