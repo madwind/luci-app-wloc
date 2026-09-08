@@ -2,7 +2,11 @@
 
 * Make only the changes necessary for the requested task.
 * Commit each completed logical change separately.
-* Update package versions according to OpenWrt versioning rules.
+* Version shipped changes explicitly:
+  * Bump `WLOC_VERSION` using semantic versioning when application or source behavior changes: patch for fixes and refactors, minor for backward-compatible features, and major for breaking configuration, API, or behavior changes.
+  * Bump `WLOC_RELEASE` only for OpenWrt packaging-only changes that do not change the application/source version.
+  * Reset `WLOC_RELEASE` to `1` whenever `WLOC_VERSION` changes.
+  * Do not bump package versions for documentation, `AGENTS.md`, CI, or other repository-only changes that do not alter the built package or runtime behavior.
 * Do not build the project.
 * Do not run, add, or modify tests.
 * Remove obsolete or dead code made unnecessary by the changes.
