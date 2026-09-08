@@ -146,20 +146,16 @@ function location_state_matches(targets) {
 function update_targets(target_args) {
     let targets = target_sets(target_args);
     if (!targets.ok) return targets;
-    if (location_state_matches(targets)) return { ok: true, changed: false, location_count: length(targets.v4) + length(targets.v6) };
+    if (location_state_matches(targets)) return { ok: true };
     let configured = configured_rules();
     if (!configured.ok) return configured;
     let saved = write_location_targets(targets);
     if (!saved.ok) return saved;
-    if (fs.readfile(FIREWALL_APPLIED) == null)
-        return { ok: true, changed: true, location_count: length(targets.v4) + length(targets.v6) };
+    if (fs.readfile(FIREWALL_APPLIED) == null) return { ok: true };
     let refreshed = run_firewall('refresh-runtime');
     if (!refreshed.ok)
         return { ok: false, error: `firewall target refresh failed: ${refreshed.error || 'unable to render location targets'}` };
-    return { ok: true, changed: true, location_count: length(targets.v4) + length(targets.v6) };
-}
-function bootstrap_result(configured, route_active, firewall_active) {
-    return { ok: true, interfaces: configured.interfaces, route_active, firewall_active, outbound_count: length(configured.outbounds), location_count: 0 };
+    return { ok: true };
 }
 function cleanup() {
     let errors = [];
@@ -173,9 +169,7 @@ function cleanup() {
     if (!routing.ok)
         push(errors, `routing cleanup failed: ${routing.detail || routing.error || 'unable to remove WLOC routing'}`);
 
-    return length(errors)
-        ? { ok: false, firewall_active: false, route_active: false, error: join('; ', errors) }
-        : { ok: true, firewall_active: false, route_active: false };
+    return length(errors) ? { ok: false, error: join('; ', errors) } : { ok: true };
 }
 function bootstrap(port) {
     if (!valid_port(port)) return { ok: false, error: 'listen port must be between 1 and 65535 for the transparent proxy' };
@@ -197,7 +191,7 @@ function bootstrap(port) {
         };
     }
 
-    return bootstrap_result(configured, true, true);
+    return { ok: true };
 }
 function dispatch(command, args) {
     if (command == 'bootstrap') return bootstrap(args[0]);
