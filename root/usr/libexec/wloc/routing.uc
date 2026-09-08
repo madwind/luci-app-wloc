@@ -84,11 +84,11 @@ function parse_config(raw) {
     if (!routes['4'] && !routes['6'])
         return { ok: false, error: 'routing file must declare at least one route and rule pair' };
 
-    let state = { normalized: join('\n', lines) + '\n', commands: lines, route_commands: [], rule_commands: [], ipv6_enabled: !!routes['6'] };
+    let state = { normalized: join('\n', lines) + '\n', ipv6_enabled: !!routes['6'] };
     for (let family in [ '4', '6' ]) {
         if (!routes[family]) continue;
         if (routes[family].table != rules[family].table) return { ok: false, error: `IPv${family} route and rule must use the same table` };
-        let spec = {
+        state[`ipv${family}`] = {
             family,
             prefix: routes[family].prefix,
             table: routes[family].table,
@@ -97,14 +97,7 @@ function parse_config(raw) {
             route: routes[family].route,
             rule: rules[family].rule
         };
-        state[`ipv${family}`] = spec;
-        push(state.route_commands, spec.route);
-        push(state.rule_commands, spec.rule);
     }
-    let primary = state.ipv4 || state.ipv6;
-    state.mark = primary.mark;
-    state.mask = primary.mask;
-    state.table = primary.table;
     return { ok: true, state };
 }
 function run_command(command, label) {
@@ -200,11 +193,16 @@ function read_current() {
     let state = parsed.state, applied_raw = read_text(APPLIED), status = snapshot_status(applied_raw);
     if (!status.ok) return status;
     return {
-        ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized),
-        ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
-        route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
-        commands: state.commands, route_commands: state.route_commands, rule_commands: state.rule_commands,
-        applied_config: applied_raw || '', applied_path: APPLIED
+        ok: true,
+        path: SOURCE,
+        config: state.normalized,
+        bytes: length(state.normalized),
+        ipv6_enabled: state.ipv6_enabled,
+        route_active: status.active,
+        route_ipv4: status.ipv4,
+        route_ipv6: status.ipv6,
+        applied_config: applied_raw || '',
+        applied_path: APPLIED
     };
 }
 function runtime_current() {
@@ -215,8 +213,12 @@ function runtime_current() {
     let runtime = runtime_text(status.state);
     if (!runtime.ok) return runtime;
     return {
-        ok: true, active: runtime.active, route_active: true, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
-        ipv6_enabled: status.state.ipv6_enabled, firewall_mark: status.state.mark, routing_table: status.state.table
+        ok: true,
+        active: runtime.active,
+        route_active: true,
+        route_ipv4: status.ipv4,
+        route_ipv6: status.ipv6,
+        ipv6_enabled: status.state.ipv6_enabled
     };
 }
 function save(raw) {
@@ -228,11 +230,7 @@ function save(raw) {
         : { ok: false, valid: true, error: result.error };
 }
 function applied_result(state) {
-    return {
-        ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
-        ipv6_enabled: state.ipv6_enabled, commands: state.commands, route_commands: state.route_commands,
-        rule_commands: state.rule_commands, firewall_mark: state.mark, routing_table: state.table
-    };
+    return { ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized, ipv6_enabled: state.ipv6_enabled };
 }
 function apply(raw) {
     let parsed = parse_config(raw);
