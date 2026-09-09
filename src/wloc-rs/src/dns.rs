@@ -647,7 +647,7 @@ fn skip_name(packet: &[u8], mut offset: usize) -> Result<usize, String> {
         }
         offset = offset
             .checked_add(length as usize)
-            .ok_or_else(|| "invalid DNS label".to_owned())?;
+            .ok_or_else(|| "invalid DNS name length".to_owned())?;
         if offset > packet.len() {
             return Err("truncated DNS label".into());
         }
