@@ -20,6 +20,7 @@ const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const DNS_UDP_DISPATCH_LIMIT: usize = 64;
 const UDP_REPLY_SOCKET_MAX: usize = 64;
+const UDP_REPLY_SOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DNS_MESSAGE: usize = u16::MAX as usize;
 const IP_RECVORIGDSTADDR: libc::c_int = 20;
 const IPV6_RECVORIGDSTADDR: libc::c_int = 74;
@@ -191,7 +192,18 @@ impl DnsTracker {
     }
 }
 
-type ReplySockets = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>;
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct ReplySocketKey {
+    source: SocketAddr,
+    client: SocketAddr,
+}
+
+struct ReplySocketEntry {
+    socket: Arc<UdpSocket>,
+    last_used: Instant,
+}
+
+type ReplySockets = Arc<Mutex<HashMap<ReplySocketKey, ReplySocketEntry>>>;
 
 pub struct DnsProxy {
     proxy: Arc<Proxy>,
@@ -463,9 +475,11 @@ fn raw_socket_v6(address: libc::sockaddr_in6) -> io::Result<SocketAddrV6> {
     ))
 }
 
-fn transparent_reply_socket(source: SocketAddr) -> io::Result<UdpSocket> {
+fn transparent_reply_socket(source: SocketAddr, client: SocketAddr) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::for_address(source), Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
     match source {
         SocketAddr::V4(_) => {
             #[cfg(target_os = "linux")]
@@ -478,6 +492,7 @@ fn transparent_reply_socket(source: SocketAddr) -> io::Result<UdpSocket> {
         }
     }
     socket.bind(&source.into())?;
+    socket.connect(&client.into())?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket.into())
 }
@@ -488,22 +503,49 @@ async fn send_spoofed_udp(
     client: SocketAddr,
     payload: &[u8],
 ) -> io::Result<()> {
+    let key = ReplySocketKey { source, client };
     let socket = {
         let mut sockets = cache.lock().await;
-        if let Some(socket) = sockets.get(&source) {
-            Arc::clone(socket)
+        let now = Instant::now();
+        sockets.retain(|_, entry| {
+            now.duration_since(entry.last_used) < UDP_REPLY_SOCKET_IDLE_TIMEOUT
+        });
+        if let Some(entry) = sockets.get_mut(&key) {
+            entry.last_used = now;
+            Arc::clone(&entry.socket)
         } else {
             if sockets.len() >= UDP_REPLY_SOCKET_MAX {
-                if let Some(key) = sockets.keys().next().copied() {
-                    sockets.remove(&key);
+                if let Some(oldest) = sockets
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| *key)
+                {
+                    sockets.remove(&oldest);
                 }
             }
-            let socket = Arc::new(transparent_reply_socket(source)?);
-            sockets.insert(source, Arc::clone(&socket));
+            let socket = Arc::new(transparent_reply_socket(source, client)?);
+            sockets.insert(
+                key,
+                ReplySocketEntry {
+                    socket: Arc::clone(&socket),
+                    last_used: now,
+                },
+            );
             socket
         }
     };
-    socket.send_to(payload, client).await.map(|_| ())
+    let result = socket.send(payload).await.map(|_| ());
+    if result.is_err() {
+        let mut sockets = cache.lock().await;
+        let remove = sockets
+            .get(&key)
+            .map(|entry| Arc::ptr_eq(&entry.socket, &socket))
+            .unwrap_or(false);
+        if remove {
+            sockets.remove(&key);
+        }
+    }
+    result
 }
 
 async fn read_tcp_message(stream: &mut TcpStream) -> Result<Option<Vec<u8>>, String> {
@@ -605,7 +647,7 @@ fn skip_name(packet: &[u8], mut offset: usize) -> Result<usize, String> {
         }
         offset = offset
             .checked_add(length as usize)
-            .ok_or_else(|| "invalid DNS name length".to_owned())?;
+            .ok_or_else(|| "invalid DNS label".to_owned())?;
         if offset > packet.len() {
             return Err("truncated DNS label".into());
         }
