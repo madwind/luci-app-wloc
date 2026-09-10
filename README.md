@@ -1,6 +1,8 @@
 # luci-app-wloc
 
-`luci-app-wloc` is a LuCI package for OpenWrt that provides per-interface traffic processing and policy controls.
+**WLOC** stands for **Wireless Link Orchestration Controller**.
+
+`luci-app-wloc` is a LuCI package for OpenWrt that coordinates per-interface link policies, traffic processing and routing behavior. It is intended to provide a small control layer between wireless interfaces, nftables and policy routing without coupling the configuration to a specific network topology.
 
 It includes a native Rust service, nftables integration, policy routing, UCI/procd integration and a LuCI interface.
 
