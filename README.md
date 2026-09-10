@@ -1,8 +1,8 @@
 # luci-app-wloc
 
-`luci-app-wloc` is a LuCI plugin for OpenWrt that intercepts Apple WLOC traffic and applies a configurable virtual location baseline per selected wireless interface.
+`luci-app-wloc` is a LuCI package for OpenWrt that provides per-interface traffic processing and policy controls.
 
-It includes a native Rust service, nftables interception, policy routing, UCI/procd integration and a LuCI interface.
+It includes a native Rust service, nftables integration, policy routing, UCI/procd integration and a LuCI interface.
 
 ## Install
 
@@ -22,19 +22,15 @@ Supported release targets:
 
 ## Features
 
-- Assign a virtual WGS84 location baseline to each selected wireless interface
-- Preserve real movement deltas relative to the configured virtual baseline
-- Per-rule Direct or user-defined TPROXY port outbound selection with automatic internal marks
-- Per-interface daily enable/disable schedule
-- Generate and manage the local CA profile required for WLOC interception
-- Intercept `gs-loc.apple.com` and `gs-loc-cn.apple.com`
-- Edit, save, install and uninstall nftables rules from the editor
-- Edit, save, install and uninstall policy routing from the editor
-- Automatically install firewall and routing when WLOC starts
-- Automatically remove firewall and routing when WLOC stops or exits unexpectedly
-- Use `%port%` in firewall rules to follow the configured WLOC listener port
-- View service, interception and runtime status in LuCI
-- Check and update WLOC from GitHub Releases
+- Per-interface configuration and rule management
+- Direct or user-defined TPROXY outbound selection
+- Per-interface daily enable/disable schedules
+- Local CA profile management
+- nftables firewall rule management
+- Policy routing management
+- Automatic firewall and routing lifecycle handling
+- Runtime and service status in LuCI
+- GitHub Release update checks
 - Optional weekly automatic update checks
 
 WLOC owns only these nftables tables:
@@ -44,17 +40,13 @@ table bridge wloc
 table inet wloc
 ```
 
-The packaged firewall uses the selected wireless interfaces for ingress matching and WLOC interception. A rule may send its outbound sockets directly or dispatch them to a user-defined TPROXY listener port; WLOC assigns the internal profile marks automatically from rule order. TCP, UDP, DNS-over-HTTPS upstreams and Apple WLOC MITM traffic all use the same selected outbound.
-
-Firewall and Routing are part of the WLOC runtime lifecycle. Startup installs both from the saved configuration; normal stop and guarded failure cleanup remove both. The Firewall template is rendered even when no dynamic location targets are available, and wlocd refreshes those target values while it runs.
+Firewall and routing rules are managed as part of the WLOC runtime lifecycle. Startup installs the saved configuration; normal stop and guarded failure cleanup remove the active rules.
 
 ## Usage
 
-Open **Services > WLOC** in LuCI, select a wireless interface and configure its virtual latitude and longitude.
+Open **Services > WLOC** in LuCI and configure the required interfaces and rules.
 
 Each managed `wifi-iface` should have a fixed `option ifname` in `/etc/config/wireless`. WLOC binds rules to that interface name rather than to the SSID.
-
-Install the generated CA profile on the client device and enable full trust for the certificate in iOS Certificate Trust Settings.
 
 The default TCP/UDP listener port is `61520` and can be changed in LuCI.
 
