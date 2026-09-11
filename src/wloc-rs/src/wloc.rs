@@ -1,9 +1,7 @@
 //! Bounded Apple WLOC protobuf transformer.
 //!
-//! Protocol facts and the original clean-room implementation were audited
-//! from smthdagg/wificalling-location-gateway (MIT). This implementation is
-//! deliberately narrower: it only normalizes the documented Location fields
-//! in already-recognized messages and preserves all unrelated protobuf bytes.
+//! Normalizes documented Location fields in already-recognized messages while
+//! preserving all unrelated protobuf bytes.
 
 use std::fmt;
 

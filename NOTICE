@@ -1,15 +1,3 @@
-luci-app-wloc includes a clean-room Apple WLOC protobuf transformer and TLS
-proxy design derived in part from:
-
-  wificalling-location-gateway
-  Copyright (c) 2026 smthdagg
-  https://github.com/smthdagg/wificalling-location-gateway
-  Audited commit: 5f60c4ded3a44d890efd1a1b8491cce9c54af477
-  License: MIT (preserved in LICENSES/wificalling-location-gateway-MIT.txt)
-
-No Wi-Fi Calling Gateway, ePDG, UDP 500/4500, carrier, sing-box node binding,
-or call-monitoring implementation is included.
-
 Response-patching behavior was cross-checked against the publicly observable
 protocol behavior documented and implemented by:
 
