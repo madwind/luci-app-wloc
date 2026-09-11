@@ -206,7 +206,7 @@ return view.extend({
             E('div', {}, _('Template variables are rendered automatically when the firewall is installed or refreshed:')),
             E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port), ' — ', _('WLOC local transparent-proxy listener port.') ]),
             E('div', {}, [ E('code', {}, '%ap_interfaces%'), ' — ', _('Enabled WLOC AP interfaces inserted into the bridge ingress set.') ]),
-            E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime Apple location target addresses.') ]),
+            E('div', {}, [ E('code', {}, '%location_ipv4%'), ' / ', E('code', {}, '%location_ipv6%'), ' — ', _('Runtime location target addresses.') ]),
             E('div', {}, [ E('code', {}, '%ap_tproxy_mark_rules%'), ' — ', _('Per-AP profile mark rules inserted into ap_tproxy_marks.') ]),
             E('div', {}, [ E('code', {}, '%ap_tproxy_dispatch_rules%'), ' — ', _('Per-AP TPROXY dispatch rules inserted into ap_tproxy_dispatch.') ]),
             E('div', {}, [ E('code', {}, '%outbound_tproxy_rules%'), ' — ', _('Dispatch rules for WLOC-originated marked sockets inserted into outbound_prerouting.') ]),

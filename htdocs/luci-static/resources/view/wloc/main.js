@@ -41,7 +41,7 @@ return view.extend({
         option = settings.option(form.Flag, 'debug', _('Debug: fixed JSON response'));
         option.default = '0';
         option.rmempty = false;
-        option.description = _('When enabled, requests to the fixed Apple WLOC endpoints return {"wloc":"ok"} without contacting the upstream server.');
+        option.description = _('When enabled, recognized upstream requests return {"wloc":"ok"} without contacting the upstream server.');
 
         return map.render();
     },

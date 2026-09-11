@@ -142,9 +142,6 @@ msgstr ""
 msgid "Generated on first start"
 msgstr ""
 
-msgid "Hostname or IP address of the outbound proxy. DNS for the Apple destination is resolved by the proxy."
-msgstr ""
-
 msgid "HTTP CONNECT and SOCKS5 proxies without authentication are supported."
 msgstr ""
 
@@ -292,6 +289,9 @@ msgstr ""
 msgid "Runtime logging is disabled. Enable it in Service settings and Save & Apply to begin a new in-memory log."
 msgstr ""
 
+msgid "Runtime location target addresses."
+msgstr ""
+
 msgid "Save"
 msgstr ""
 
@@ -352,9 +352,6 @@ msgstr ""
 msgid "The configured tables currently loaded in the kernel."
 msgstr ""
 
-msgid "WLOC only maintains optional dynamic sets when you declare them: apple_wloc_v4 (type ipv4_addr, flags timeout) receives resolved Apple addresses, and target_ingress_interfaces (type ifname, flags timeout) receives configured AP interfaces. Other rules and sets are left unchanged."
-msgstr ""
-
 msgid "The nftables syntax check passed."
 msgstr ""
 
@@ -394,7 +391,7 @@ msgstr ""
 msgid "Use ipinfo.io in this browser to fill the AP location coordinates."
 msgstr ""
 
-msgid "Version %s · Bind each Apple WLOC location to one fixed interface."
+msgid "When enabled, recognized upstream requests return {\"wloc\":\"ok\"} without contacting the upstream server."
 msgstr ""
 
 msgid "Failed to apply nftables rules."

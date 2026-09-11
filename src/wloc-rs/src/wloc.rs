@@ -1,7 +1,7 @@
-//! Bounded Apple WLOC protobuf transformer.
+//! Bounded protobuf transformer.
 //!
-//! Normalizes documented Location fields in already-recognized messages while
-//! preserving all unrelated protobuf bytes.
+//! Normalizes supported fields in recognized messages while preserving all
+//! unrelated protobuf bytes.
 
 use std::fmt;
 
@@ -217,7 +217,6 @@ fn message_field(number: u32, message: &[u8], out: &mut Vec<u8>) {
 fn coordinate(value: f64) -> i64 {
     (value * COORDINATE_SCALE).round() as i64
 }
-
 fn normalize_longitude_e8(value: i64) -> i64 {
     if (-LONGITUDE_MAX_E8..=LONGITUDE_MAX_E8).contains(&value) {
         return value;
@@ -438,7 +437,6 @@ enum Envelope<'a> {
         suffix: &'a [u8],
     },
 }
-
 impl<'a> Envelope<'a> {
     fn payload(&self) -> &'a [u8] {
         match self {
