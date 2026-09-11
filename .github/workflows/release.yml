@@ -6,8 +6,6 @@ on:
   push:
     branches:
       - master
-    tags:
-      - "v*"
     paths:
       - version.env
   workflow_dispatch:
@@ -17,7 +15,7 @@ permissions:
 
 concurrency:
   group: release-packages-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -151,14 +149,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          . ./version.env
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            expected_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
-            if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
-              echo "Tag $GITHUB_REF_NAME does not match version.env ($expected_tag)." >&2
-              exit 1
-            fi
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "Releases must run from master" >&2
+            exit 1
           fi
+          . ./version.env
           source_apk="$(find "dist/${{ matrix.target }}/${{ matrix.subtarget }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
@@ -175,7 +170,6 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
