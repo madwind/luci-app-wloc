@@ -58,4 +58,4 @@ WLOC targets OpenWrt 25.12+ with LuCI. The package includes the native `wlocd` R
 
 ## License
 
-MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MIT. See [LICENSE](LICENSE).

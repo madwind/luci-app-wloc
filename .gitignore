@@ -3,7 +3,6 @@ target/
 /.build/
 /dist/
 /.codex/
-/AGENTS.md
 /*.zip
 *.swp
 .DS_Store

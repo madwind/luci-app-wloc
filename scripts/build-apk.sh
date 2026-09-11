@@ -48,7 +48,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PACKAGE_DIR/src/wloc-rs"
-cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PROJECT/NOTICE" "$PACKAGE_DIR/"
+cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PACKAGE_DIR/"
 cp "$PROJECT/src/Makefile" "$PACKAGE_DIR/src/Makefile"
 cp "$PROJECT/src/wloc-rs/Cargo.toml" "$PROJECT/src/wloc-rs/Cargo.lock" "$PACKAGE_DIR/src/wloc-rs/"
 cp -a "$PROJECT/src/wloc-rs/src" "$PACKAGE_DIR/src/wloc-rs/"

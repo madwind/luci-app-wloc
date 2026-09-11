@@ -6,7 +6,7 @@ PKG_NAME:=luci-app-wloc
 PKG_VERSION:=$(WLOC_VERSION)
 PKG_RELEASE:=$(WLOC_RELEASE)
 PKG_LICENSE:=MIT
-PKG_LICENSE_FILES:=LICENSE NOTICE
+PKG_LICENSE_FILES:=LICENSE
 
 LUCI_TITLE:=Apple WLOC movement-following location proxy for OpenWrt
 
@@ -26,7 +26,7 @@ LUCI_EXTRA_DEPENDS:= \
 	uclient-fetch (>=0)
 
 LUCI_DESCRIPTION:=Apple WLOC TLS patching plus per-WiFi transparent TCP/UDP proxying for OpenWrt. Includes wlocd, UCI/procd lifecycle, isolated nftables rules, native ucode runtime and rpcd controllers, and LuCI.
-LUCI_MAINTAINER:=luci-app-wloc maintainers
+LUCI_MAINTAINER:=madwind
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
 ifeq ($(DUMP),)
