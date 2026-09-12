@@ -16,7 +16,6 @@ const CA_KEY = '/etc/wloc/ca.key';
 const CA_DER = '/etc/wloc/ca.der';
 const CA_PEM = '/etc/wloc/ca.pem';
 const CA_PROFILE = '/www/wloc-ca.mobileconfig';
-const INSTALLED_VERSION = '/usr/share/wloc/installed-version';
 const FIREWALL_RUNTIME = '/var/run/wloc/firewall.applied.nft';
 
 function q(value) {
@@ -89,11 +88,6 @@ function daemon_running() {
     }
 }
 
-function package_version() {
-    let version = trim(read_file(INSTALLED_VERSION) || '');
-    return version && match(version, /^[A-Za-z0-9._+~-]+$/) ? version : '';
-}
-
 function firewall_active() {
     return read_file(FIREWALL_RUNTIME) != null;
 }
@@ -129,7 +123,6 @@ function status() {
     return {
         configured,
         enabled,
-        version: package_version(),
         running: daemon_running(),
         firewall_active: firewall_active(),
         armed: truthy(state.armed),
