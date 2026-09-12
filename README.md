@@ -11,7 +11,7 @@ It includes a native Rust service, nftables integration, policy routing, UCI/pro
 OpenWrt 25.12+ packages are distributed through the signed `madwind/openwrt-packages` repository:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
+wget -O- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
 apk add luci-app-wloc
 ```
 
