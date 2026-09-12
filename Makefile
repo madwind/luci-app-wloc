@@ -50,13 +50,7 @@ endef
 
 define Package/luci-app-wloc/postinst
 #!/bin/sh
-postinst_root="$${IPKG_INSTROOT}"
-version_cache="$${postinst_root}/usr/share/wloc/installed-version"
 upgrade_running='/tmp/wloc-upgrade.running'
-
-mkdir -p "$${postinst_root}/usr/share/wloc" || exit 1
-printf '%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' >"$${version_cache}" || exit 1
-chmod 0644 "$${version_cache}" 2>/dev/null || true
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache.*
@@ -87,7 +81,7 @@ define Package/luci-app-wloc/prerm
 			;;
 		*)
 			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
-			rm -f /usr/share/wloc/installed-version /tmp/wloc-upgrade.running
+			rm -f /tmp/wloc-upgrade.running
 			;;
 	esac
 }
