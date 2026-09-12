@@ -24,10 +24,5 @@
     "title": "Routing",
     "order": 4,
     "action": { "type": "view", "path": "wloc/routing" }
-  },
-  "admin/services/wloc/updates": {
-    "title": "Updates",
-    "order": 5,
-    "action": { "type": "view", "path": "wloc/updates" }
   }
 }

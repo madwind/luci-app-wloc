@@ -13,7 +13,6 @@ const RPC_CONTROLLER = '/usr/libexec/wloc/rpc.uc';
 const FIREWALL_CONTROLLER = '/usr/libexec/wloc/firewall.uc';
 const ROUTING_CONTROLLER = '/usr/libexec/wloc/routing.uc';
 const RULES_CONTROLLER = '/usr/libexec/wloc/rules.uc';
-const UPDATE_CONTROLLER = '/usr/libexec/wloc/update.uc';
 const INIT = '/etc/init.d/wloc';
 const RUNTIME = '/var/run/wloc';
 const FIREWALL_SOURCE = '/etc/wloc/firewall.nft';
@@ -169,9 +168,7 @@ function create_payload(value, prefix) {
 
     let written = file.write(content), closed = file.close();
     if (written == null || written !== length(content) || closed !== true || chmod(path, RPC_FILE_MODE) !== true) {
-        unlink(path);
-        rmdir(directory);
-        return null;
+        unlink(path); rmdir(directory); return null;
     }
 
     return { directory, path };
@@ -307,47 +304,9 @@ const service_methods = {
     restart: { args: {}, call: request => defer_service_action(request, 'restart') }
 };
 
-const update_methods = {
-    status: {
-        args: {},
-        call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'status' ], 'Update status')
-    },
-    check: {
-        args: {},
-        call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'check' ], 'Update check')
-    },
-    install: {
-        args: {},
-        call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'install' ], 'Update start')
-    },
-    settings: {
-        args: {},
-        call: request => defer_ucode(request, UPDATE_CONTROLLER, [ 'auto-status' ], 'Update settings')
-    },
-    set_check: {
-        args: { enabled: 0 },
-        call: request => defer_ucode(
-            request,
-            UPDATE_CONTROLLER,
-            [ 'auto-set-check', request_args(request).enabled ? 1 : 0 ],
-            'Automatic update check setting'
-        )
-    },
-    set_auto: {
-        args: { enabled: 0 },
-        call: request => defer_ucode(
-            request,
-            UPDATE_CONTROLLER,
-            [ 'auto-set', request_args(request).enabled ? 1 : 0 ],
-            'Automatic update setting'
-        )
-    }
-};
-
 return {
     'luci.wloc': methods,
     'luci.wloc.firewall': firewall_methods,
     'luci.wloc.routing': routing_methods,
-    'luci.wloc.service': service_methods,
-    'luci.wloc.update': update_methods
+    'luci.wloc.service': service_methods
 };
