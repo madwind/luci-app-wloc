@@ -499,6 +499,7 @@ return view.extend({
 
         var initial = data && data[0] || {};
         var initialRouting = data && data[2] || {};
+        var version = String(initial.version || '—');
         var service = E('span', { 'aria-live': 'polite' });
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
@@ -804,7 +805,10 @@ return view.extend({
 
             var root = E('div', { 'class': 'cbi-map' }, [
                 E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
-                E('div', { 'class': 'cbi-map-descr' }, _('WLOC process, runtime integration, AP locations, Root CA and live log.')),
+                E('div', { 'class': 'cbi-map-descr' }, [
+                    _('WLOC process, runtime integration, AP locations, Root CA and live log.'),
+                    ' · ', _('Version'), ': ', E('strong', {}, version)
+                ]),
                 E('div', { 'class': 'cbi-section' }, [
                     E('h3', { 'class': 'cbi-section-title' }, _('Runtime')),
                     E('table', { 'class': 'table cbi-section-table' }, [
