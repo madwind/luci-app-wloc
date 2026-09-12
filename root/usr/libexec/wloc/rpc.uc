@@ -88,6 +88,19 @@ function daemon_running() {
     }
 }
 
+function package_version() {
+    let result = run_command('apk query --from installed --format json --fields version luci-app-wloc');
+    if (!result.ok) return '';
+
+    let packages;
+    try { packages = json(result.output || ''); }
+    catch (e) { return ''; }
+    if (type(packages) != 'array' || length(packages) != 1 || type(packages[0]) != 'object') return '';
+
+    let version = trim(`${packages[0].version || ''}`);
+    return version && match(version, /^[A-Za-z0-9._+~-]+$/) ? version : '';
+}
+
 function firewall_active() {
     return read_file(FIREWALL_RUNTIME) != null;
 }
@@ -123,6 +136,7 @@ function status() {
     return {
         configured,
         enabled,
+        version: package_version(),
         running: daemon_running(),
         firewall_active: firewall_active(),
         armed: truthy(state.armed),
