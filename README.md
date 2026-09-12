@@ -8,13 +8,19 @@ It includes a native Rust service, nftables integration, policy routing, UCI/pro
 
 ## Install
 
-OpenWrt 25.12+:
+OpenWrt 25.12+ packages are distributed through the signed `madwind/openwrt-packages` repository:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/madwind/luci-app-wloc/master/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
+apk add luci-app-wloc
 ```
 
-The installer detects the current package architecture, reads the latest GitHub Release metadata, verifies the matching APK against the release asset SHA256 digest and installs or upgrades WLOC.
+To refresh repository metadata and upgrade WLOC:
+
+```sh
+apk update
+apk add --upgrade luci-app-wloc
+```
 
 Supported release targets:
 
@@ -32,8 +38,6 @@ Supported release targets:
 - Policy routing management
 - Automatic firewall and routing lifecycle handling
 - Runtime and service status in LuCI
-- GitHub Release update checks
-- Optional weekly automatic update checks
 
 WLOC owns only these nftables tables:
 
