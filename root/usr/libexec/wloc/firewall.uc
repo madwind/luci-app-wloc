@@ -1,0 +1,490 @@
+#!/usr/bin/env ucode
+
+'use strict';
+
+import * as fs from 'fs';
+import { cursor } from 'uci';
+
+const RUNTIME = '/var/run/wloc';
+const LOCATION_STATE = `${RUNTIME}/location.targets`;
+const SOURCE = '/etc/wloc/firewall.nft';
+const DEFAULT_SOURCE = '/usr/share/wloc/defaults/firewall.nft';
+const APPLIED = `${RUNTIME}/firewall.applied.nft`;
+const NEXT = `${APPLIED}.next`;
+const FOLD_THRESHOLD = 10;
+const OWNED_TABLE = 'wloc';
+const MAX_PROFILE = 0xff;
+const WLOC_ROUTE_MARK = 0x2;
+const WLOCD_PROCESSED_MARK = 0x10000;
+const PROFILE_SHIFT = 8;
+let sequence = 0;
+
+function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
+function capture(command) {
+    let proc = fs.popen(`${command} 2>&1`, 'r');
+    if (!proc) return { ok: false, output: '', error: 'unable to execute command' };
+    let output = proc.read('all') || '';
+    let rc = proc.close();
+    return { ok: rc === 0, output, error: rc === 0 ? null : (trim(output) || 'command failed') };
+}
+function quiet(command) { return system(`${command} >/dev/null 2>&1`) === 0; }
+function mkdirp(path) { return quiet(`mkdir -p ${q(path)}`); }
+function read_text(path) { return fs.readfile(path); }
+function pid() {
+    let proc = fs.popen('echo $PPID', 'r');
+    if (!proc) return 0;
+    let value = int(trim(proc.read('all') || '0'));
+    proc.close();
+    return value;
+}
+function temporary(prefix) { sequence++; return `${prefix}.${pid()}.${time()}.${sequence}`; }
+function atomic_write(path, value, mode) {
+    let parent = fs.dirname(path) || '.';
+    if (!mkdirp(parent)) return { ok: false, error: `cannot create ${parent}` };
+    let tmp = temporary(`${path}.tmp`);
+    let written = fs.writefile(tmp, value);
+    if (written == null || written != length(value)) { fs.unlink(tmp); return { ok: false, error: `cannot write temporary file for ${path}` }; }
+    if (mode != null && fs.chmod(tmp, mode) !== true) { fs.unlink(tmp); return { ok: false, error: `cannot chmod temporary file for ${path}` }; }
+    if (fs.rename(tmp, path) !== true) { fs.unlink(tmp); return { ok: false, error: `cannot replace ${path}` }; }
+    if (mode != null) fs.chmod(path, mode);
+    return { ok: true };
+}
+function normalize(raw) {
+    raw = replace(`${raw ?? ''}`, /\r\n/g, '\n');
+    raw = replace(raw, /\r/g, '\n');
+    if (raw && substr(raw, -1) != '\n') raw += '\n';
+    return raw;
+}
+function default_source() {
+    let raw = read_text(DEFAULT_SOURCE);
+    return raw == null
+        ? { ok: false, error: `cannot read ${DEFAULT_SOURCE}` }
+        : { ok: true, config: normalize(raw), path: DEFAULT_SOURCE, customized: false };
+}
+function effective_source() {
+    let raw = read_text(SOURCE);
+    if (raw != null) return { ok: true, config: raw, path: SOURCE, customized: true };
+    return default_source();
+}
+function is_space(c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
+function ident_start(c) { return c != null && match(c, /^[A-Za-z_]$/) != null; }
+function ident_char(c) { return c != null && match(c, /^[A-Za-z0-9_.-]$/) != null; }
+function skip_space(text, pos) { while (pos < length(text) && is_space(substr(text, pos, 1))) pos++; return pos; }
+function read_ident(text, pos) {
+    pos = skip_space(text, pos);
+    if (pos >= length(text) || !ident_start(substr(text, pos, 1))) return null;
+    let start = pos++;
+    while (pos < length(text) && ident_char(substr(text, pos, 1))) pos++;
+    return { value: substr(text, start, pos - start), start, end: pos };
+}
+function mask(raw) {
+    let output = '', quoted = false, escaped = false, comment = false;
+    for (let i = 0; i < length(raw); i++) {
+        let c = substr(raw, i, 1);
+        if (comment) {
+            if (c == '\n') { comment = false; output += '\n'; } else output += ' ';
+        } else if (quoted) {
+            output += c == '\n' ? '\n' : ' ';
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') quoted = false;
+        } else if (c == '#') {
+            comment = true; output += ' ';
+        } else if (c == '"') {
+            quoted = true; output += ' ';
+        } else output += c;
+    }
+    return output;
+}
+function matching_brace(text, open_pos, limit) {
+    let depth = 0, last = min(limit == null ? length(text) : limit, length(text));
+    for (let pos = open_pos; pos < last; pos++) {
+        let c = substr(text, pos, 1);
+        if (c == '{') depth++;
+        else if (c == '}') {
+            depth--;
+            if (depth == 0) return pos;
+            if (depth < 0) return null;
+        }
+    }
+    return null;
+}
+function parse_source(raw) {
+    raw = `${raw ?? ''}`;
+    let text = mask(raw), tables = [], pos = 0;
+    while (true) {
+        pos = skip_space(text, pos);
+        if (pos >= length(text)) break;
+        let table_kw = read_ident(text, pos);
+        if (!table_kw || table_kw.value != 'table' || table_kw.start != pos)
+            return { ok: false, error: 'unsupported top-level nft statement' };
+        let family = read_ident(text, table_kw.end);
+        let name = family ? read_ident(text, family.end) : null;
+        if (!family || !name) return { ok: false, error: 'invalid nft table declaration' };
+        let open_pos = skip_space(text, name.end);
+        if (substr(text, open_pos, 1) != '{') return { ok: false, error: 'invalid nft table declaration' };
+        let close_pos = matching_brace(text, open_pos);
+        if (close_pos == null) return { ok: false, error: 'unbalanced nft table block' };
+        push(tables, {
+            family: family.value,
+            name: name.value,
+            key: `${family.value}|${name.value}`,
+            start_position: table_kw.start,
+            open_position: open_pos,
+            close_position: close_pos
+        });
+        pos = close_pos + 1;
+    }
+    return { ok: true, raw, text, tables };
+}
+function inspect_source(raw) {
+    let parsed = parse_source(raw);
+    if (!parsed.ok) return parsed;
+    if (match(parsed.text, /(^|\s)include(\s|$)/))
+        return { ok: false, error: 'firewall file must not use include directives' };
+    for (let table in parsed.tables)
+        if (table.name != OWNED_TABLE)
+            return { ok: false, error: `firewall file may only manage tables named ${OWNED_TABLE}` };
+    return parsed;
+}
+function runtime_token_visible(raw, position) {
+    let line = position, quote = null, escaped = false;
+    while (line > 0 && substr(raw, line - 1, 1) != '\n') line--;
+    for (let i = line; i < position; i++) {
+        let c = substr(raw, i, 1);
+        if (quote != null) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') return false;
+        if (c == '"' || c == "'") quote = c;
+    }
+    return quote == null;
+}
+function scan_runtime_elements(raw, open_position) {
+    let depth = 1, count = 0, has_item = false;
+    let quote = null, escaped = false, comment = false;
+    for (let pos = open_position + 1; pos < length(raw); pos++) {
+        let c = substr(raw, pos, 1);
+        if (comment) {
+            if (c == '\n') comment = false;
+            continue;
+        }
+        if (quote != null) {
+            if (depth == 1) has_item = true;
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') { comment = true; continue; }
+        if (c == '"' || c == "'") { quote = c; if (depth == 1) has_item = true; continue; }
+        if (c == '{') { if (depth == 1) has_item = true; depth++; continue; }
+        if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                if (has_item) count++;
+                return { ok: true, close: pos, count };
+            }
+            if (depth < 0) return { ok: false };
+            continue;
+        }
+        if (depth != 1) continue;
+        if (c == ',') {
+            if (has_item) count++;
+            has_item = false;
+            continue;
+        }
+        if (!is_space(c)) has_item = true;
+    }
+    return { ok: false };
+}
+function fold_runtime(raw) {
+    raw = `${raw ?? ''}`;
+    let replacements = [], search_position = 0;
+    while (search_position < length(raw)) {
+        let rel = index(substr(raw, search_position), 'elements');
+        if (rel == null || rel < 0) break;
+        let start = search_position + rel, finish = start + 8;
+        search_position = finish;
+        let before = start > 0 ? substr(raw, start - 1, 1) : '';
+        let after = finish < length(raw) ? substr(raw, finish, 1) : '';
+        if ((before && ident_char(before)) || (after && ident_char(after)) || !runtime_token_visible(raw, start)) continue;
+        let open = skip_space(raw, finish);
+        if (substr(raw, open, 1) != '=') continue;
+        open = skip_space(raw, open + 1);
+        if (substr(raw, open, 1) != '{') continue;
+        let scanned = scan_runtime_elements(raw, open);
+        if (!scanned.ok) return raw;
+        if (scanned.count > FOLD_THRESHOLD) push(replacements, { open, close: scanned.close, count: scanned.count });
+        search_position = scanned.close + 1;
+    }
+    for (let i = length(replacements) - 1; i >= 0; i--) {
+        let replacement = replacements[i];
+        raw = substr(raw, 0, replacement.open + 1) + ` # ${replacement.count} entries ` + substr(raw, replacement.close);
+    }
+    return raw;
+}
+function table_command(verb, spec) { return `${verb} table ${spec.family} ${spec.name}`; }
+function managed_tables() {
+    let result = capture('nft list tables');
+    if (!result.ok) return { ok: false, error: trim(result.output || '') || 'unable to list nftables tables' };
+    let tables = [], seen = {};
+    for (let line in split(result.output || '', '\n')) {
+        let found = match(trim(line), /^table\s+(\S+)\s+(\S+)$/);
+        if (!found || found[2] != OWNED_TABLE) continue;
+        let key = `${found[1]} ${found[2]}`;
+        if (!seen[key]) { seen[key] = true; push(tables, { family: found[1], name: found[2], key }); }
+    }
+    return { ok: true, tables };
+}
+function active() {
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let output = [];
+    for (let spec in managed.tables) {
+        let listed = capture(table_command('nft list', spec));
+        if (!listed.ok)
+            return { ok: false, error: trim(listed.output || '') || `unable to read WLOC nftables table ${spec.family} ${spec.name}` };
+        if (trim(listed.output || '')) push(output, fold_runtime(trim(listed.output)));
+    }
+    return {
+        ok: true,
+        active: length(output) ? join('\n\n', output) + '\n' : '# No WLOC nftables tables are active.\n',
+        firewall_active: length(managed.tables) > 0
+    };
+}
+function transaction(current_tables, desired) {
+    let lines = [];
+    for (let spec in (current_tables || []))
+        push(lines, table_command('delete', spec));
+    if (trim(desired || '')) push(lines, desired);
+    return join('\n', lines);
+}
+function run_transaction(content) {
+    if (!trim(content || '')) return { ok: true, detail: '' };
+    let path = temporary(`${RUNTIME}/firewall-apply`);
+    let saved = atomic_write(path, content, 0o600);
+    if (!saved.ok) return { ok: false, detail: saved.error };
+    let checked = capture(`nft --check --file ${q(path)}`);
+    if (!checked.ok) { fs.unlink(path); return { ok: false, detail: trim(checked.output || '') }; }
+    let applied = capture(`nft --file ${q(path)}`);
+    fs.unlink(path);
+    return applied.ok ? { ok: true, detail: '' } : { ok: false, detail: trim(applied.output || '') };
+}
+function listen_port() {
+    try {
+        let ctx = cursor();
+        return `${ctx.get('wloc', 'main', 'listen_port') || '61520'}`;
+    } catch (e) { return '61520'; }
+}
+function number(value) {
+    if (value == null) return null;
+    let text = `${value}`;
+    if (match(text, /^0[xX][0-9A-Fa-f]+$/)) return int(substr(text, 2), 16);
+    if (!match(text, /^[0-9]+$/)) return null;
+    let result = +text;
+    return result == result ? result : null;
+}
+function hex(value) { return sprintf('0x%x', value); }
+function valid_iface(value) { return match(`${value ?? ''}`, /^[A-Za-z0-9_.-]{1,15}$/) != null; }
+function valid_port(value) {
+    let port = number(value);
+    return port != null && port >= 1 && port <= 65535;
+}
+function valid_ipv4(value) {
+    let fields = split(`${value ?? ''}`, '.');
+    if (length(fields) != 4) return false;
+    for (let field in fields)
+        if (!match(field, /^[0-9]{1,3}$/) || int(field) < 0 || int(field) > 255) return false;
+    return true;
+}
+function configured_firewall() {
+    let interfaces = [], outbounds = [], seen_ifaces = {}, error = null, index = -1;
+    try {
+        let ctx = cursor();
+        ctx.foreach('wloc', 'wifi', function(section) {
+            index++;
+            if (error) return;
+            let enabled = section.enabled == null ? true : (`${section.enabled}` == '1' || section.enabled === true);
+            if (!enabled) return;
+            let iface = `${section.iface || ''}`;
+            if (!valid_iface(iface)) { error = `invalid interface in enabled rule ${section['.name'] || ''}`; return; }
+            if (!seen_ifaces[iface]) { seen_ifaces[iface] = true; push(interfaces, `"${iface}"`); }
+            let outbound = `${section.outbound || 'direct'}`;
+            if (outbound == 'direct') return;
+            if (outbound != 'tproxy') { error = `invalid outbound type in enabled rule ${section['.name'] || ''}`; return; }
+            let profile = index + 1;
+            if (profile > MAX_PROFILE) { error = `TPROXY profile limit exceeded in enabled rule ${section['.name'] || ''}`; return; }
+            let port = section.tproxy_port == null || `${section.tproxy_port}` == '' ? 12345 + index : number(section.tproxy_port);
+            if (!valid_port(port)) { error = `invalid TPROXY port in enabled rule ${section['.name'] || ''}`; return; }
+            push(outbounds, { iface, port, profile });
+        });
+    } catch (e) { return { ok: false, error: `${e}` }; }
+    return error ? { ok: false, error } : { ok: true, interfaces, outbounds };
+}
+function runtime_location_targets() {
+    let raw = read_text(LOCATION_STATE);
+    if (!raw) return { ok: true, v4: [], v6: [] };
+    let v4 = [], v6 = [], seen = {};
+    for (let line in split(raw, /\r?\n/)) {
+        let value = trim(line || '');
+        if (!value) continue;
+        let family = null;
+        if (valid_ipv4(value)) family = '4';
+        else if (index(value, ':') >= 0 && match(value, /^[0-9A-Fa-f:]+$/)) family = '6';
+        else return { ok: false, error: `invalid runtime location target: ${value}` };
+        let key = `${family}:${lc(value)}`;
+        if (seen[key]) continue;
+        seen[key] = true;
+        push(family == '4' ? v4 : v6, value);
+    }
+    return { ok: true, v4, v6 };
+}
+function compile_runtime(raw) {
+    raw = normalize(raw);
+    let port_text = listen_port();
+    if (!match(port_text, /^[0-9]+$/)) return { ok: false, error: 'WLOC listen port is invalid.' };
+    let port = int(port_text);
+    if (port < 1 || port > 65535) return { ok: false, error: 'WLOC listen port must be between 1 and 65535.' };
+    let configured = configured_firewall();
+    if (!configured.ok) return configured;
+    let locations = runtime_location_targets();
+    if (!locations.ok) return locations;
+    let ap_mark_rules = [], ap_dispatch_rules = [], outbound_rules = [];
+    for (let outbound in configured.outbounds) {
+        let profile_mark = outbound.profile << PROFILE_SHIFT;
+        let outbound_mark = profile_mark | WLOCD_PROCESSED_MARK | WLOC_ROUTE_MARK;
+        push(ap_mark_rules, `iifname "${outbound.iface}" meta mark set meta mark | ${hex(profile_mark)} return comment "wloc ap mark ${outbound.profile}"`);
+        push(ap_dispatch_rules, `meta mark & 0xff00 == ${hex(profile_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc ap tproxy ${outbound.profile}"`);
+        push(outbound_rules, `meta mark ${hex(outbound_mark)} meta l4proto { tcp, udp } counter tproxy to :${outbound.port} accept comment "wloc outbound ${outbound.profile}"`);
+    }
+    let compiled = replace(raw, /%port%/g, `${port}`);
+    if (length(configured.interfaces)) compiled = replace(compiled, /%ap_interfaces%/g, join(', ', configured.interfaces));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%ap_interfaces%[ \t]*\}[ \t]*\n/g, '');
+    if (length(locations.v4)) compiled = replace(compiled, /%location_ipv4%/g, join(', ', locations.v4));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv4%[ \t]*\}[ \t]*\n/g, '');
+    if (length(locations.v6)) compiled = replace(compiled, /%location_ipv6%/g, join(', ', locations.v6));
+    else compiled = replace(compiled, /[ \t]*elements[ \t]*=[ \t]*\{[ \t]*%location_ipv6%[ \t]*\}[ \t]*\n/g, '');
+    compiled = replace(compiled, /%ap_tproxy_mark_rules%/g, join('\n', ap_mark_rules));
+    compiled = replace(compiled, /%ap_tproxy_dispatch_rules%/g, join('\n', ap_dispatch_rules));
+    compiled = replace(compiled, /%outbound_tproxy_rules%/g, join('\n', outbound_rules));
+    compiled = replace(compiled, /%ap_interfaces%/g, '');
+    compiled = replace(compiled, /%location_ipv4%/g, '');
+    compiled = replace(compiled, /%location_ipv6%/g, '');
+    return { ok: true, source: raw, compiled };
+}
+function prepare(raw) {
+    let runtime = compile_runtime(raw);
+    if (!runtime.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: runtime.error };
+    let parsed = inspect_source(runtime.source);
+    if (!parsed.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: parsed.error };
+    if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'Unable to create WLOC runtime directory.' };
+    let check = temporary(`${RUNTIME}/firewall-check`);
+    let written = atomic_write(check, runtime.compiled, 0o600);
+    if (!written.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: written.error };
+    let result = capture(`nft --check --file ${q(check)}`);
+    fs.unlink(check);
+    if (!result.ok) return { ok: false, valid: false, error_code: 'nft_check_failed', error: 'nftables syntax check failed', detail: trim(result.output || '') || 'validation failed' };
+    return { ok: true, valid: true, config: runtime.source, compiled: runtime.compiled };
+}
+function remove_tables() {
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let removed = run_transaction(transaction(managed.tables, ''));
+    return removed.ok ? { ok: true } : { ok: false, error: removed.detail || 'failed to remove WLOC nftables tables' };
+}
+function fail_open(error_code, error, detail) {
+    let errors = [];
+    if (detail) push(errors, detail);
+    let removed = remove_tables();
+    if (!removed.ok) push(errors, `firewall cleanup failed: ${removed.error}`);
+    fs.unlink(APPLIED); fs.unlink(NEXT);
+    return {
+        ok: false,
+        valid: false,
+        error_code,
+        error,
+        detail: join('; ', errors)
+    };
+}
+function apply(raw) {
+    let checked = prepare(raw);
+    if (!checked.ok) return checked;
+    if (!mkdirp(RUNTIME)) return { ok: false, error_code: 'nft_apply_failed', error: 'Unable to create WLOC runtime directory.' };
+    fs.unlink(NEXT);
+    let staged = atomic_write(NEXT, checked.config, 0o600);
+    if (!staged.ok) return { ok: false, error_code: 'snapshot_stage_failed', error: staged.error };
+    let managed = managed_tables();
+    if (!managed.ok) return { ok: false, valid: false, error_code: 'nft_apply_failed', error: managed.error };
+    let loaded = run_transaction(transaction(managed.tables, checked.compiled));
+    if (!loaded.ok)
+        return fail_open('nft_apply_failed', 'The nftables transaction failed.', loaded.detail || 'apply failed');
+
+    if (fs.rename(NEXT, APPLIED) !== true || read_text(APPLIED) == null)
+        return fail_open('snapshot_promote_failed', 'The applied firewall snapshot could not be promoted.', 'nftables transaction succeeded but the applied snapshot could not be promoted');
+    fs.chmod(APPLIED, 0o600);
+
+    return { ok: true, valid: true, applied: true, config: checked.config };
+}
+function apply_effective() {
+    let source = effective_source();
+    if (!source.ok) return source;
+    return apply(source.config);
+}
+function refresh_runtime() {
+    let raw = read_text(APPLIED);
+    if (raw == null) return { ok: false, error: 'The applied firewall snapshot is unavailable.' };
+    let checked = prepare(raw);
+    if (!checked.ok) return { ok: false, error: checked.detail || checked.error || 'Unable to render the WLOC firewall.' };
+    let managed = managed_tables();
+    if (!managed.ok) return managed;
+    let loaded = run_transaction(transaction(managed.tables, checked.compiled));
+    if (!loaded.ok) return { ok: false, error: loaded.detail || 'Unable to refresh the WLOC firewall.' };
+    return { ok: true, refreshed: true };
+}
+function save(raw) {
+    let checked = prepare(raw);
+    if (!checked.ok) return { ok: false, valid: false, error: 'The Firewall file could not be saved.', detail: checked.detail || checked.error };
+    let fallback = default_source();
+    if (!fallback.ok) return fallback;
+    if (checked.config == fallback.config) {
+        fs.unlink(SOURCE);
+        return { ok: true, config: fallback.config, customized: false };
+    }
+    let saved = atomic_write(SOURCE, checked.config, 0o600);
+    if (!saved.ok) return { ok: false, valid: true, error: 'The Firewall file could not be saved.', detail: saved.error };
+    return { ok: true, config: checked.config, customized: true };
+}
+function remove_runtime() {
+    let removed = remove_tables();
+    if (!removed.ok) return removed;
+    fs.unlink(APPLIED); fs.unlink(NEXT);
+    return { ok: true, firewall_active: false };
+}
+function file_input(path) {
+    path = `${path ?? ''}`;
+    if (!path) return { ok: false, error: 'input file path is empty' };
+    let raw = read_text(path);
+    return raw == null ? { ok: false, error: `cannot read ${path}` } : { ok: true, raw };
+}
+function dispatch(command, args) {
+    if (command == 'active') return active();
+    if (command == 'apply-effective') return apply_effective();
+    if (command == 'remove-runtime') return remove_runtime();
+    if (command == 'refresh-runtime') return refresh_runtime();
+    if (command == 'save-file') {
+        let input = file_input(args[0]);
+        if (!input.ok) return input;
+        return save(input.raw);
+    }
+    return { ok: false, error: `unsupported firewall command: ${command}` };
+}
+
+let result;
+try { result = dispatch(ARGV[0] || '', slice(ARGV, 1)); }
+catch (e) { result = { ok: false, error: `${e}` }; }
+printf('%J\n', result);
+exit(result?.ok === false ? 1 : 0);

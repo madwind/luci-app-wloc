@@ -1,0 +1,28 @@
+{
+  "admin/services/wloc": {
+    "title": "WLOC",
+    "order": 72,
+    "action": { "type": "firstchild" },
+    "depends": { "acl": [ "luci-app-wloc" ] }
+  },
+  "admin/services/wloc/overview": {
+    "title": "Overview",
+    "order": 1,
+    "action": { "type": "view", "path": "wloc/main-live" }
+  },
+  "admin/services/wloc/settings": {
+    "title": "Settings",
+    "order": 2,
+    "action": { "type": "view", "path": "wloc/main" }
+  },
+  "admin/services/wloc/firewall": {
+    "title": "Firewall",
+    "order": 3,
+    "action": { "type": "view", "path": "wloc/firewall" }
+  },
+  "admin/services/wloc/routing": {
+    "title": "Routing",
+    "order": 4,
+    "action": { "type": "view", "path": "wloc/routing" }
+  }
+}

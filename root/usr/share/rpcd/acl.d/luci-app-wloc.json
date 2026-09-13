@@ -1,0 +1,24 @@
+{
+  "luci-app-wloc": {
+    "description": "Manage wloc",
+    "read": {
+      "ubus": {
+        "log": [ "read", ":subscribe" ],
+        "luci.wloc": [ "status", "configured_access_points" ],
+        "luci.wloc.defaults": [ "firewall", "routing" ],
+        "luci.wloc.firewall": [ "read", "ready", "runtime" ],
+        "luci.wloc.routing": [ "read", "runtime" ]
+      },
+      "uci": [ "wloc", "wireless" ]
+    },
+    "write": {
+      "ubus": {
+        "luci.wloc": [ "regenerate_ca" ],
+        "luci.wloc.service": [ "sync", "start", "stop", "restart" ],
+        "luci.wloc.firewall": [ "save", "install", "uninstall" ],
+        "luci.wloc.routing": [ "save", "install", "uninstall" ]
+      },
+      "uci": [ "wloc" ]
+    }
+  }
+}

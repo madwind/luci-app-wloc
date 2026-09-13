@@ -1,0 +1,91 @@
+PKG_DIR:=$(dir $(lastword $(MAKEFILE_LIST)))
+include $(TOPDIR)/rules.mk
+include $(PKG_DIR)version.env
+
+PKG_NAME:=luci-app-wloc
+PKG_VERSION:=$(WLOC_VERSION)
+PKG_RELEASE:=$(WLOC_RELEASE)
+PKG_LICENSE:=MIT
+PKG_LICENSE_FILES:=LICENSE
+
+LUCI_TITLE:=Wireless Link Orchestration Controller for OpenWrt
+
+# wlocd currently ships musl binaries only for these OpenWrt architectures.
+# Keep runtime-only packages in LUCI_EXTRA_DEPENDS below.
+LUCI_DEPENDS:=@(aarch64||x86_64)
+
+# Runtime dependencies only. They are written into the APK metadata
+# without pulling the whole target dependency tree into this SDK build.
+LUCI_EXTRA_DEPENDS:= \
+	luci-base (>=0), \
+	nftables (>=0), \
+	kmod-nft-bridge (>=0), \
+	kmod-nft-fib (>=0), \
+	kmod-nft-tproxy (>=0), \
+	ip (>=0)
+
+LUCI_DESCRIPTION:=Per-interface link policy orchestration, transparent traffic processing, nftables and policy routing for OpenWrt. Includes wlocd, UCI/procd lifecycle, native ucode runtime and rpcd controllers, and LuCI.
+LUCI_MAINTAINER:=madwind
+LUCI_URL:=https://github.com/madwind/luci-app-wloc
+
+ifeq ($(DUMP),)
+  ifeq ($(ARCH),aarch64)
+    RUST_TARGET:=aarch64-unknown-linux-musl
+    RUST_LINKER_ENV:=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
+  else ifeq ($(ARCH),x86_64)
+    RUST_TARGET:=x86_64-unknown-linux-musl
+    RUST_LINKER_ENV:=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
+  else
+    $(error Unsupported OpenWrt architecture: $(ARCH))
+  endif
+endif
+
+include $(TOPDIR)/feeds/luci/luci.mk
+
+export RUST_TARGET RUST_LINKER_ENV TARGET_CC_NOCACHE TARGET_AR TARGET_CFLAGS
+
+define Package/luci-app-wloc/conffiles
+/etc/config/wloc
+endef
+
+define Package/luci-app-wloc/postinst
+#!/bin/sh
+upgrade_running='/tmp/wloc-upgrade.running'
+
+[ -n "$${IPKG_INSTROOT}" ] || {
+	rm -f /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache/
+	/etc/init.d/rpcd reload 2>/dev/null
+	if [ "$$(uci -q get wloc.main.enabled 2>/dev/null)" = "1" ]; then
+		/etc/init.d/wloc enable >/dev/null 2>&1 || true
+		if [ "$${WLOC_DEFER_RESTART:-0}" != "1" ] && [ -f "$${upgrade_running}" ]; then
+			/etc/init.d/wloc start >/dev/null 2>&1 || logger -t wloc "service restart after package upgrade failed"
+		fi
+	else
+		/etc/init.d/wloc disable >/dev/null 2>&1 || true
+	fi
+	rm -f "$${upgrade_running}"
+	exit 0
+}
+exit 0
+endef
+
+define Package/luci-app-wloc/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	case "$${1:-remove}" in
+		upgrade)
+			rm -f /tmp/wloc-upgrade.running
+			pidof wlocd >/dev/null 2>&1 && : > /tmp/wloc-upgrade.running
+			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
+			;;
+		*)
+			[ -x /etc/init.d/wloc ] && /etc/init.d/wloc stop >/dev/null 2>&1 || true
+			rm -f /tmp/wloc-upgrade.running
+			;;
+	esac
+}
+exit 0
+endef
+
+# call BuildPackage - OpenWrt buildroot signature

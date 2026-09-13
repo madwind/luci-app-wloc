@@ -1,0 +1,107 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+WLOCD=/usr/sbin/wlocd
+UCODE=/usr/bin/ucode
+RULES=/usr/libexec/wloc/rules.uc
+AP_CTL=/usr/libexec/wloc/ap.uc
+
+wifi_sections=''
+child_pid=''
+cleaned=0
+
+collect_wifi() {
+    wifi_sections="$wifi_sections $1"
+}
+
+run_from_uci() {
+    local mode="$1" listen_port debug section enabled iface latitude longitude outbound tproxy_port index profile rc
+
+    config_load wloc
+    config_get listen_port main listen_port 61520
+    config_get_bool debug main debug 0
+
+    wifi_sections=''
+    config_foreach collect_wifi wifi
+
+    set -- "$WLOCD" --listen-port "$listen_port" --rules-helper "$RULES"
+    [ "$debug" -eq 1 ] && set -- "$@" --debug
+
+    index=-1
+    for section in $wifi_sections; do
+        index=$((index + 1))
+        config_get_bool enabled "$section" enabled 1
+        [ "$enabled" -eq 1 ] || continue
+        config_get iface "$section" iface ''
+        config_get latitude "$section" latitude
+        config_get longitude "$section" longitude
+        config_get outbound "$section" outbound direct
+        config_get tproxy_port "$section" tproxy_port
+
+        [ -n "$iface" ] || { printf '%s\n' 'interface is required for every enabled WLOC rule' >&2; return 1; }
+        [ -n "$latitude" ] && [ -n "$longitude" ] || {
+            printf 'incomplete location parameters for AP: %s\n' "$iface" >&2
+            return 1
+        }
+        "$UCODE" "$AP_CTL" find "$iface" >/dev/null 2>&1 || {
+            printf 'interface "%s" cannot be resolved\n' "$iface" >&2
+            return 1
+        }
+
+        set -- "$@" --rule "$section" "$iface" "$latitude" "$longitude" --rule-name "$section" "$iface"
+        case "$outbound" in
+            direct) ;;
+            tproxy)
+                profile=$((index + 1))
+                [ "$profile" -le 255 ] || {
+                    printf 'TPROXY profile limit exceeded for AP: %s\n' "$iface" >&2
+                    return 1
+                }
+                [ -n "$tproxy_port" ] || tproxy_port=$((12345 + index))
+                set -- "$@" --rule-tproxy "$section" "$tproxy_port" "$profile"
+                ;;
+            *)
+                printf 'invalid outbound type for AP: %s (use direct or tproxy)\n' "$iface" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    if [ "$mode" = check ]; then
+        "$@" --check
+        return $?
+    fi
+
+    "$@" &
+    child_pid=$!
+    wait "$child_pid"
+    rc=$?
+    child_pid=''
+    return "$rc"
+}
+
+cleanup_guarded() {
+    [ "$cleaned" -eq 0 ] || return 0
+    cleaned=1
+    "$UCODE" "$RULES" cleanup >/dev/null 2>&1 || logger -t wlocd 'guarded runtime cleanup failed'
+}
+
+terminate_child() {
+    [ -n "$child_pid" ] || return 0
+    kill -TERM "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+    child_pid=''
+}
+
+run_guarded() {
+    trap 'terminate_child; cleanup_guarded' TERM INT
+    trap 'cleanup_guarded' EXIT
+    run_from_uci run
+}
+
+case "${1:-}" in
+    check) run_from_uci check ;;
+    run-guarded) run_guarded ;;
+    *) printf '%s\n' 'unsupported wlocctl command' >&2; exit 1 ;;
+esac
