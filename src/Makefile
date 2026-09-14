@@ -1,9 +1,10 @@
 include $(TOPDIR)/rules.mk
 
-RUST_TARGET ?= $(error RUST_TARGET is not set)
+RUSTC_TARGET_ARCH ?= $(error RUSTC_TARGET_ARCH is not set)
+RUSTC_TARGET_UPPER ?= $(error RUSTC_TARGET_UPPER is not set)
 
-# luci.mk copies src/ to PKG_BUILD_DIR/src and runs make from there, but the
-# Cargo.toml that should drive the build is at the top of PKG_BUILD_DIR.
+# luci.mk copies src/ to PKG_BUILD_DIR/src and runs make from there, while the
+# Rust crate is kept in the wloc-rs subdirectory.
 CARGO_BUILD_DIR := $(CURDIR)/wloc-rs
 ifneq ($(wildcard $(CURDIR)/../Cargo.toml),)
   CARGO_BUILD_DIR := $(CURDIR)/..
@@ -13,16 +14,17 @@ all: compile
 
 compile:
 	cd "$(CARGO_BUILD_DIR)" && \
-		CC_$(subst -,_,$(RUST_TARGET))="$(TARGET_CC_NOCACHE)" \
-		AR_$(subst -,_,$(RUST_TARGET))="$(TARGET_AR)" \
-		CFLAGS_$(subst -,_,$(RUST_TARGET))="$(TARGET_CFLAGS)" \
-		$(RUST_LINKER_ENV)="$(TARGET_CC_NOCACHE)" \
-		RUSTFLAGS="-C target-feature=-crt-static -C link-self-contained=no -C link-arg=-Wl,--gc-sections" \
-		cargo build --locked --release --target $(RUST_TARGET)
+		CARGO_BUILD_TARGET="$(RUSTC_TARGET_ARCH)" \
+		CARGO_HOME="$(CARGO_HOME)" \
+		CARGO_TARGET_$(RUSTC_TARGET_UPPER)_LINKER="$(TARGET_CC_NOCACHE)" \
+		RUSTFLAGS="$(CARGO_RUSTFLAGS)" \
+		TARGET_CC="$(TARGET_CC_NOCACHE)" \
+		TARGET_CFLAGS="$(TARGET_CFLAGS) $(RUSTC_CFLAGS)" \
+		cargo build --locked --release --target "$(RUSTC_TARGET_ARCH)"
 
 clean:
 	rm -rf "$(CARGO_BUILD_DIR)/target"
 
 install:
 	$(INSTALL_DIR) $(DESTDIR)/usr/sbin
-	$(INSTALL_BIN) $(CARGO_BUILD_DIR)/target/$(RUST_TARGET)/release/wlocd $(DESTDIR)/usr/sbin/wlocd
+	$(INSTALL_BIN) $(CARGO_BUILD_DIR)/target/$(RUSTC_TARGET_ARCH)/release/wlocd $(DESTDIR)/usr/sbin/wlocd
