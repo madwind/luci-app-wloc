@@ -15,14 +15,14 @@ endif
 include $(RUST_VALUES_MK)
 
 LUCI_TITLE:=Wireless Link Orchestration Controller for OpenWrt
-LUCI_DEPENDS:= \
-	$(RUST_ARCH_DEPENDS) \
-	+luci-base \
-	+nftables \
-	+kmod-nft-bridge \
-	+kmod-nft-fib \
-	+kmod-nft-tproxy \
-	+ip
+LUCI_DEPENDS:=$(RUST_ARCH_DEPENDS)
+LUCI_EXTRA_DEPENDS:= \
+	luci-base (>=0), \
+	nftables (>=0), \
+	kmod-nft-bridge (>=0), \
+	kmod-nft-fib (>=0), \
+	kmod-nft-tproxy (>=0), \
+	ip (>=0)
 LUCI_DESCRIPTION:=Per-interface link policy orchestration, transparent traffic processing, nftables and policy routing for OpenWrt. Includes wlocd, UCI/procd lifecycle, native ucode runtime and rpcd controllers, and LuCI.
 LUCI_MAINTAINER:=Ivon Wei <madwind.cn@gmail.com>
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
