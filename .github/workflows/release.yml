@@ -18,8 +18,74 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.metadata.outputs.publish }}
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve package and release versions
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases must run from main" >&2
+            exit 1
+          fi
+
+          read_version() {
+            sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' | head -n1
+          }
+          read_release() {
+            sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' | head -n1
+          }
+
+          package_version="$(read_version < Makefile)"
+          package_release="$(read_release < Makefile)"
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
+            exit 1
+          fi
+
+          publish=true
+          if [[ "$EVENT_NAME" == "push" && -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            previous_makefile="$(git show "$BEFORE_SHA:Makefile" 2>/dev/null || true)"
+            if [[ -n "$previous_makefile" ]]; then
+              previous_version="$(read_version <<<"$previous_makefile")"
+              previous_release="$(read_release <<<"$previous_makefile")"
+              if [[ "$package_version" == "$previous_version" && "$package_release" == "$previous_release" ]]; then
+                publish=false
+              fi
+            fi
+          fi
+
+          version="${package_version}-r${package_release}"
+          tag="v${version}"
+
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if [[ "$publish" == "false" ]]; then
+            echo "PKG_VERSION and PKG_RELEASE are unchanged; skipping release."
+          fi
+
   build:
     name: Build · ${{ matrix.target }}/${{ matrix.subtarget }}
+    needs: release-metadata
+    if: needs.release-metadata.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -59,6 +125,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Restore prepared OpenWrt SDK
         id: sdk-cache
@@ -120,22 +188,14 @@ jobs:
 
       - name: Prepare release assets
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Releases must run from main" >&2
-            exit 1
-          fi
-          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
-            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
-            exit 1
-          fi
           source_apk="$(find "dist/${{ matrix.target }}/${{ matrix.subtarget }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
-          asset="luci-app-wloc-${package_version}-r${package_release}-${{ matrix.apk_arch }}.apk"
+          asset="luci-app-wloc-${RELEASE_VERSION}-${{ matrix.apk_arch }}.apk"
           cp "$source_apk" "release-assets/$asset"
 
       - name: Upload ${{ matrix.target }}/${{ matrix.subtarget }} artifacts
@@ -148,14 +208,14 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs:
+      - release-metadata
+      - build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v7
-
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -167,21 +227,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
-            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
-            exit 1
-          fi
-          release_tag="v${package_version}-r${package_release}"
-          if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release upload "$release_tag" release-assets/*.apk --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/*.apk --clobber
           else
-            gh release create "$release_tag" release-assets/*.apk \
+            gh release create "$RELEASE_TAG" release-assets/*.apk \
               --target "$GITHUB_SHA" \
               --generate-notes \
-              --title "$release_tag"
+              --title "$RELEASE_TAG"
           fi
