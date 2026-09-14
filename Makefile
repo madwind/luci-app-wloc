@@ -1,48 +1,40 @@
-PKG_DIR:=$(dir $(lastword $(MAKEFILE_LIST)))
 include $(TOPDIR)/rules.mk
-include $(PKG_DIR)version.env
 
 PKG_NAME:=luci-app-wloc
-PKG_VERSION:=$(WLOC_VERSION)
-PKG_RELEASE:=$(WLOC_RELEASE)
+PKG_VERSION:=1.0.0
+PKG_RELEASE:=2
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
+PKG_BUILD_DEPENDS:=rust/host
+PKG_BUILD_PARALLEL:=1
+
+RUST_VALUES_MK:=$(TOPDIR)/feeds/packages/lang/rust/rust-values.mk
+ifeq ($(wildcard $(RUST_VALUES_MK)),)
+$(error OpenWrt packages feed with lang/rust is required to build WLOC)
+endif
+include $(RUST_VALUES_MK)
 
 LUCI_TITLE:=Wireless Link Orchestration Controller for OpenWrt
-
-# wlocd currently ships musl binaries only for these OpenWrt architectures.
-# Keep runtime-only packages in LUCI_EXTRA_DEPENDS below.
-LUCI_DEPENDS:=@(aarch64||x86_64)
-
-# Runtime dependencies only. They are written into the APK metadata
-# without pulling the whole target dependency tree into this SDK build.
-LUCI_EXTRA_DEPENDS:= \
-	luci-base (>=0), \
-	nftables (>=0), \
-	kmod-nft-bridge (>=0), \
-	kmod-nft-fib (>=0), \
-	kmod-nft-tproxy (>=0), \
-	ip (>=0)
-
+LUCI_DEPENDS:= \
+	$(RUST_ARCH_DEPENDS) \
+	+luci-base \
+	+nftables \
+	+kmod-nft-bridge \
+	+kmod-nft-fib \
+	+kmod-nft-tproxy \
+	+ip
 LUCI_DESCRIPTION:=Per-interface link policy orchestration, transparent traffic processing, nftables and policy routing for OpenWrt. Includes wlocd, UCI/procd lifecycle, native ucode runtime and rpcd controllers, and LuCI.
-LUCI_MAINTAINER:=madwind
+LUCI_MAINTAINER:=Ivon Wei <madwind.cn@gmail.com>
 LUCI_URL:=https://github.com/madwind/luci-app-wloc
 
-ifeq ($(DUMP),)
-  ifeq ($(ARCH),aarch64)
-    RUST_TARGET:=aarch64-unknown-linux-musl
-    RUST_LINKER_ENV:=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
-  else ifeq ($(ARCH),x86_64)
-    RUST_TARGET:=x86_64-unknown-linux-musl
-    RUST_LINKER_ENV:=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
-  else
-    $(error Unsupported OpenWrt architecture: $(ARCH))
-  endif
+ifneq ($(wildcard ../../luci.mk),)
+include ../../luci.mk
+else
+include $(TOPDIR)/feeds/luci/luci.mk
 endif
 
-include $(TOPDIR)/feeds/luci/luci.mk
-
-export RUST_TARGET RUST_LINKER_ENV TARGET_CC_NOCACHE TARGET_AR TARGET_CFLAGS
+export RUSTC_TARGET_ARCH RUSTC_TARGET_UPPER CARGO_HOME CARGO_RUSTFLAGS
+export RUSTC_CFLAGS TARGET_CC_NOCACHE TARGET_CFLAGS
 
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
