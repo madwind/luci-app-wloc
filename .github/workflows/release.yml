@@ -30,30 +30,25 @@ jobs:
             subtarget: filogic
             apk_arch: aarch64_cortex-a53
             sdk_sha256: ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
-            rust_target: aarch64-unknown-linux-musl
             elf_machine: AArch64
             elf_interpreter: /lib/ld-musl-aarch64.so.1
           - target: rockchip
             subtarget: armv8
             apk_arch: aarch64_generic
             sdk_sha256: 59194a023968398af64bfa7d8bc3eac322641f6dc9cdbade28a4d9dd41866eba
-            rust_target: aarch64-unknown-linux-musl
             elf_machine: AArch64
             elf_interpreter: /lib/ld-musl-aarch64.so.1
           - target: x86
             subtarget: "64"
             apk_arch: x86_64
             sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
-            rust_target: x86_64-unknown-linux-musl
             elf_machine: X86-64
             elf_interpreter: /lib/ld-musl-x86_64.so.1
     env:
       OPENWRT_VERSION: "25.12.5"
       OPENWRT_TARGET: ${{ matrix.target }}
       OPENWRT_SUBTARGET: ${{ matrix.subtarget }}
-      RUST_TOOLCHAIN: "1.89.0"
-      RUSTUP_TOOLCHAIN: "1.89.0"
-      SDK_PREP_REV: "1"
+      SDK_PREP_REV: "2"
       SDK_ARCHIVE: openwrt-sdk-25.12.5-${{ matrix.target }}-${{ matrix.subtarget }}_gcc-14.3.0_musl.Linux-x86_64.tar.zst
       SDK_DIRECTORY: openwrt-sdk-25.12.5-${{ matrix.target }}-${{ matrix.subtarget }}_gcc-14.3.0_musl.Linux-x86_64
       SDK_CACHE_ROOT: ${{ github.workspace }}/.build/openwrt-25.12.5/${{ matrix.target }}/${{ matrix.subtarget }}
@@ -80,14 +75,8 @@ jobs:
           sdk_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
           sdk_file="$RUNNER_TEMP/$SDK_ARCHIVE"
           mkdir -p "$SDK_CACHE_ROOT"
-          curl \
-            --fail \
-            --location \
-            --retry 5 \
-            --retry-all-errors \
-            --show-error \
-            --output "$sdk_file" \
-            "$sdk_url"
+          curl --fail --location --retry 5 --retry-all-errors --show-error \
+            --output "$sdk_file" "$sdk_url"
           printf '%s  %s\n' '${{ matrix.sdk_sha256 }}' "$sdk_file" | sha256sum --check --strict
           tar --extract --zstd --file "$sdk_file" --directory "$SDK_CACHE_ROOT"
 
@@ -105,9 +94,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$OPENWRT_SDK/scripts/feeds" update luci
-          "$OPENWRT_SDK/scripts/feeds" install luci-base
+          "$OPENWRT_SDK/scripts/feeds" update packages luci
+          "$OPENWRT_SDK/scripts/feeds" install rust luci-base
           test -f "$OPENWRT_SDK/feeds/luci/luci.mk"
+          test -f "$OPENWRT_SDK/feeds/packages/lang/rust/rust-values.mk"
           touch "$OPENWRT_SDK/.config"
           mkdir -p "$OPENWRT_SDK/staging_dir/host"
           touch "$OPENWRT_SDK/staging_dir/host/.prereq-build"
@@ -120,23 +110,6 @@ jobs:
         with:
           path: ${{ env.SDK_CACHE_ROOT }}
           key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_VERSION }}-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.sdk_sha256 }}-prepared-v${{ env.SDK_PREP_REV }}
-
-      - name: Cache Cargo downloads
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-${{ runner.os }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
-          restore-keys: cargo-downloads-${{ runner.os }}-
-
-      - name: Prepare Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup target add --toolchain "$RUST_TOOLCHAIN" '${{ matrix.rust_target }}'
-          cargo fetch --locked --manifest-path src/wloc-rs/Cargo.toml
 
       - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
