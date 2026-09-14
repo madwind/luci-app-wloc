@@ -15,13 +15,13 @@ REQUIRED_EXECUTABLES=(
     root/usr/libexec/wloc/rules.uc
 )
 
-# shellcheck disable=SC1091
-source "$PROJECT/version.env"
-if [[ ! "$WLOC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$WLOC_RELEASE" =~ ^[0-9]+$ ]]; then
-    echo "Invalid WLOC_VERSION or WLOC_RELEASE in version.env: $WLOC_VERSION-r$WLOC_RELEASE" >&2
+package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' "$PROJECT/Makefile" | head -n1)"
+package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' "$PROJECT/Makefile" | head -n1)"
+if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+    echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
     exit 1
 fi
-PACKAGE_VERSION="$WLOC_VERSION-r$WLOC_RELEASE"
+PACKAGE_VERSION="${package_version}-r${package_release}"
 
 test -d "$SDK"
 test -x "$SDK/staging_dir/host/bin/apk"
@@ -65,7 +65,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PACKAGE_DIR/src/wloc-rs"
-cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PROJECT/LICENSE" "$PACKAGE_DIR/"
+cp "$PROJECT/Makefile" "$PROJECT/LICENSE" "$PACKAGE_DIR/"
 cp "$PROJECT/src/Makefile" "$PACKAGE_DIR/src/Makefile"
 cp "$PROJECT/src/wloc-rs/Cargo.toml" "$PROJECT/src/wloc-rs/Cargo.lock" "$PACKAGE_DIR/src/wloc-rs/"
 cp -a "$PROJECT/src/wloc-rs/src" "$PACKAGE_DIR/src/wloc-rs/"
