@@ -7,7 +7,7 @@ on:
     branches:
       - main
     paths:
-      - version.env
+      - Makefile
   workflow_dispatch:
 
 permissions:
@@ -126,11 +126,16 @@ jobs:
             echo "Releases must run from main" >&2
             exit 1
           fi
-          . ./version.env
+          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
+            exit 1
+          fi
           source_apk="$(find "dist/${{ matrix.target }}/${{ matrix.subtarget }}" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "$source_apk"
           mkdir -p release-assets
-          asset="luci-app-wloc-${WLOC_VERSION}-r${WLOC_RELEASE}-${{ matrix.apk_arch }}.apk"
+          asset="luci-app-wloc-${package_version}-r${package_release}-${{ matrix.apk_arch }}.apk"
           cp "$source_apk" "release-assets/$asset"
 
       - name: Upload ${{ matrix.target }}/${{ matrix.subtarget }} artifacts
@@ -165,8 +170,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          . ./version.env
-          release_tag="v${WLOC_VERSION}-r${WLOC_RELEASE}"
+          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
+            exit 1
+          fi
+          release_tag="v${package_version}-r${package_release}"
           if gh release view "$release_tag" >/dev/null 2>&1; then
             gh release upload "$release_tag" release-assets/*.apk --clobber
           else
