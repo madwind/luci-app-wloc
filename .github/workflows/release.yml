@@ -176,7 +176,6 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$RUST_TARGET"
           rustc --version
           cargo --version
-          cargo fetch --locked --manifest-path src/wloc-rs/Cargo.toml
 
       - name: Restore Cargo cache
         id: cargo-cache
@@ -190,6 +189,12 @@ jobs:
           restore-keys: |
             wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-
             wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-
+
+      - name: Fetch Cargo dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path src/wloc-rs/Cargo.toml
 
       - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
