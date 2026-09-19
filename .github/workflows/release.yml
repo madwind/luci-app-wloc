@@ -186,7 +186,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src/wloc-rs/target
-          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}
+          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}
           restore-keys: |
             wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-
             wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-
@@ -206,7 +206,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src/wloc-rs/target
-          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
+          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}
 
       - name: Prepare release assets
         shell: bash
