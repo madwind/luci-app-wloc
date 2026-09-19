@@ -111,6 +111,7 @@ jobs:
       WLOC_ELF_MACHINE: ${{ matrix.elf_machine }}
       WLOC_ELF_INTERPRETER: ${{ matrix.elf_interpreter }}
       RUST_TOOLCHAIN: "1.89.0"
+      RUSTUP_TOOLCHAIN: "1.89.0"
       RUST_TARGET: aarch64-unknown-linux-musl
 
     steps:
@@ -173,9 +174,9 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$RUST_TARGET"
-          rustup override set "$RUST_TOOLCHAIN"
           rustc --version
           cargo --version
+          cargo fetch --locked --manifest-path src/wloc-rs/Cargo.toml
 
       - name: Restore Cargo cache
         id: cargo-cache
@@ -185,7 +186,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src/wloc-rs/target
-          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
+          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}-${{ hashFiles('src/wloc-rs/Cargo.toml', 'src/wloc-rs/src/**/*.rs') }}
+          restore-keys: |
+            wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}-
+            wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-
 
       - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
