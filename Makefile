@@ -5,17 +5,15 @@ PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
-PKG_BUILD_DEPENDS:=rust/host
 PKG_BUILD_PARALLEL:=1
 
-RUST_VALUES_MK:=$(TOPDIR)/feeds/packages/lang/rust/rust-values.mk
-ifeq ($(wildcard $(RUST_VALUES_MK)),)
-$(error OpenWrt packages feed with lang/rust is required to build WLOC)
-endif
-include $(RUST_VALUES_MK)
+RUSTC_TARGET_ARCH:=aarch64-unknown-linux-musl
+RUSTC_TARGET_UPPER:=AARCH64_UNKNOWN_LINUX_MUSL
+RUSTC_CFLAGS:=-mno-outline-atomics
+CARGO_RUSTFLAGS:=-Ctarget-feature=-crt-static
 
 LUCI_TITLE:=Wireless Link Orchestration Controller for OpenWrt
-LUCI_DEPENDS:=$(RUST_ARCH_DEPENDS)
+LUCI_DEPENDS:=@aarch64
 LUCI_EXTRA_DEPENDS:= \
 	luci-base (>=0), \
 	nftables (>=0), \
@@ -33,8 +31,8 @@ else
 include $(TOPDIR)/feeds/luci/luci.mk
 endif
 
-export RUSTC_TARGET_ARCH RUSTC_TARGET_UPPER CARGO_HOME CARGO_RUSTFLAGS
-export RUSTC_CFLAGS TARGET_CC_NOCACHE TARGET_CFLAGS
+export RUSTC_TARGET_ARCH RUSTC_TARGET_UPPER CARGO_RUSTFLAGS
+export RUSTC_CFLAGS TARGET_AR TARGET_CC_NOCACHE TARGET_CFLAGS
 
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
