@@ -27,6 +27,10 @@ test -d "$SDK"
 test -x "$SDK/staging_dir/host/bin/apk"
 test -f "$SDK/feeds/luci/luci.mk"
 command -v cargo >/dev/null
+command -v rustc >/dev/null
+rust_target=aarch64-unknown-linux-musl
+rust_target_libdir="$(rustc --print target-libdir --target "$rust_target")"
+test -d "$rust_target_libdir"
 command -v readelf >/dev/null
 command -v git >/dev/null
 
