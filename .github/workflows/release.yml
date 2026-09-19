@@ -110,6 +110,8 @@ jobs:
       WLOC_APK_ARCH: ${{ matrix.apk_arch }}
       WLOC_ELF_MACHINE: ${{ matrix.elf_machine }}
       WLOC_ELF_INTERPRETER: ${{ matrix.elf_interpreter }}
+      RUST_TOOLCHAIN: "1.89.0"
+      RUST_TARGET: aarch64-unknown-linux-musl
 
     steps:
       - uses: actions/checkout@v7
@@ -150,10 +152,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$OPENWRT_SDK/scripts/feeds" update packages luci
-          "$OPENWRT_SDK/scripts/feeds" install rust luci-base
+          "$OPENWRT_SDK/scripts/feeds" update luci
+          "$OPENWRT_SDK/scripts/feeds" install luci-base
           test -f "$OPENWRT_SDK/feeds/luci/luci.mk"
-          test -f "$OPENWRT_SDK/feeds/packages/lang/rust/rust-values.mk"
           touch "$OPENWRT_SDK/.config"
           mkdir -p "$OPENWRT_SDK/staging_dir/host"
           touch "$OPENWRT_SDK/staging_dir/host/.prereq-build"
@@ -167,12 +168,41 @@ jobs:
           path: ${{ env.SDK_CACHE_ROOT }}
           key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_VERSION }}-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.sdk_sha256 }}-prepared-v${{ env.SDK_PREP_REV }}
 
+      - name: Prepare native Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$RUST_TARGET"
+          rustup override set "$RUST_TOOLCHAIN"
+          rustc --version
+          cargo --version
+
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/wloc-rs/target
+          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
+
       - name: Build ${{ matrix.target }}/${{ matrix.subtarget }} APK
         shell: bash
         run: |
           set -euo pipefail
           bash -n scripts/build-apk.sh
           bash ./scripts/build-apk.sh
+
+      - name: Save Cargo cache
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/wloc-rs/target
+          key: wloc-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ env.RUST_TARGET }}-${{ hashFiles('src/wloc-rs/Cargo.lock') }}
 
       - name: Prepare release assets
         shell: bash
