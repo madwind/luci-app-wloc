@@ -14,12 +14,12 @@ all: compile
 
 compile:
 	cd "$(CARGO_BUILD_DIR)" && \
+		CC_aarch64_unknown_linux_musl="$(TARGET_CC_NOCACHE)" \
+		AR_aarch64_unknown_linux_musl="$(TARGET_AR)" \
+		CFLAGS_aarch64_unknown_linux_musl="$(TARGET_CFLAGS) $(RUSTC_CFLAGS)" \
 		CARGO_BUILD_TARGET="$(RUSTC_TARGET_ARCH)" \
-		CARGO_HOME="$(CARGO_HOME)" \
 		CARGO_TARGET_$(RUSTC_TARGET_UPPER)_LINKER="$(TARGET_CC_NOCACHE)" \
-		RUSTFLAGS="$(CARGO_RUSTFLAGS)" \
-		TARGET_CC="$(TARGET_CC_NOCACHE)" \
-		TARGET_CFLAGS="$(TARGET_CFLAGS) $(RUSTC_CFLAGS)" \
+		CARGO_TARGET_$(RUSTC_TARGET_UPPER)_RUSTFLAGS="$(CARGO_RUSTFLAGS)" \
 		cargo build --locked --release --target "$(RUSTC_TARGET_ARCH)"
 
 clean:
