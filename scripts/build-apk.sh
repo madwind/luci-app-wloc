@@ -85,6 +85,7 @@ for relative in "${REQUIRED_EXECUTABLES[@]}"; do
 done
 
 jobs="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN || echo 1)"
+cargo_target_dir="$PROJECT/src/wloc-rs/target"
 
 printf 'Building OpenWrt target toolchain\n'
 make -C "$SDK" \
@@ -94,8 +95,8 @@ make -C "$SDK" \
     -j"$jobs" V=sc
 
 printf 'Building %s\n' "$PACKAGE_VERSION"
-make -C "$SDK" CONFIG_PACKAGE_$PACKAGE_NAME=m package/$PACKAGE_NAME/clean
-make -C "$SDK" CONFIG_PACKAGE_$PACKAGE_NAME=m package/$PACKAGE_NAME/compile -j"$jobs" V=sc
+make -C "$SDK" WLOC_CARGO_TARGET_DIR="$cargo_target_dir" CONFIG_PACKAGE_$PACKAGE_NAME=m package/$PACKAGE_NAME/clean
+make -C "$SDK" WLOC_CARGO_TARGET_DIR="$cargo_target_dir" CONFIG_PACKAGE_$PACKAGE_NAME=m package/$PACKAGE_NAME/compile -j"$jobs" V=sc
 
 mapfile -t matches < <(find "$SDK/bin" -type f -name "$PACKAGE_NAME-$PACKAGE_VERSION.apk" -print | sort)
 mapfile -t packages < <(find "$SDK/bin" -type f -name "$PACKAGE_NAME-*.apk" -print | sort)
