@@ -2,15 +2,16 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wloc
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_BUILD_PARALLEL:=1
+PKG_BUILD_FLAGS:=gc-sections
 
 RUSTC_TARGET_ARCH:=aarch64-unknown-linux-musl
 RUSTC_TARGET_UPPER:=AARCH64_UNKNOWN_LINUX_MUSL
 RUSTC_CFLAGS:=-mno-outline-atomics
-CARGO_RUSTFLAGS:=-Ctarget-feature=-crt-static
+CARGO_RUSTFLAGS:=-Ctarget-feature=-crt-static -Clink-self-contained=no
 
 LUCI_TITLE:=Wireless Link Orchestration Controller for OpenWrt
 LUCI_DEPENDS:=@aarch64
@@ -32,7 +33,7 @@ include $(TOPDIR)/feeds/luci/luci.mk
 endif
 
 export RUSTC_TARGET_ARCH RUSTC_TARGET_UPPER CARGO_RUSTFLAGS
-export RUSTC_CFLAGS TARGET_AR TARGET_CC_NOCACHE TARGET_CFLAGS WLOC_CARGO_TARGET_DIR
+export RUSTC_CFLAGS TARGET_AR TARGET_CC_NOCACHE TARGET_CFLAGS TARGET_LDFLAGS WLOC_CARGO_TARGET_DIR
 
 define Package/luci-app-wloc/conffiles
 /etc/config/wloc
