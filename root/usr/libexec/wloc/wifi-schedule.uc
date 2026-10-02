@@ -53,11 +53,16 @@ function find_wireless(ctx, iface) {
 }
 function hostapd_active(iface) {
     if (!valid_iface(iface)) return false;
+    let ubus = null, active = false;
     try {
-        let ubus = connect();
-        if (!ubus) return false;
-        return type(ubus.call(`hostapd.${iface}`, 'get_status', {})) == 'object';
-    } catch (e) { return false; }
+        ubus = connect();
+        if (ubus)
+            active = type(ubus.call(`hostapd.${iface}`, 'get_status', {})) == 'object';
+    } catch (e) {}
+    if (ubus) {
+        try { ubus.disconnect(); } catch (e) {}
+    }
+    return active;
 }
 function reload_wifi() {
     if (system('wifi reload >/dev/null 2>&1') === 0) return true;

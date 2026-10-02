@@ -78,14 +78,20 @@ function integer(value, fallback) {
 }
 
 function daemon_running() {
+    let ubus = null, result = null, failed = false;
     try {
-        let ubus = connect();
+        ubus = connect();
         if (!ubus) return false;
-        let result = ubus.call('service', 'list', { name: 'wloc' });
-        return truthy(result && result.wloc && result.wloc.instances && result.wloc.instances.daemon && result.wloc.instances.daemon.running);
+        result = ubus.call('service', 'list', { name: 'wloc' });
     } catch (e) {
-        return system('pidof wlocd >/dev/null 2>&1') === 0;
+        failed = true;
     }
+    if (ubus) {
+        try { ubus.disconnect(); } catch (e) {}
+    }
+    if (failed)
+        return system('pidof wlocd >/dev/null 2>&1') === 0;
+    return truthy(result && result.wloc && result.wloc.instances && result.wloc.instances.daemon && result.wloc.instances.daemon.running);
 }
 
 function package_version() {
