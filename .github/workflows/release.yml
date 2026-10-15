@@ -266,3 +266,24 @@ jobs:
               --generate-notes \
               --title "$RELEASE_TAG"
           fi
+
+  cleanup-artifacts:
+    name: Remove temporary workflow artifacts
+    if: ${{ always() }}
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Remove temporary artifacts after publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[].id' | while read -r id; do
+              gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id"
+            done
