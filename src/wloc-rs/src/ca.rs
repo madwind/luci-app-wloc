@@ -226,8 +226,23 @@ fn stable_uuid(certificate: &[u8], label: &[u8]) -> String {
 pub fn write_mobileconfig(
     ca: &CaBundle,
     output: &Path,
+    disable_ota_pki_updates: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let certificate = base64::engine::general_purpose::STANDARD.encode(ca.cert_der());
+    let restrictions = if disable_ota_pki_updates {
+        format!(
+            r#"<dict>
+<key>allowOTAPKIUpdates</key><false/>
+<key>PayloadDisplayName</key><string>Disable OTA PKI Updates</string>
+<key>PayloadIdentifier</key><string>org.openwrt.wloc.restrictions</string>
+<key>PayloadType</key><string>com.apple.applicationaccess</string>
+<key>PayloadUUID</key><string>{}</string><key>PayloadVersion</key><integer>1</integer>
+</dict>"#,
+            stable_uuid(ca.cert_der(), b"restrictions")
+        )
+    } else {
+        String::new()
+    };
     let profile = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -239,7 +254,7 @@ pub fn write_mobileconfig(
 <key>PayloadIdentifier</key><string>org.openwrt.wloc.ca</string>
 <key>PayloadType</key><string>com.apple.security.root</string>
 <key>PayloadUUID</key><string>{}</string><key>PayloadVersion</key><integer>1</integer>
-</dict></array>
+</dict>{restrictions}</array>
 <key>PayloadDescription</key><string>Root CA for the explicitly authorized OpenWrt WLOC test device</string>
 <key>PayloadDisplayName</key><string>OpenWrt WLOC CA</string>
 <key>PayloadIdentifier</key><string>org.openwrt.wloc.profile</string>

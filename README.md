@@ -56,6 +56,12 @@ Each managed `wifi-iface` should have a fixed `option ifname` in `/etc/config/wi
 
 The default TCP/UDP listener port is `61520` and can be changed in LuCI.
 
+## iOS CA profile
+
+The CA profile downloaded from **Overview** includes an iOS Restrictions payload with `allowOTAPKIUpdates=false` by default. To omit it, turn off **Settings > Disable OTA PKI updates**, save and apply, then download the updated profile. Existing iOS installations are not changed by router settings; remove the previously installed profile before installing the updated one.
+
+Disabling OTA PKI updates may prevent delivery of important Apple certificate trust and security updates. It is an experimental mitigation for trust-asset changes, not a way to reverse pinning rules already installed on a device. To restore OTA PKI updates, remove the profile or replace it with a profile generated after disabling this option.
+
 ## Runtime requirements
 
 WLOC targets OpenWrt 25.12+ with LuCI. The package includes the native `wlocd` Rust service and declares its required OpenWrt runtime dependencies.

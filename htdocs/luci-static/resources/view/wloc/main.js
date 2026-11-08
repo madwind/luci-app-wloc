@@ -33,6 +33,11 @@ return view.extend({
         option.rmempty = false;
         option.description = _('Normally this should not be changed. If your custom nftables rules redirect traffic to WLOC, use the same port. WLOC does not inspect or enforce redirect rules; a mismatched rule simply will not send traffic to the listener.');
 
+        option = settings.option(form.Flag, 'disable_ota_pki_updates', _('Disable OTA PKI updates'));
+        option.default = '1';
+        option.rmempty = false;
+        option.description = _('Include a restriction in the downloadable iOS CA profile that disables over-the-air PKI trust updates. This can prevent certificate security updates and does not undo rules already installed. Reinstall the profile after changing this option.');
+
         option = settings.option(form.Flag, 'debug_log', _('Debug request logging'));
         option.default = '0';
         option.rmempty = false;

@@ -164,7 +164,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile = std::env::var_os("WLOC_PROFILE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(default_profile_path);
-    write_mobileconfig(&ca, &profile)?;
+    write_mobileconfig(&ca, &profile, config.disable_ota_pki_updates)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let versions = [&rustls::version::TLS13, &rustls::version::TLS12];

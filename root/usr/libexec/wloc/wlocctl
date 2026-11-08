@@ -16,17 +16,19 @@ collect_wifi() {
 }
 
 run_from_uci() {
-    local mode="$1" listen_port debug section enabled iface latitude longitude outbound tproxy_port index profile rc
+    local mode="$1" listen_port debug disable_ota_pki_updates section enabled iface latitude longitude outbound tproxy_port index profile rc
 
     config_load wloc
     config_get listen_port main listen_port 61520
     config_get_bool debug main debug 0
+    config_get_bool disable_ota_pki_updates main disable_ota_pki_updates 1
 
     wifi_sections=''
     config_foreach collect_wifi wifi
 
     set -- "$WLOCD" --listen-port "$listen_port" --rules-helper "$RULES"
     [ "$debug" -eq 1 ] && set -- "$@" --debug
+    [ "$disable_ota_pki_updates" -eq 1 ] && set -- "$@" --disable-ota-pki-updates
 
     index=-1
     for section in $wifi_sections; do
